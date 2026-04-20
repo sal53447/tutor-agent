@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>2e. tsconfig deep dive · JS Curriculum</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body data-lesson="2e">
+<nav class="topbar">
+  <a href="../index.html" class="home">← Index</a>
+  <span class="crumb">Part 2 · TypeScript · 2e</span>
+  <span class="nav-links">
+    <a id="prev-link" href="#">← Prev</a>
+    <a id="next-link" href="#">Next →</a>
+  </span>
+</nav>
+<article class="lesson">
+<header>
+  <div>
+    <div class="lesson-id">Part 2 · TypeScript · 2e</div>
+    <h1>tsconfig Deep Dive</h1>
+  </div>
+  <label class="mark-done"><input type="checkbox"> Mark as read</label>
+</header>
+
+<h2>Frontend / Vite config</h2>
+<pre><code class="language-json">{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "exactOptionalPropertyTypes": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "esModuleInterop": true,
+    "jsx": "preserve",
+    "outDir": "dist",
+    "rootDir": "src",
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  },
+  "include": ["src"]
+}</code></pre>
+
+<h2>Node / Express backend config</h2>
+<p>Node's native ESM resolver is stricter than a bundler's. Use <code>moduleResolution: "nodenext"</code> and set <code>module</code> to match:</p>
+
+<pre><code class="language-json">{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "esModuleInterop": true,
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "include": ["src"]
+}</code></pre>
+
+<div class="callout warn">
+  <div class="tag">Module / moduleResolution must match</div>
+  <p>With <code>moduleResolution: "NodeNext"</code>, import paths in your source must include the <code>.js</code> extension — even though you're writing <code>.ts</code> files. Node resolves the emitted output, not the source. Bundlers (<code>"bundler"</code> resolution) don't have this requirement.</p>
+</div>
+
+<div class="callout good">
+  <div class="tag">Start here</div>
+  <p>For new projects, turn on <code>strict: true</code>, <code>noUncheckedIndexedAccess: true</code>, and <code>verbatimModuleSyntax: true</code>. These three settings catch the overwhelming majority of bugs <code>strict</code> alone misses. <code>@total-typescript/tsconfig</code> is a popular preset.</p>
+</div>
+
+<h2>Key flags explained</h2>
+<ul>
+  <li><code>strict</code> — turns on all strict-mode flags. Non-negotiable.</li>
+  <li><code>outDir</code> / <code>rootDir</code> — tell <code>tsc</code> where to write compiled output and where source lives. Without these, <code>.js</code> files land next to <code>.ts</code> files.</li>
+  <li><code>noUncheckedIndexedAccess</code> — <code>arr[0]</code> is typed as <code>T | undefined</code>. Catches "forgot the empty array" bugs. See 2f for what this means in practice.</li>
+  <li><code>exactOptionalPropertyTypes</code> — distinguishes <code>{ x?: string }</code> from <code>{ x: string | undefined }</code>. Prevents sneaky bugs where <code>undefined</code> is assigned explicitly.</li>
+  <li><code>verbatimModuleSyntax</code> — forces explicit <code>import type</code> / <code>export type</code>. Fixes erasure weirdness with bundlers.</li>
+  <li><code>isolatedModules</code> — required when using Vite, SWC, or esbuild. They transpile file-by-file without a project graph.</li>
+  <li><code>moduleResolution: "bundler"</code> — the modern default for non-Node codebases.</li>
+</ul>
+
+<div class="callout warn">
+  <div class="tag">paths aliases are compile-time only</div>
+  <p>The <code>paths</code> field tells TS how to resolve <code>@/*</code> imports for type checking. It does <em>not</em> teach Node how to resolve them at runtime. You need bundler support (Vite, webpack, Next.js) or a runtime helper (<code>tsconfig-paths</code>) for paths to work outside a bundler. If you ship a plain Node script with <code>tsc</code>, paths aliases will silently fail at runtime.</p>
+</div>
+
+<footer class="lesson-footer">
+  <a class="prev-card" href="#"><span class="dir">← Previous</span><span class="title"></span></a>
+  <a class="next-card next" href="#"><span class="dir">Next →</span><span class="title"></span></a>
+</footer>
+</article>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js" data-manual></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
+<script>Prism.plugins.autoloader.languages_path='https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/';Prism.highlightAll();</script>
+<script src="../assets/nav.js"></script>
+</body>
+</html>

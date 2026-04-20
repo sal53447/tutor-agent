@@ -1,0 +1,25 @@
+# OS cruft
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+npm-debug.log*
+
+# Local env files
+.env
+.env.local
+.env.*.local
+
+# Claude Code per-session runtime state.
+# Agent definitions (.claude/agents/) and skills (.claude/skills/) ARE tracked;
+# runtime memory contains per-session notes and may include personal info, so excluded.
+.claude/agent-memory/

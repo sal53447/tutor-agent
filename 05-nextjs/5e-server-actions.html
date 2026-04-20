@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>5e. Server Actions · JS Curriculum</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body data-lesson="5e">
+<nav class="topbar">
+  <a href="../index.html" class="home">← Index</a>
+  <span class="crumb">Part 5 · Next.js · 5e</span>
+  <span class="nav-links">
+    <a id="prev-link" href="#">← Prev</a>
+    <a id="next-link" href="#">Next →</a>
+  </span>
+</nav>
+<article class="lesson">
+<header>
+  <div>
+    <div class="lesson-id">Part 5 · Next.js · 5e</div>
+    <h1>Server Actions — RPC with Forms</h1>
+  </div>
+  <label class="mark-done"><input type="checkbox"> Mark as read</label>
+</header>
+
+<p>A function marked <code>"use server"</code> can be called directly from a client component. Next handles the RPC, serialization, and progressive enhancement. Forms submit without JS; validation and mutation live in the same place.</p>
+
+<h2>Typed action signature + <code>useActionState</code></h2>
+<p><code>useActionState</code> is the React 19 / Next 15 API. The old name <code>useFormState</code> (from <code>react-dom</code>) still works but is deprecated — prefer <code>useActionState</code> from <code>react</code>.</p>
+
+<pre><code class="language-typescript">// app/actions.ts
+"use server";
+import { z } from "zod";
+import { redirect } from "next/navigation";
+import { revalidatePath } from "next/cache";  // see 5d for cache invalidation
+
+const CreatePost = z.object({ title: z.string().min(1), body: z.string() });
+
+type State = { error?: string; fieldErrors?: Record&lt;string, string[]&gt; };
+
+// Typed signature: (prevState, formData) => Promise&lt;State&gt;
+export async function createPost(prev: State, formData: FormData): Promise&lt;State&gt; {
+  const parsed = CreatePost.safeParse(Object.fromEntries(formData));
+  if (!parsed.success) {
+    return { fieldErrors: parsed.error.flatten().fieldErrors };
+  }
+
+  try {
+    await db.posts.create(parsed.data);
+  } catch (err) {
+    console.error("createPost failed:", err);   // log server-side only
+    return { error: "Failed to save post. Please try again." };
+  }
+
+  revalidatePath("/posts");    // purge cached route — see 5d
+  redirect("/posts");          // redirect after successful mutation
+}</code></pre>
+
+<pre><code class="language-jsx">// app/new-post/page.tsx
+"use client";
+import { useActionState } from "react";   // React 19 — not react-dom
+import { createPost } from "../actions";
+import { SubmitButton } from "@/components/submit-button";
+
+export default function NewPost() {
+  // useFormState (deprecated) → useActionState (React 19 / Next 15)
+  const [state, formAction] = useActionState(createPost, {});
+  return (
+    &lt;form action={formAction}&gt;
+      &lt;input name="title" /&gt;
+      {state?.fieldErrors?.title &amp;&amp; &lt;span&gt;{state.fieldErrors.title[0]}&lt;/span&gt;}
+      &lt;textarea name="body" /&gt;
+      &lt;SubmitButton /&gt;
+      {state?.error &amp;&amp; &lt;p role="alert"&gt;{state.error}&lt;/p&gt;}
+    &lt;/form&gt;
+  );
+}</code></pre>
+
+<h2>Progressive enhancement</h2>
+<p>When the <code>action</code> prop receives a server action directly (not <code>formAction</code> from a hook), the form works without any client-side JS — standard HTML form submission.</p>
+
+<pre><code class="language-jsx">// app/newsletter/page.tsx — works with JS disabled
+import { subscribe } from "./actions";
+
+export default function NewsletterPage() {
+  return (
+    &lt;form action={subscribe}&gt;  {/* plain server action — no "use client" needed */}
+      &lt;input name="email" type="email" required /&gt;
+      &lt;button type="submit"&gt;Subscribe&lt;/button&gt;
+    &lt;/form&gt;
+  );
+}</code></pre>
+
+<div class="callout warn">
+  <div class="tag">Gotcha — <code>useFormState</code> deprecation</div>
+  <p><code>useFormState</code> from <code>react-dom</code> is deprecated in React 19. Use <code>useActionState</code> from <code>react</code>. The signature is identical; only the import and name changed. Old tutorials and codebases will show the old name.</p>
+</div>
+
+<div class="callout py">
+  <div class="tag">Python bridge</div>
+  <p>A Django form <code>POST</code> view — validate, save, redirect — is exactly the server action pattern. <code>form.is_valid()</code> → Zod parse. <code>form.save()</code> → DB call. <code>return redirect("/")</code> → <code>redirect("/posts")</code>. The mental model is identical; the wire protocol is RPC instead of HTTP form POST.</p>
+</div>
+
+<div class="callout good">
+  <div class="tag">When to pick this over a route handler</div>
+  <p>Server actions are ideal for mutations tied to forms or specific UI. Route handlers (<code>app/api/.../route.ts</code>) are for public API endpoints, webhooks, or when you need HTTP semantics. Same power, different seams.</p>
+</div>
+
+<details class="quiz">
+  <summary>Self-check</summary>
+  <ol>
+    <li>What replaces <code>useFormState</code> in React 19 / Next 15, and where is it imported from?</li>
+    <li>How do you make a form work without JavaScript using a server action?</li>
+    <li>A server action throws an unexpected DB error. What should you do — return or throw?</li>
+  </ol>
+  <p><strong>Expected answers:</strong> (1) <code>useActionState</code>, imported from <code>react</code> (not <code>react-dom</code>). (2) Pass the server action directly to the form's <code>action</code> prop without wrapping it in a hook — no <code>"use client"</code> required on the page. (3) Catch, log server-side, and return a user-safe error object — never let raw DB errors propagate to the client.</p>
+</details>
+
+<footer class="lesson-footer">
+  <a class="prev-card" href="#"><span class="dir">← Previous</span><span class="title"></span></a>
+  <a class="next-card next" href="#"><span class="dir">Next →</span><span class="title"></span></a>
+</footer>
+</article>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js" data-manual></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
+<script>Prism.plugins.autoloader.languages_path='https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/';Prism.highlightAll();</script>
+<script src="../assets/nav.js"></script>
+</body>
+</html>

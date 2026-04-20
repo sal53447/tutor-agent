@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>2b. The type system · JS Curriculum</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body data-lesson="2b">
+<nav class="topbar">
+  <a href="../index.html" class="home">← Index</a>
+  <span class="crumb">Part 2 · TypeScript · 2b</span>
+  <span class="nav-links">
+    <a id="prev-link" href="#">← Prev</a>
+    <a id="next-link" href="#">Next →</a>
+  </span>
+</nav>
+<article class="lesson">
+<header>
+  <div>
+    <div class="lesson-id">Part 2 · TypeScript · 2b</div>
+    <h1>The Type System</h1>
+  </div>
+  <label class="mark-done"><input type="checkbox"> Mark as read</label>
+</header>
+
+<pre><code class="language-typescript">// Primitives
+let s: string; let n: number; let b: boolean;
+let u: undefined; let nl: null; let big: bigint; let sym: symbol;
+
+// Literals — very powerful
+type Direction = "up" | "down" | "left" | "right";
+type HTTPMethod = "GET" | "POST" | "PUT" | "DELETE";
+
+// Unions
+type ID = string | number;
+
+// Intersections
+type Named = { name: string };
+type Aged  = { age: number };
+type Person = Named & Aged;    // { name: string; age: number }
+
+// Discriminated unions — the workhorse
+type Shape =
+  | { kind: "circle"; r: number }
+  | { kind: "square"; side: number };
+
+function area(s: Shape): number {
+  switch (s.kind) {
+    case "circle": return Math.PI * s.r ** 2;
+    case "square": return s.side ** 2;
+  }
+}
+
+// Tuples
+type Point = [number, number];
+type Pair<T, U> = [T, U];</code></pre>
+
+<h2>Narrowing — how TS tracks type flow</h2>
+<p>TypeScript performs <strong>control flow analysis</strong>: it narrows the type of a variable based on the checks you write. After a check, the type inside that branch is automatically more specific.</p>
+
+<pre><code class="language-typescript">// typeof narrowing
+function format(x: string | number) {
+  if (typeof x === "string") return x.toUpperCase();  // x: string here
+  return x.toFixed(2);                                // x: number here
+}
+
+// instanceof narrowing
+function handle(err: Date | Error) {
+  if (err instanceof Error) return err.message;       // err: Error
+  return err.toISOString();                           // err: Date
+}
+
+// in narrowing — check for property presence
+type Circle = { kind: "circle"; r: number };
+type Rect   = { kind: "rect"; w: number; h: number };
+function area2(s: Circle | Rect) {
+  if ("r" in s) return Math.PI * s.r ** 2;           // s: Circle
+  return s.w * s.h;                                   // s: Rect
+}
+
+// Truthiness narrowing
+function greet(name: string | null) {
+  if (!name) return "Hello, stranger";
+  return `Hello, ${name}`;                            // name: string (null excluded)
+}
+
+// Discriminated union — narrowing via a shared literal field
+// The switch on s.kind tells TS exactly which branch of Shape applies.
+// Inside case "circle", s.r exists; TS errors if you access s.side there.
+function area(s: Shape): number {
+  switch (s.kind) {
+    case "circle": return Math.PI * s.r ** 2;   // s: { kind:"circle"; r:number }
+    case "square": return s.side ** 2;           // s: { kind:"square"; side:number }
+  }
+}</code></pre>
+
+<div class="callout review">
+  <div class="tag">Why this matters</div>
+  <p>Narrowing is what makes unions useful rather than annoying. You don't need to cast — you check, and TS <em>knows</em>. If you find yourself writing <code>as</code> casts to access a union member, add a discriminant field instead.</p>
+</div>
+
+<h2><code>any</code>, <code>unknown</code>, and <code>never</code></h2>
+<pre><code class="language-typescript">// any — disables type checking. Poisons anything it touches. Avoid.
+function bad(x: any) { x.whatever();  // no error — TS gave up }
+
+// unknown — safe top type. You must narrow before use.
+function parse(raw: unknown) {
+  if (typeof raw === "string") return raw.toUpperCase();  // ok after check
+  throw new Error("not a string");
+}
+
+// never — the empty type. Arises in exhausted unions.
+// If a value reaches type never, the code path is unreachable.
+// Covered fully in 2f: exhaustive matching with never.</code></pre>
+
+<div class="callout good">
+  <div class="tag">Rule</div>
+  <p>When a function can receive "anything", reach for <code>unknown</code>, not <code>any</code>. <code>unknown</code> forces you to narrow; <code>any</code> silently bypasses every check TS would otherwise perform.</p>
+</div>
+
+<h2>Function types and type aliases</h2>
+<pre><code class="language-typescript">// Function type alias
+type Handler = (req: Request, res: Response) => void;
+type Predicate<T> = (item: T) => boolean;
+type Transform<A, B> = (input: A) => B;
+
+// Inline function type
+function run(fn: (x: number) => string) { return fn(42); }
+
+// Type aliases are compile-time only — erased at runtime.
+// typeof SomeTypeAlias does NOT exist in JS output.
+type UserId = string;   // gone at runtime — purely a TS construct</code></pre>
+
+<h2>Interfaces vs type aliases</h2>
+<ul>
+  <li><strong>Type aliases</strong> (<code>type</code>) — can be any shape (unions, tuples, mapped types). Preferred default.</li>
+  <li><strong>Interfaces</strong> — only object shapes. Can be extended via declaration merging (needed for augmenting library types). Slightly better perf in huge codebases.</li>
+</ul>
+<p>Rule of thumb: <code>interface</code> for public API contracts, <code>type</code> for everything else. Or: pick one and be consistent.</p>
+
+<div class="callout bad">
+  <div class="tag">Avoid</div>
+  <p><code>enum</code>. It generates runtime code, has weird reverse-mapping behavior, and doesn't play well with tree-shaking. Use literal unions (<code>"A" | "B" | "C"</code>) or <code>as const</code> objects instead. This is a TS team recommendation too.</p>
+</div>
+
+<pre><code class="language-typescript">// Instead of enum:
+const Role = { Admin: "admin", User: "user" } as const;
+type Role = typeof Role[keyof typeof Role];  // "admin" | "user"</code></pre>
+
+<footer class="lesson-footer">
+  <a class="prev-card" href="#"><span class="dir">← Previous</span><span class="title"></span></a>
+  <a class="next-card next" href="#"><span class="dir">Next →</span><span class="title"></span></a>
+</footer>
+</article>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js" data-manual></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
+<script>Prism.plugins.autoloader.languages_path='https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/';Prism.highlightAll();</script>
+<script src="../assets/nav.js"></script>
+</body>
+</html>

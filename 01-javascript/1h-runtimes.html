@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>1h. Runtimes · JS Curriculum</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body data-lesson="1h">
+<nav class="topbar">
+  <a href="../index.html" class="home">← Index</a>
+  <span class="crumb">Part 1 · JavaScript · 1h</span>
+  <span class="nav-links">
+    <a id="prev-link" href="#">← Prev</a>
+    <a id="next-link" href="#">Next →</a>
+  </span>
+</nav>
+<article class="lesson">
+<header>
+  <div>
+    <div class="lesson-id">Part 1 · JavaScript · 1h</div>
+    <h1>Runtimes — Node, Browser, Edge</h1>
+  </div>
+  <label class="mark-done"><input type="checkbox"> Mark as read</label>
+</header>
+
+<p>The same JS language runs in different environments with different APIs. Knowing what runs where is a big part of "writing modern JS."</p>
+
+<table>
+  <tr><th>Capability</th><th>Node.js</th><th>Browser</th><th>Edge (Cloudflare, Vercel Edge)</th></tr>
+  <tr><td>File system</td><td><code>fs</code></td><td>No direct access</td><td>No</td></tr>
+  <tr><td>HTTP server</td><td><code>http</code>, Express</td><td>No</td><td>Via Fetch handler</td></tr>
+  <tr><td>DOM</td><td>No</td><td>Yes</td><td>No</td></tr>
+  <tr><td><code>fetch</code></td><td>Yes (Node 18+)</td><td>Yes</td><td>Yes</td></tr>
+  <tr><td>Streams</td><td>Node streams + Web Streams</td><td>Web Streams</td><td>Web Streams only</td></tr>
+  <tr><td>Cold-start cost</td><td>Medium</td><td>N/A</td><td>Very low</td></tr>
+  <tr><td>Long-lived connections</td><td>Yes</td><td>Yes</td><td>Usually no (request-scoped)</td></tr>
+</table>
+
+<p>Edge runtimes (Cloudflare Workers, Vercel Edge Functions, Deno Deploy) are V8 isolates — no Node APIs. You can't use <code>fs</code> or most of <code>node:*</code>. You use Web APIs (<code>fetch</code>, Web Streams, <code>crypto.subtle</code>). This matters a lot in Next.js where middleware runs on edge.</p>
+
+<p><strong>Alternative full runtimes:</strong> <strong>Deno</strong> (TypeScript-native, permission model, Web API-first, can run some npm packages) and <strong>Bun</strong> (extremely fast startup, built-in bundler/test runner, mostly Node-compatible). Same JS/TS language — different built-in APIs and tooling surface. Most production backends still target Node, but Bun is increasingly used for tooling and edge-adjacent workloads.</p>
+
+<div class="callout review">
+  <div class="tag">Code review</div>
+  <ul>
+    <li>A library that works in Node but not edge is a footgun in Next.js middleware. Check <code>package.json</code> <code>engines</code> and the docs.</li>
+    <li>Don't assume <code>process.env</code> exists — in the browser it doesn't (bundlers inline build-time values).</li>
+    <li>Don't write to disk on serverless; use object storage (S3, R2).</li>
+  </ul>
+</div>
+
+<footer class="lesson-footer">
+  <a class="prev-card" href="#"><span class="dir">← Previous</span><span class="title"></span></a>
+  <a class="next-card next" href="#"><span class="dir">Next →</span><span class="title"></span></a>
+</footer>
+</article>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js" data-manual></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
+<script>Prism.plugins.autoloader.languages_path='https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/';Prism.highlightAll();</script>
+<script src="../assets/nav.js"></script>
+</body>
+</html>

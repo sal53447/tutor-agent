@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>1f. Async & the event loop · JS Curriculum</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body data-lesson="1f">
+<nav class="topbar">
+  <a href="../index.html" class="home">← Index</a>
+  <span class="crumb">Part 1 · JavaScript · 1f</span>
+  <span class="nav-links">
+    <a id="prev-link" href="#">← Prev</a>
+    <a id="next-link" href="#">Next →</a>
+  </span>
+</nav>
+<article class="lesson">
+<header>
+  <div>
+    <div class="lesson-id">Part 1 · JavaScript · 1f</div>
+    <h1>Async &amp; Concurrency — the Event Loop</h1>
+  </div>
+  <label class="mark-done"><input type="checkbox"> Mark as read</label>
+</header>
+
+<p>This is the single most important lesson in Part 1. Everything on the JS side — timers, promises, fetch, React effects, Express handlers, Next.js server components — sits on this model.</p>
+
+<h2>The model: one thread, two queues</h2>
+<p>JS runs on a single thread with a call stack. When the stack is empty, the runtime pulls work from queues:</p>
+<ul>
+  <li><strong>Microtask queue</strong> — resolved Promise callbacks, <code>queueMicrotask</code>. Drained <em>completely</em> before the next render or macrotask.</li>
+  <li><strong>Macrotask queue</strong> — <code>setTimeout</code>, <code>setInterval</code>, I/O callbacks, <code>setImmediate</code> (Node). Processed one at a time.</li>
+</ul>
+
+<pre><code class="language-javascript">console.log("1");
+setTimeout(() => console.log("2"), 0);
+Promise.resolve().then(() => console.log("3"));
+console.log("4");
+// Order: 1, 4, 3, 2
+// Why: sync first, then microtasks (Promise), then macrotasks (setTimeout)</code></pre>
+
+<h2>Promises — the lifecycle</h2>
+<p>A Promise is in one of three states: <em>pending</em>, <em>fulfilled</em> (with a value), or <em>rejected</em> (with an error). Once settled, it's immutable.</p>
+
+<pre><code class="language-javascript">const p = new Promise((resolve, reject) => {
+  setTimeout(() => resolve(42), 100);
+});
+
+p.then(v => console.log(v))
+ .catch(err => console.error(err))
+ .finally(() => console.log("done"));</code></pre>
+
+<h2><code>async</code> / <code>await</code> — the real API</h2>
+<pre><code class="language-javascript">async function getUser(id) {
+  try {
+    const res = await fetch(`/api/users/${id}`);
+    if (!res.ok) throw new Error("Not ok");
+    return await res.json();
+  } catch (err) {
+    console.error(err);
+    throw err;  // let caller decide
+  }
+}</code></pre>
+
+<div class="callout py">
+  <div class="tag">Python bridge</div>
+  <p>Syntactically identical to Python's <code>async def</code> / <code>await</code>. Semantically different in one key way: Python's <code>asyncio</code> is opt-in (you must run an event loop explicitly). In JS, the event loop is always running — every function can be <code>async</code>, every top-level can <code>await</code> (in ESM). There's no "blue/red function" social split in JS; async is ambient.</p>
+</div>
+
+<h2>Combinators</h2>
+<pre><code class="language-javascript">// Parallel — fail if any fails
+const [a, b] = await Promise.all([fetchA(), fetchB()]);
+
+// Parallel — wait for all, get results and errors
+const results = await Promise.allSettled([fetchA(), fetchB()]);
+
+// First to settle (resolve OR reject) — rarely what you want
+await Promise.race([op, timeout]);
+
+// First to FULFILL (ignore rejections)
+await Promise.any([a, b, c]);</code></pre>
+
+<div class="callout warn">
+  <div class="tag">Sequential-in-a-loop bug</div>
+<pre><code class="language-javascript">// BAD — fetches sequentially, 10x slower
+for (const id of ids) {
+  const u = await fetchUser(id);
+  users.push(u);
+}
+
+// GOOD — fetches in parallel
+const users = await Promise.all(ids.map(fetchUser));</code></pre>
+  <p>This is the single most common async bug in JS code. If the iterations are independent, <code>map</code> + <code>Promise.all</code>. If they depend on each other, <code>for...of</code> is correct.</p>
+</div>
+
+<h2>Cancellation with <code>AbortController</code></h2>
+<pre><code class="language-javascript">const ctrl = new AbortController();
+fetch(url, { signal: ctrl.signal });
+setTimeout(() => ctrl.abort(), 5000);  // cancel after 5s</code></pre>
+
+<h2>Unhandled rejections — Node crashes, browser warns</h2>
+<pre><code class="language-javascript">// This promise rejects with no handler — behaviour differs by environment
+async function boom() { throw new Error("oops"); }
+boom();  // fire-and-forget (no await, no .catch)
+
+// Node (since v15): process exits with code 1 — UnhandledPromiseRejection
+// Browser: fires window.unhandledrejection event, logs a warning, continues running
+
+// Guard at module level in Node:
+process.on("unhandledRejection", (reason) => {
+  console.error("Unhandled rejection:", reason);
+  process.exit(1);  // explicit exit so the error is visible in CI logs
+});</code></pre>
+
+<div class="callout warn">
+  <div class="tag">Gotcha</div>
+  <p>The browser's leniency masks bugs during development. If you write backend Node code and test it only in a browser-like environment (Vitest with jsdom, for example), unhandled rejections that would crash production may silently pass tests. Run critical async tests in a Node environment.</p>
+</div>
+
+<div class="callout review">
+  <div class="tag">Code review</div>
+  <ul>
+    <li><strong>Unhandled rejection.</strong> Every promise needs a <code>.catch</code> or a surrounding <code>try/catch</code>. Unhandled rejections crash the Node process in modern versions.</li>
+    <li><strong>Forgotten <code>await</code>.</strong> <code>asyncFn()</code> without <code>await</code> returns a floating promise — often a silent bug. ESLint rule: <code>@typescript-eslint/no-floating-promises</code>.</li>
+    <li><strong>Don't nest <code>.then</code> chains.</strong> Use <code>await</code>. It reads top to bottom.</li>
+    <li><strong>Avoid mixing callbacks and promises.</strong> Node utilities have <code>.promises</code> variants (<code>fs.promises</code>, <code>fs.readFile</code> via <code>util.promisify</code>).</li>
+  </ul>
+</div>
+
+<details class="quiz">
+  <summary>Self-check</summary>
+  <div class="q">What does this log, and why?</div>
+<pre><code class="language-javascript">async function f() {
+  console.log("a");
+  await 1;
+  console.log("b");
+}
+f();
+console.log("c");</code></pre>
+  <p><strong>Answer:</strong> <code>a</code>, <code>c</code>, <code>b</code>. <code>await</code> always suspends the function at least once even if the awaited value is already resolved. Execution resumes on the microtask queue, after the current synchronous block finishes.</p>
+</details>
+
+<footer class="lesson-footer">
+  <a class="prev-card" href="#"><span class="dir">← Previous</span><span class="title"></span></a>
+  <a class="next-card next" href="#"><span class="dir">Next →</span><span class="title"></span></a>
+</footer>
+</article>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js" data-manual></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
+<script>Prism.plugins.autoloader.languages_path='https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/';Prism.highlightAll();</script>
+<script src="../assets/nav.js"></script>
+</body>
+</html>

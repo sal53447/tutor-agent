@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>4f. Custom hooks · JS Curriculum</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body data-lesson="4f">
+<nav class="topbar">
+  <a href="../index.html" class="home">← Index</a>
+  <span class="crumb">Part 4 · React · 4f</span>
+  <span class="nav-links">
+    <a id="prev-link" href="#">← Prev</a>
+    <a id="next-link" href="#">Next →</a>
+  </span>
+</nav>
+<article class="lesson">
+<header>
+  <div>
+    <div class="lesson-id">Part 4 · React · 4f</div>
+    <h1>Custom Hooks — The Real Composition Primitive</h1>
+  </div>
+  <label class="mark-done"><input type="checkbox"> Mark as read</label>
+</header>
+
+<p>A custom hook is a function whose name starts with <code>use</code> and that calls other hooks. That's the entire definition. It's how you share stateful logic between components.</p>
+
+<pre><code class="language-jsx">function useToggle(initial = false) {
+  const [on, setOn] = useState(initial);
+  const toggle = useCallback(() => setOn(v => !v), []);
+  return [on, toggle];
+}
+
+function useLocalStorage(key, fallback) {
+  const [value, setValue] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(key)) ?? fallback; }
+    catch { return fallback; }
+  });
+  useEffect(() => { localStorage.setItem(key, JSON.stringify(value)); }, [key, value]);
+  return [value, setValue];
+}
+
+function useOnClickOutside(ref, handler) {
+  useEffect(() => {
+    const listener = (e) => { if (!ref.current?.contains(e.target)) handler(e); };
+    document.addEventListener("mousedown", listener);
+    return () => document.removeEventListener("mousedown", listener);
+  }, [ref, handler]);
+}</code></pre>
+
+<h2>Data-fetching custom hook example</h2>
+<p>This bridges the gap between raw <code>useEffect</code> (4d) and TanStack Query (4g) — shows exactly what Query is abstracting for you.</p>
+<pre><code class="language-tsx">function useFetch<T>(url: string) {
+  const [data, setData] = useState<T | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<Error | null>(null);
+
+  useEffect(() => {
+    const ctrl = new AbortController();
+    setIsLoading(true);
+    fetch(url, { signal: ctrl.signal })
+      .then(r => { if (!r.ok) throw new Error(r.statusText); return r.json(); })
+      .then((d: T) => { setData(d); setIsLoading(false); })
+      .catch(err => { if (err.name !== "AbortError") { setError(err); setIsLoading(false); } });
+    return () => ctrl.abort();
+  }, [url]);
+
+  return { data, isLoading, error };
+}
+
+// Usage
+const { data: user, isLoading } = useFetch<User>(`/api/users/${id}`);</code></pre>
+<p>This ~15-line hook already handles abort, loading states, and errors. TanStack Query adds caching, deduplication, background refetch, retries, and pagination on top. Once you feel the pain of this hook in a real app, you'll understand why Query exists.</p>
+
+<div class="callout good">
+  <div class="tag">Rules of hooks</div>
+  <ol>
+    <li>Only call hooks at the top level (not inside conditions, loops, or nested functions).</li>
+    <li>Only call hooks from React function components or other custom hooks.</li>
+  </ol>
+  <p>Why: React tracks hook state by call order. If you skip one on a render, the whole slot alignment shifts.</p>
+  <p><strong>Enforcement:</strong> <code>eslint-plugin-react-hooks</code> catches both rules automatically. Enable it — it will save you hours of debugging call-order mismatches.</p>
+  <p><strong>Naming rule:</strong> the <code>use</code> prefix is a contract. If a function doesn't call any hooks, don't name it <code>useX</code> — it misleads readers and confuses the linter.</p>
+</div>
+
+<footer class="lesson-footer">
+  <a class="prev-card" href="#"><span class="dir">← Previous</span><span class="title"></span></a>
+  <a class="next-card next" href="#"><span class="dir">Next →</span><span class="title"></span></a>
+</footer>
+</article>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js" data-manual></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
+<script>Prism.plugins.autoloader.languages_path='https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/';Prism.highlightAll();</script>
+<script src="../assets/nav.js"></script>
+</body>
+</html>

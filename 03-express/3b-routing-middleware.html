@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>3b. Express routing &amp; middleware · JS Curriculum</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body data-lesson="3b">
+<nav class="topbar">
+  <a href="../index.html" class="home">← Index</a>
+  <span class="crumb">Part 3 · Express · 3b</span>
+  <span class="nav-links">
+    <a id="prev-link" href="#">← Prev</a>
+    <a id="next-link" href="#">Next →</a>
+  </span>
+</nav>
+<article class="lesson">
+<header>
+  <div>
+    <div class="lesson-id">Part 3 · Express · 3b</div>
+    <h1>Express Core — Routing &amp; Middleware</h1>
+  </div>
+  <label class="mark-done"><input type="checkbox"> Mark as read</label>
+</header>
+
+<h2>The hello world, then the real structure</h2>
+<pre><code class="language-javascript">import express from "express";
+const app = express();
+
+app.use(express.json());                    // parses JSON body
+
+app.get("/users/:id", async (req, res) => {
+  const user = await db.users.findById(req.params.id);
+  if (!user) return res.status(404).json({ error: "not_found" });
+  res.json(user);
+});
+
+app.listen(3000);</code></pre>
+
+<h2>Middleware — the signature pattern of Express</h2>
+<p>Every Express handler is a middleware. The signature is <code>(req, res, next) =&gt; void</code>. Middlewares run in order. Call <code>next()</code> to continue, <code>next(err)</code> to jump to error handlers, or end the response (<code>res.send()</code>) to stop the chain.</p>
+
+<pre><code class="language-javascript">// Log every request
+app.use((req, res, next) => {
+  console.log(`${req.method} ${req.url}`);
+  next();
+});
+
+// Auth on a subtree
+app.use("/admin", requireAdmin);
+
+// Error middleware — note the FOUR arguments (err, req, res, next)
+app.use((err, req, res, next) => {
+  console.error(err);
+  res.status(err.status || 500).json({ error: err.message });
+});</code></pre>
+
+<div class="callout py">
+  <div class="tag">Analogy</div>
+  <p>Middleware is an airport security checkpoint chain. Every passenger (request) goes through each station in order. Any station can reject, stamp, or wave through. The final "gate" is your route handler. Error middleware is the supervisor called when any station rejects.</p>
+</div>
+
+<h2>Body parsers</h2>
+<pre><code class="language-typescript">app.use(express.json());                    // Content-Type: application/json
+app.use(express.urlencoded({ extended: true }));  // Content-Type: application/x-www-form-urlencoded
+// extended: true uses the qs library (nested objects); false uses querystring (flat only)</code></pre>
+<p>Both are needed if your API accepts HTML form POSTs or OAuth callbacks as well as JSON clients.</p>
+
+<h2>Splitting routes into files with express.Router()</h2>
+<pre><code class="language-typescript">// routes/users.routes.ts
+import { Router } from "express";
+import { requireAuth } from "../middleware/auth";
+import * as ctrl from "../controllers/users.controller";
+
+export const usersRouter = Router();
+
+usersRouter.post("/",        validate(CreateUser), ctrl.createUser);
+usersRouter.get("/:id",      requireAuth,          ctrl.getUser);
+usersRouter.patch("/:id",    requireAuth,          ctrl.updateUser);
+usersRouter.delete("/:id",   requireAuth,          ctrl.deleteUser);
+
+// app.ts — mount the router
+import { usersRouter } from "./routes/users.routes";
+app.use("/users", usersRouter);     // → /users, /users/:id, etc.</code></pre>
+<p>Each resource gets its own file. <code>app.ts</code> becomes a list of <code>app.use()</code> mounts — nothing more.</p>
+
+<h2>Typed AppError</h2>
+<pre><code class="language-typescript">// errors/AppError.ts
+export class AppError extends Error {
+  constructor(
+    public readonly status: number,
+    message: string,
+    public readonly code?: string,
+  ) {
+    super(message);
+    this.name = "AppError";
+  }
+}
+
+// Usage
+throw new AppError(404, "User not found", "USER_NOT_FOUND");
+throw new AppError(409, "Email already registered", "EMAIL_CONFLICT");
+
+// Error middleware picks it up
+app.use((err: unknown, req, res, next) => {
+  if (err instanceof AppError) {
+    return res.status(err.status).json({ error: err.message, code: err.code });
+  }
+  log.error({ err }, "unhandled error");
+  res.status(500).json({ error: "internal_error" });
+});</code></pre>
+
+<h2>Request-ID middleware</h2>
+<pre><code class="language-typescript">// middleware/requestId.ts
+import { randomUUID } from "crypto";
+
+export function requestId(req, res, next) {
+  const id = (req.headers["x-request-id"] as string) ?? randomUUID();
+  res.locals.requestId = id;
+  res.setHeader("X-Request-Id", id);
+  // Attach child logger so every log from this request carries the ID
+  res.locals.log = log.child({ requestId: id });
+  next();
+}
+
+// app.ts — mount before all routes
+app.use(requestId);</code></pre>
+
+<h2>Rate limiting</h2>
+<pre><code class="language-typescript">import rateLimit from "express-rate-limit";
+
+// Global limiter — blunt instrument, protects against runaway clients
+app.use(rateLimit({ windowMs: 60_000, max: 100 }));
+
+// Tighter on auth endpoints
+app.use("/auth", rateLimit({
+  windowMs: 15 * 60_000,   // 15 minutes
+  max: 10,
+  message: { error: "too_many_requests" },
+  standardHeaders: true,   // adds RateLimit-* headers (draft-6)
+  legacyHeaders: false,
+}));</code></pre>
+
+<h2>Async error-handling pitfall</h2>
+<pre><code class="language-javascript">// BROKEN in Express 4: async errors don't automatically reach error middleware
+app.get("/x", async (req, res) => {
+  const data = await mightThrow();   // if this rejects, Node sees unhandled rejection
+  res.json(data);
+});
+
+// Fix in Express 4: wrap, or use express-async-errors package
+app.get("/x", async (req, res, next) => {
+  try { res.json(await mightThrow()); } catch (e) { next(e); }
+});
+
+// Express 5 (2024): async errors are captured automatically. Use Express 5.</code></pre>
+
+<details class="quiz">
+  <summary>Self-check — two questions</summary>
+  <div class="q">1. You mount <code>app.use("/api", authMiddleware, apiRouter)</code>. A route inside <code>apiRouter</code> calls <code>next("route")</code> instead of <code>next()</code>. What happens?</div>
+  <p><code>next("route")</code> skips the remaining handlers in the current route stack and moves to the next matching route. It does <em>not</em> skip the entire middleware chain — <code>authMiddleware</code> has already run. Use <code>next("route")</code> carefully; in most cases <code>next()</code> or returning a response is clearer.</p>
+  <div class="q">2. Express receives a request for <code>POST /users</code>. Your middleware order is: (1) <code>express.json()</code>, (2) <code>requestId</code>, (3) <code>rateLimit</code>, (4) <code>validate(CreateUser)</code>, (5) <code>ctrl.createUser</code>. What is the correct order in production, and why would you move rate limiting earlier?</div>
+  <p>Rate limiting should come before body parsing (move to position 1). Parsing the body allocates memory; a flood of large requests can exhaust memory before the rate limiter fires. The correct order: rate limiting → request ID → body parsing → validation → handler.</p>
+</details>
+
+<footer class="lesson-footer">
+  <a class="prev-card" href="#"><span class="dir">← Previous</span><span class="title"></span></a>
+  <a class="next-card next" href="#"><span class="dir">Next →</span><span class="title"></span></a>
+</footer>
+</article>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js" data-manual></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
+<script>Prism.plugins.autoloader.languages_path='https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/';Prism.highlightAll();</script>
+<script src="../assets/nav.js"></script>
+</body>
+</html>

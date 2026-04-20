@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>4g. Server state vs client state · JS Curriculum</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body data-lesson="4g">
+<nav class="topbar">
+  <a href="../index.html" class="home">← Index</a>
+  <span class="crumb">Part 4 · React · 4g</span>
+  <span class="nav-links">
+    <a id="prev-link" href="#">← Prev</a>
+    <a id="next-link" href="#">Next →</a>
+  </span>
+</nav>
+<article class="lesson">
+<header>
+  <div>
+    <div class="lesson-id">Part 4 · React · 4g</div>
+    <h1>Server State vs Client State</h1>
+  </div>
+  <label class="mark-done"><input type="checkbox"> Mark as read</label>
+</header>
+
+<h2>Where does this code run?</h2>
+<p>In Next.js App Router (Part 5), every component is a <strong>Server Component by default</strong>. Understanding the boundary is the most important mental model shift coming from plain React.</p>
+
+<table>
+  <tr><th></th><th>Server Component</th><th>Client Component</th></tr>
+  <tr><td><strong>Runs on</strong></td><td>Server only (Node.js, at request time)</td><td>Browser (and server during SSR hydration)</td></tr>
+  <tr><td><strong>Can use</strong></td><td><code>async/await</code>, DB, filesystem, env secrets</td><td>Hooks, event handlers, browser APIs, state</td></tr>
+  <tr><td><strong>Cannot use</strong></td><td>Hooks, <code>useState</code>, <code>useEffect</code>, browser APIs</td><td><code>async</code> component body, direct DB access</td></tr>
+  <tr><td><strong>Ships JS?</strong></td><td>No — renders to HTML + RSC payload</td><td>Yes — included in client bundle</td></tr>
+</table>
+
+<pre><code class="language-tsx">// app/users/page.tsx — Server Component (no "use client")
+// Can directly await DB / fetch. No useEffect. No useState.
+export default async function UsersPage() {
+  const users = await db.query("SELECT * FROM users");
+  return <UserList users={users} />;
+}
+
+// components/user-list.tsx — Client Component
+"use client";   // <-- this directive makes the component (and its imports) client-side
+
+import { useState } from "react";
+export function UserList({ users }) {
+  const [filter, setFilter] = useState("");
+  const visible = users.filter(u => u.name.includes(filter));
+  return (
+    <>
+      <input value={filter} onChange={e => setFilter(e.target.value)} />
+      {visible.map(u => <div key={u.id}>{u.name}</div>)}
+    </>
+  );
+}</code></pre>
+
+<div class="callout good">
+  <div class="tag">Rule of thumb</div>
+  <p>Default to Server Component. Add <code>"use client"</code> only when you need interactivity (hooks, events, browser APIs). Push the boundary as far down the tree as possible — the smaller the client island, the less JS shipped.</p>
+</div>
+
+<p>The single most important distinction in modern React. <em>Server state</em> is data owned by a remote system (the DB), cached on the client. <em>Client state</em> is data owned by the UI (toggles, form drafts, selection).</p>
+
+<p>They need different tools. Using <code>useState</code> + <code>useEffect</code> for server data is the classic anti-pattern — you end up reimplementing caching, deduplication, retries, background refetching, pagination, optimistic updates, and staleness. <strong>TanStack Query</strong> (née React Query) exists precisely to solve this.</p>
+
+<pre><code class="language-jsx">import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+
+function User({ id }) {
+  const { data, isLoading, error } = useQuery({
+    queryKey: ["user", id],
+    queryFn: () => fetch(`/api/users/${id}`).then(r => r.json()),
+  });
+
+  if (isLoading) return <Spinner />;
+  if (error) return <Error />;
+  return <h1>{data.name}</h1>;
+}
+
+function UpdateButton({ id }) {
+  const qc = useQueryClient();
+  const m = useMutation({
+    mutationFn: (input) => fetch(`/api/users/${id}`, { method: "PATCH", body: JSON.stringify(input) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["user", id] }),
+  });
+  return <button onClick={() => m.mutate({ name: "new" })}>Update</button>;
+}</code></pre>
+
+<div class="callout good">
+  <div class="tag">Defaults that earn their keep</div>
+  <ul>
+    <li><code>staleTime: 60_000</code> — don't refetch for 60s.</li>
+    <li><code>retry: 2</code>, <code>refetchOnWindowFocus</code> true for read-heavy UIs.</li>
+    <li>Use <code>queryKey</code> as the "cache key" — includes all params.</li>
+  </ul>
+</div>
+
+<h2>TanStack Query's role in a Next.js app</h2>
+<p>Server Components handle initial data fetching — no Query needed there. Query's role shifts to:</p>
+<ul>
+  <li>Client-side data that changes after page load (polling, WebSocket-driven refetches)</li>
+  <li>Mutation management: optimistic updates, cache invalidation after writes</li>
+  <li>Any data that is genuinely client-only (user preferences stored in an API, not in the DB query)</li>
+</ul>
+<p>The classic <code>useQuery</code> fetch-on-mount pattern is largely replaced by RSC initial loads. Query stays relevant for the mutation half of the picture.</p>
+
+<h2>Suspense mode</h2>
+<p>TanStack Query v5 ships <code>useSuspenseQuery</code>. It integrates with React <code>&lt;Suspense&gt;</code> — while data is loading the component suspends, the nearest <code>Suspense</code> boundary shows its fallback, and the component renders only once data is available (no <code>isLoading</code> guard needed).</p>
+<pre><code class="language-jsx">// No isLoading check needed — component only renders when data is ready
+function UserCard({ id }) {
+  const { data } = useSuspenseQuery({
+    queryKey: ["user", id],
+    queryFn: () => fetch(`/api/users/${id}`).then(r => r.json()),
+  });
+  return <h2>{data.name}</h2>;
+}
+
+// Wrap in Suspense at the call site
+<Suspense fallback={<Skeleton />}>
+  <UserCard id={42} />
+</Suspense></code></pre>
+
+<h2>SWR — the lightweight alternative</h2>
+<p><strong>SWR</strong> (from Vercel) is a simpler alternative to TanStack Query. Same stale-while-revalidate semantics, smaller API surface. Good pick for projects that only need basic caching and don't need the full Query feature set (infinite queries, mutations with cache invalidation, etc.).</p>
+<pre><code class="language-jsx">import useSWR from "swr";
+const { data, error, isLoading } = useSWR("/api/user", url => fetch(url).then(r => r.json()));</code></pre>
+
+<div class="callout py">
+  <div class="tag">Python bridge</div>
+  <p>There's no exact Python analog. Closest cultural equivalent: your Python code knows the difference between a local dict and a Redis cache you hit repeatedly. TanStack Query is "the client's Redis" for API responses — with invalidation, TTLs, stale-while-revalidate built in.</p>
+</div>
+
+<footer class="lesson-footer">
+  <a class="prev-card" href="#"><span class="dir">← Previous</span><span class="title"></span></a>
+  <a class="next-card next" href="#"><span class="dir">Next →</span><span class="title"></span></a>
+</footer>
+</article>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js" data-manual></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
+<script>Prism.plugins.autoloader.languages_path='https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/';Prism.highlightAll();</script>
+<script src="../assets/nav.js"></script>
+</body>
+</html>

@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>5b. App Router architecture · JS Curriculum</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body data-lesson="5b">
+<nav class="topbar">
+  <a href="../index.html" class="home">← Index</a>
+  <span class="crumb">Part 5 · Next.js · 5b</span>
+  <span class="nav-links">
+    <a id="prev-link" href="#">← Prev</a>
+    <a id="next-link" href="#">Next →</a>
+  </span>
+</nav>
+<article class="lesson">
+<header>
+  <div>
+    <div class="lesson-id">Part 5 · Next.js · 5b</div>
+    <h1>App Router Architecture</h1>
+  </div>
+  <label class="mark-done"><input type="checkbox"> Mark as read</label>
+</header>
+
+<p>The folder structure <em>is</em> the routing.</p>
+
+<pre><code class="language-bash">app/
+  layout.tsx           # shared shell
+  page.tsx             # /
+  loading.tsx          # Suspense fallback for this segment
+  error.tsx            # Error boundary for this segment
+  not-found.tsx
+  (marketing)/         # route group — not in URL
+    about/page.tsx     # /about
+  blog/
+    [slug]/page.tsx    # /blog/:slug
+    [...catchall]/page.tsx
+  api/
+    users/route.ts     # /api/users — route handlers</code></pre>
+
+<h2>Layouts — persistent shells</h2>
+<p>A <code>layout.tsx</code> wraps every page in its segment and persists across navigation (no re-mount). Great for headers, nav, sidebars.</p>
+
+<pre><code class="language-jsx">// app/layout.tsx
+export default function RootLayout({ children }) {
+  return (
+    <html lang="en">
+      <body>
+        <Header />
+        <main>{children}</main>
+      </body>
+    </html>
+  );
+}</code></pre>
+
+<h2>Special files</h2>
+<ul>
+  <li><code>loading.tsx</code> — Suspense boundary. Shows while async data in the page is pending.</li>
+  <li><code>error.tsx</code> — Error boundary. <strong>Must be <code>"use client"</code></strong> — React error boundaries require client-side lifecycle methods.</li>
+  <li><code>template.tsx</code> — Like <code>layout.tsx</code> but <strong>re-mounts on every navigation</strong>. Use when you need effects to re-run on route change (e.g., page-view analytics, scroll reset).</li>
+  <li><code>not-found.tsx</code> — 404 UI for that segment.</li>
+  <li><code>route.ts</code> — REST-style handlers (<code>export async function GET/POST(req) {...}</code>).</li>
+</ul>
+
+<div class="callout warn">
+  <div class="tag">Gotcha</div>
+  <p><code>error.tsx</code> silently breaks if you forget <code>"use client"</code> at the top — Next will throw a build error or show a blank boundary. Always add it.</p>
+</div>
+
+<h2>Parallel routes</h2>
+<p>Render multiple independent pages in the same layout simultaneously. Each slot is a folder prefixed with <code>@</code>.</p>
+
+<pre><code class="language-bash">app/dashboard/
+  layout.tsx          # receives @team and @analytics as props
+  @team/
+    page.tsx
+  @analytics/
+    page.tsx
+  page.tsx</code></pre>
+
+<pre><code class="language-jsx">// app/dashboard/layout.tsx
+export default function DashboardLayout({ children, team, analytics }) {
+  return (
+    &lt;div&gt;
+      {children}
+      &lt;aside&gt;{team}&lt;/aside&gt;
+      &lt;aside&gt;{analytics}&lt;/aside&gt;
+    &lt;/div&gt;
+  );
+}</code></pre>
+
+<p>Each slot fetches and renders independently — handy for dashboards with multiple unrelated data streams.</p>
+
+<h2>Intercepting routes</h2>
+<p>Override what a URL renders <em>within the current layout context</em>, without leaving the page. Prefix the segment with <code>(.)</code> (same level), <code>(..)</code> (one up), or <code>(...)</code> (root).</p>
+
+<pre><code class="language-bash">app/feed/
+  page.tsx
+  @modal/
+    (.)photo/[id]/
+      page.tsx          # intercepts /photo/[id] when navigated from /feed
+app/photo/
+  [id]/page.tsx         # direct URL still shows full page</code></pre>
+
+<p>Classic use case: clicking a photo in a feed opens a modal overlay; sharing the direct URL or refreshing shows the standalone photo page.</p>
+
+<h2>Static params for dynamic segments</h2>
+<p><code>generateStaticParams</code> tells Next which dynamic values to pre-render at build time (SSG for dynamic routes).</p>
+
+<pre><code class="language-typescript">// app/blog/[slug]/page.tsx
+export async function generateStaticParams() {
+  const posts = await db.posts.findMany({ select: { slug: true } });
+  return posts.map((p) =&gt; ({ slug: p.slug }));
+}
+// Next builds /blog/hello-world, /blog/getting-started, etc. at build time.</code></pre>
+
+<h2>Metadata API</h2>
+<p>Export <code>metadata</code> (static) or <code>generateMetadata</code> (dynamic, runs on server) from any <code>page.tsx</code> or <code>layout.tsx</code>.</p>
+
+<pre><code class="language-typescript">// Static — same for all visitors
+export const metadata = {
+  title: "My Blog",
+  description: "Thoughts on software.",
+};
+
+// Dynamic — per request; has access to params and fetched data
+import type { Metadata } from "next";
+
+export async function generateMetadata(
+  { params }: { params: Promise&lt;{ slug: string }&gt; }
+): Promise&lt;Metadata&gt; {
+  const { slug } = await params;
+  const post = await db.posts.findBySlug(slug);
+  return {
+    title: post.title,
+    openGraph: { images: [post.ogImage] },
+  };
+}</code></pre>
+
+<div class="callout py">
+  <div class="tag">Python bridge</div>
+  <p>Django's URL patterns are explicit (<code>path("blog/&lt;slug:slug&gt;/")</code>). Next's file-system routing is implicit — the folder name <em>is</em> the pattern. Parallel routes and intercepting routes have no Django equivalent; they're specific to the client-side navigation model.</p>
+</div>
+
+<footer class="lesson-footer">
+  <a class="prev-card" href="#"><span class="dir">← Previous</span><span class="title"></span></a>
+  <a class="next-card next" href="#"><span class="dir">Next →</span><span class="title"></span></a>
+</footer>
+</article>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js" data-manual></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
+<script>Prism.plugins.autoloader.languages_path='https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/';Prism.highlightAll();</script>
+<script src="../assets/nav.js"></script>
+</body>
+</html>

@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>2a. What TypeScript actually is · JS Curriculum</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body data-lesson="2a">
+<nav class="topbar">
+  <a href="../index.html" class="home">← Index</a>
+  <span class="crumb">Part 2 · TypeScript · 2a</span>
+  <span class="nav-links">
+    <a id="prev-link" href="#">← Prev</a>
+    <a id="next-link" href="#">Next →</a>
+  </span>
+</nav>
+<article class="lesson">
+<header>
+  <div>
+    <div class="lesson-id">Part 2 · TypeScript · 2a</div>
+    <h1>What TypeScript Actually Is</h1>
+  </div>
+  <label class="mark-done"><input type="checkbox"> Mark as read</label>
+</header>
+
+<p>TypeScript is a <em>static type checker</em> that <em>compiles to plain JavaScript</em>. Types are erased at build time — at runtime, there is no TypeScript, only JS.</p>
+
+<pre><code class="language-typescript">// TS source:
+function add(a: number, b: number): number { return a + b; }
+
+// After compilation — types gone:
+function add(a, b) { return a + b; }</code></pre>
+
+<p>This has two consequences. First, <strong>types are a design tool, not a runtime guarantee.</strong> Validate external data at runtime — the TS compiler cannot protect you from malformed JSON. Second, <strong>adoption is incremental.</strong> Rename a <code>.js</code> to <code>.ts</code>, fix errors, move on.</p>
+
+<h2>Run your first compile</h2>
+<pre><code class="language-bash">npm install -D typescript
+npx tsc --init          # generates tsconfig.json
+echo 'const x: number = "oops";' > hello.ts
+npx tsc hello.ts</code></pre>
+
+<p>The compiler prints:</p>
+<pre><code class="language-text">hello.ts:1:7 - error TS2322: Type 'string' is not assignable to type 'number'.
+
+1 const x: number = "oops";
+        ~</code></pre>
+
+<p>Fix it (<code>const x: number = 42;</code>), run <code>npx tsc hello.ts</code> again — it emits <code>hello.js</code> with types stripped. That <code>.js</code> file is what Node (or the browser) actually runs.</p>
+
+<div class="callout good">
+  <div class="tag">Workflow tip</div>
+  <p>In real projects you rarely invoke <code>tsc</code> yourself — Vite, Next.js, or <code>ts-node</code> run it for you. But understanding what it produces is non-negotiable: the emitted JS is what ships.</p>
+</div>
+
+<div class="callout py">
+  <div class="tag">Python bridge</div>
+  <p>Think of Python's type hints + <code>mypy</code>, but <em>enforced</em> and with much deeper inference. Python hints are often aspirational; TS is where teams actually rely on the types. The cultural adoption is more like Rust than like Python annotations.</p>
+</div>
+
+<h2>Structural typing — the mental model</h2>
+<p>TS is <strong>structural</strong>: a type matches if its shape matches, regardless of name. Python / Java / C# are mostly <em>nominal</em> (named).</p>
+
+<pre><code class="language-typescript">type Named = { name: string };
+function greet(x: Named) { return x.name; }
+
+// Works — structural match, no `implements Named` declaration needed
+greet({ name: "P", age: 30 });</code></pre>
+
+<div class="callout review">
+  <div class="tag">Why this matters</div>
+  <p>Structural typing means duck-typed JS idioms (plain objects, options bags) get typed naturally. But it also means <code>{ userId: string }</code> and <code>{ orderId: string }</code> are interchangeable if you don't use "branded types" (see 2f). Be explicit when semantic distinctions matter.</p>
+</div>
+
+<footer class="lesson-footer">
+  <a class="prev-card" href="#"><span class="dir">← Previous</span><span class="title"></span></a>
+  <a class="next-card next" href="#"><span class="dir">Next →</span><span class="title"></span></a>
+</footer>
+</article>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js" data-manual></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
+<script>Prism.plugins.autoloader.languages_path='https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/';Prism.highlightAll();</script>
+<script src="../assets/nav.js"></script>
+</body>
+</html>

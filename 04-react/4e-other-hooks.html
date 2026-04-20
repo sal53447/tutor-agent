@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>4e. Other core hooks · JS Curriculum</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body data-lesson="4e">
+<nav class="topbar">
+  <a href="../index.html" class="home">← Index</a>
+  <span class="crumb">Part 4 · React · 4e</span>
+  <span class="nav-links">
+    <a id="prev-link" href="#">← Prev</a>
+    <a id="next-link" href="#">Next →</a>
+  </span>
+</nav>
+<article class="lesson">
+<header>
+  <div>
+    <div class="lesson-id">Part 4 · React · 4e</div>
+    <h1>Other Core Hooks</h1>
+  </div>
+  <label class="mark-done"><input type="checkbox"> Mark as read</label>
+</header>
+
+<h2><code>useMemo</code> and <code>useCallback</code> — when they're real</h2>
+<p><strong>Not an optimization by default.</strong> They're tools for maintaining referential equality so that child components (wrapped in <code>memo</code>) or downstream hooks don't invalidate. If nothing downstream cares about the reference, they're pure overhead.</p>
+
+<pre><code class="language-jsx">// Worth it — ExpensiveList is wrapped in React.memo; items must be the same ref
+const items = useMemo(() => rawData.filter(activeFilter), [rawData, activeFilter]);
+
+// Worth it — callback is in an effect's deps, we don't want to re-run the effect
+const onSubmit = useCallback((data) => save(data, apiKey), [apiKey]);
+
+// NOT worth it — nothing downstream uses referential equality
+const doubled = useMemo(() => count * 2, [count]);  // just compute inline</code></pre>
+
+<h2><code>useRef</code> — two jobs</h2>
+<pre><code class="language-jsx">// 1. DOM access
+const inputRef = useRef(null);
+useEffect(() => { inputRef.current.focus(); }, []);
+return <input ref={inputRef} />;
+
+// 2. Mutable instance variable — doesn't cause re-render
+const intervalRef = useRef();
+useEffect(() => {
+  intervalRef.current = setInterval(tick, 1000);
+  return () => clearInterval(intervalRef.current);
+}, []);</code></pre>
+
+<h2><code>useContext</code> — global-ish state</h2>
+<pre><code class="language-jsx">const ThemeCtx = createContext("light");
+function App() {
+  return (
+    <ThemeCtx.Provider value="dark">
+      <Page />
+    </ThemeCtx.Provider>
+  );
+}
+function Page() {
+  const theme = useContext(ThemeCtx);
+  return <div data-theme={theme}>…</div>;
+}</code></pre>
+
+<div class="callout warn">
+  <div class="tag">Context perf trap</div>
+  <p>Every consumer re-renders when the context value reference changes. If your context value is an inline <code>{value, setValue}</code> object, every Provider render creates a new object and invalidates every consumer. Memoize the value. For state that updates often, <strong>don't use Context</strong>; reach for Zustand or similar.</p>
+</div>
+
+<h2>Newer hooks worth knowing</h2>
+<ul>
+  <li><code>useId</code> — stable unique ID, SSR-safe. Use for form label associations.</li>
+  <li><code>useTransition</code> — mark a state update as non-urgent. UI stays responsive during expensive renders.</li>
+  <li><code>useDeferredValue</code> — render a stale value while preparing a fresh one.</li>
+  <li><code>useOptimistic</code> — optimistic UI state paired with server actions (Next.js).</li>
+</ul>
+
+<h2><code>useTransition</code> — keeping the UI responsive</h2>
+<p>Wrap an expensive state update in <code>startTransition</code>. React can interrupt the transition render if higher-priority work (keystrokes, clicks) arrives. The <code>isPending</code> flag lets you show a loading indicator without a full spinner.</p>
+<pre><code class="language-jsx">function SearchPage() {
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState([]);
+  const [isPending, startTransition] = useTransition();
+
+  function handleChange(e) {
+    const q = e.target.value;
+    setQuery(q);                         // urgent — update input immediately
+    startTransition(() => {
+      setResults(expensiveSearch(q));    // non-urgent — can be interrupted
+    });
+  }
+
+  return (
+    <>
+      <input value={query} onChange={handleChange} />
+      {isPending ? <span>Searching…</span> : <ResultList items={results} />}
+    </>
+  );
+}</code></pre>
+
+<h2><code>useDeferredValue</code> — stale-while-fresh</h2>
+<p>Accepts a value; returns a deferred copy that lags behind while a fresh render is in progress. Useful when you don't own the state update (e.g., it comes from a parent) but still want to deprioritize the expensive downstream render.</p>
+<pre><code class="language-jsx">function FilteredList({ query }) {
+  const deferred = useDeferredValue(query);
+  // deferred === previous query while fresh query is rendering
+  const filtered = useMemo(() => bigList.filter(i => i.includes(deferred)), [deferred]);
+  return <List items={filtered} />;
+}</code></pre>
+
+<h2><code>useOptimistic</code> — immediate feedback before the server responds</h2>
+<p>Shows optimistic state instantly; reverts to the real state once the server action resolves (success or failure).</p>
+<pre><code class="language-jsx">function TodoList({ todos, addTodo }) {
+  const [optimisticTodos, addOptimistic] = useOptimistic(
+    todos,
+    (current, newTodo) => [...current, { ...newTodo, pending: true }]
+  );
+
+  async function handleAdd(formData) {
+    const title = formData.get("title");
+    addOptimistic({ id: crypto.randomUUID(), title });  // instant
+    await addTodo(title);                                // real server call
+  }
+
+  return (
+    <form action={handleAdd}>
+      <ul>
+        {optimisticTodos.map(t => (
+          <li key={t.id} style={{ opacity: t.pending ? 0.5 : 1 }}>{t.title}</li>
+        ))}
+      </ul>
+      <input name="title" /><button>Add</button>
+    </form>
+  );
+}</code></pre>
+
+<h2><code>use()</code> — React 19's resource unwrapper</h2>
+<p><code>use()</code> is unlike other hooks: it can be called conditionally and inside loops. It does two things:</p>
+<ul>
+  <li><strong>Unwrap a Promise</strong> — suspends the component until the promise resolves (requires a <code>&lt;Suspense&gt;</code> boundary above).</li>
+  <li><strong>Unwrap a Context</strong> — same as <code>useContext</code> but usable conditionally.</li>
+</ul>
+<pre><code class="language-jsx">import { use, Suspense } from "react";
+
+// Unwrap a promise (component suspends while pending)
+function UserCard({ userPromise }) {
+  const user = use(userPromise);   // throws if pending → Suspense catches it
+  return <h2>{user.name}</h2>;
+}
+
+// Usage: pass the promise in, don't await it
+function Page() {
+  const promise = fetchUser(42);   // initiate fetch outside the suspending component
+  return (
+    <Suspense fallback={<Skeleton />}>
+      <UserCard userPromise={promise} />
+    </Suspense>
+  );
+}
+
+// Unwrap context conditionally (valid — use() can be in an if)
+function MaybeThemed({ themed }) {
+  const theme = themed ? use(ThemeCtx) : "light";
+  return <div data-theme={theme} />;
+}</code></pre>
+<div class="callout warn">
+  <div class="tag">Create the promise outside the rendering component</div>
+  <p>If you write <code>const user = use(fetchUser(id))</code> directly, a new promise is created every render → infinite suspension loop. Create the promise in a parent, a cache, or a Server Component, then pass it down.</p>
+</div>
+
+<footer class="lesson-footer">
+  <a class="prev-card" href="#"><span class="dir">← Previous</span><span class="title"></span></a>
+  <a class="next-card next" href="#"><span class="dir">Next →</span><span class="title"></span></a>
+</footer>
+</article>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js" data-manual></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
+<script>Prism.plugins.autoloader.languages_path='https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/';Prism.highlightAll();</script>
+<script src="../assets/nav.js"></script>
+</body>
+</html>

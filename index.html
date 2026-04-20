@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>JS / TS / Express / React / Next.js — A Curriculum for Python Engineers</title>
+<link rel="stylesheet" href="assets/styles.css">
+<link rel="icon" href="assets/favicon.ico">
+</head>
+<body>
+<section class="index-hero">
+  <h1>A curriculum for Python engineers learning JS, TS, Express, React, and Next.js</h1>
+  <p class="lede">Fifty-three lessons across five parts. Written for engineers with real Python / data experience who want the idioms, trade-offs, and production patterns — not a beginner tutorial.</p>
+  <p class="arc">JavaScript is the runtime model — values, scope, async, and the event loop — and every later part assumes you understand it. TypeScript adds static correctness on top of those same object shapes. Express applies both on the server at production depth: routing, auth, databases, and observability. React is the dominant UI layer and expects JS and TS fluency. Next.js then unifies the server and client into one framework, drawing on all four parts simultaneously.</p>
+  <p class="prereqs"><strong>Prerequisites:</strong> comfort with a terminal (CLI), git, a code editor, and a conceptual grasp of HTML, CSS, and HTTP — you don't need to be an expert, but the lessons don't explain these from scratch.</p>
+  <p class="meta">Each lesson lives in its own page. Your progress is tracked locally in your browser. Use <kbd>J</kbd> / <kbd>K</kbd> or arrow keys to move between lessons while reading.</p>
+  <a id="start-cta" class="start-cta" href="01-javascript/1a-language-model.html">Start with lesson 1a &rarr;</a>
+</section>
+
+<div class="index-controls">
+  <input type="search" id="search" placeholder="Search lessons…" autocomplete="off">
+  <div class="progress-wrap">
+    <span class="progress-label" id="progress-label">0 / 53 lessons read</span>
+    <div class="progress-bar"><span id="progress-fill"></span></div>
+  </div>
+  <button id="reset-progress" title="Reset progress">Reset</button>
+</div>
+
+<div id="index-parts" class="index-parts"></div>
+
+<script src="assets/nav.js"></script>
+</body>
+</html>

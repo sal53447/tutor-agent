@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>3d. Validation &amp; serialization · JS Curriculum</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body data-lesson="3d">
+<nav class="topbar">
+  <a href="../index.html" class="home">← Index</a>
+  <span class="crumb">Part 3 · Express · 3d</span>
+  <span class="nav-links">
+    <a id="prev-link" href="#">← Prev</a>
+    <a id="next-link" href="#">Next →</a>
+  </span>
+</nav>
+<article class="lesson">
+<header>
+  <div>
+    <div class="lesson-id">Part 3 · Express · 3d</div>
+    <h1>Validation &amp; Serialization</h1>
+  </div>
+  <label class="mark-done"><input type="checkbox"> Mark as read</label>
+</header>
+
+<p><strong>Never trust client input.</strong> The TS compiler doesn't run at runtime; a malicious or buggy client can send anything. Zod (or Valibot, or Joi) validates at runtime and produces typed, sanitized data.</p>
+
+<pre><code class="language-typescript">import { z } from "zod";
+
+const CreateUser = z.object({
+  email: z.string().email(),
+  password: z.string().min(8).max(200),
+  age: z.coerce.number().int().positive().optional(),
+});
+
+// Extract the TypeScript type from the schema — single source of truth
+type CreateUserInput = z.infer<typeof CreateUser>;
+// Equivalent to: { email: string; password: string; age?: number }
+
+function validate<T extends z.ZodTypeAny>(schema: T) {
+  return (req, res, next) => {
+    const r = schema.safeParse(req.body);
+    if (!r.success) return res.status(400).json({ issues: r.error.issues });
+    req.body = r.data;   // now typed and clean
+    next();
+  };
+}
+
+app.post("/users", validate(CreateUser), controllers.createUser);</code></pre>
+
+<h2>Validating params and query strings</h2>
+<pre><code class="language-typescript">// req.params — usually a numeric/UUID ID
+const UserIdParam = z.object({ id: z.string().uuid() });
+
+// req.query — everything arrives as string; coerce explicitly
+const ListUsersQuery = z.object({
+  page:   z.coerce.number().int().positive().default(1),
+  limit:  z.coerce.number().int().min(1).max(100).default(20),
+  search: z.string().max(100).optional(),
+});
+
+// Generic validate() extended to cover source
+function validateSource<T extends z.ZodTypeAny>(
+  schema: T,
+  source: "body" | "params" | "query",
+) {
+  return (req, res, next) => {
+    const r = schema.safeParse(req[source]);
+    if (!r.success) return res.status(400).json({ issues: r.error.issues });
+    req[source] = r.data;
+    next();
+  };
+}
+
+usersRouter.get(
+  "/:id",
+  validateSource(UserIdParam, "params"),
+  requireAuth,
+  ctrl.getUser,
+);
+
+usersRouter.get(
+  "/",
+  validateSource(ListUsersQuery, "query"),
+  ctrl.listUsers,
+);</code></pre>
+
+<h2>Response serialization — never return raw DB rows</h2>
+<pre><code class="language-typescript">// DB model has: id, email, passwordHash, createdAt, deletedAt, stripeCustomerId, ...
+// We want to expose only a safe subset to the client.
+
+const UserResponse = CreateUser.pick({ email: true }).extend({
+  id:        z.string().uuid(),
+  createdAt: z.string().datetime(),
+});
+type UserResponse = z.infer<typeof UserResponse>;
+
+// In the controller:
+res.json(UserResponse.parse(user));  // strips any field not in the schema
+// If the DB row ever gains a new sensitive column, it's automatically excluded.</code></pre>
+
+<div class="callout py">
+  <div class="tag">Python bridge</div>
+  <p>Zod schemas are the TypeScript equivalent of Pydantic models. <code>z.infer&lt;typeof Schema&gt;</code> is the same concept as a Pydantic model class being both a validator and a type annotation. <code>schema.parse()</code> = <code>Model.model_validate()</code>; <code>schema.safeParse()</code> = <code>Model.model_validate()</code> with <code>raise_on_error=False</code>. Response schemas = FastAPI's <code>response_model=</code> parameter.</p>
+</div>
+
+<div class="callout warn">
+  <div class="tag">Valibot — size-conscious alternative</div>
+  <p>If bundle size matters (e.g., edge functions, client-side validation), Valibot offers near-identical ergonomics at ~7 KB vs Zod's ~57 KB. The API differs slightly but the concepts — schemas, inference, parse vs safeParse — are the same.</p>
+</div>
+
+<div class="callout review">
+  <div class="tag">Review flags</div>
+  <ul>
+    <li><code>req.body.foo</code> read directly without a validator. Reject.</li>
+    <li>Using <code>any</code> on the handler input. Validate; infer the type from the schema.</li>
+    <li>Validation scattered across routes instead of centralized in schemas. Build a schema registry.</li>
+    <li>Serializing raw DB rows (including <code>password_hash</code>, internal columns) in responses. Use a response schema and <code>pick</code>.</li>
+    <li><code>req.params.id</code> used as a raw string in a DB query without UUID validation. A client that sends <code>"../../etc/passwd"</code> won't succeed here but validating params prevents unexpected behavior in path-sensitive logic.</li>
+    <li><code>req.query.limit</code> passed as a string directly to <code>.take()</code>. Coerce with <code>z.coerce.number()</code> — SQL drivers don't coerce for you.</li>
+  </ul>
+</div>
+
+<details class="quiz">
+  <summary>Self-check — two questions</summary>
+  <div class="q">1. A colleague writes <code>type CreateUserInput = { email: string; password: string }</code> in a separate file and imports it in the controller. You have a Zod <code>CreateUser</code> schema. What's the problem?</div>
+  <p>Two sources of truth. If the schema changes (e.g., adds a required <code>role</code> field), the type won't update automatically. Use <code>type CreateUserInput = z.infer&lt;typeof CreateUser&gt;</code> — one source.</p>
+  <div class="q">2. <code>UserResponse.parse(user)</code> is in the controller. A DB column named <code>internalScore</code> gets added to the Prisma model. Is it safe to send without changing the controller?</div>
+  <p>Yes — <code>.parse()</code> strips any field not declared in the schema. The new column is silently excluded. This is the key advantage over spread/manual deletion.</p>
+</details>
+
+<footer class="lesson-footer">
+  <a class="prev-card" href="#"><span class="dir">← Previous</span><span class="title"></span></a>
+  <a class="next-card next" href="#"><span class="dir">Next →</span><span class="title"></span></a>
+</footer>
+</article>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js" data-manual></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
+<script>Prism.plugins.autoloader.languages_path='https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/';Prism.highlightAll();</script>
+<script src="../assets/nav.js"></script>
+</body>
+</html>

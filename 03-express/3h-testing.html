@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>3h. Testing — unit, integration, supertest · JS Curriculum</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body data-lesson="3h">
+<nav class="topbar">
+  <a href="../index.html" class="home">← Index</a>
+  <span class="crumb">Part 3 · Express · 3h</span>
+  <span class="nav-links">
+    <a id="prev-link" href="#">← Prev</a>
+    <a id="next-link" href="#">Next →</a>
+  </span>
+</nav>
+<article class="lesson">
+<header>
+  <div>
+    <div class="lesson-id">Part 3 · Express · 3h</div>
+    <h1>Testing — Unit, Integration, Supertest</h1>
+  </div>
+  <label class="mark-done"><input type="checkbox"> Mark as read</label>
+</header>
+
+<p>For new projects: use <strong>Vitest</strong>. It's faster than Jest, supports ESM natively, and has Jest-compatible APIs so migration is mechanical. Jest is fine if the project is already using it — no need to switch mid-flight.</p>
+
+<h2>Layers = testing strategy</h2>
+<ul>
+  <li><strong>Services</strong> — pure logic, easy unit tests. Mock the repo, test branches.</li>
+  <li><strong>Repositories</strong> — test against a real DB (testcontainers or a local Postgres). Don't mock.</li>
+  <li><strong>Routes</strong> — integration test with <code>supertest</code>. Start the app, hit endpoints, assert responses.</li>
+</ul>
+
+<pre><code class="language-typescript">import request from "supertest";
+import { createApp } from "../src/app";
+
+test("POST /users creates a user", async () => {
+  const app = createApp({ db: testDb, mailer: fakeMailer });
+  const res = await request(app)
+    .post("/users")
+    .send({ email: "a@b.c", password: "hunter22!" });
+  expect(res.status).toBe(201);
+  expect(res.body.id).toBeDefined();
+});</code></pre>
+
+<h2>Testing auth-protected routes</h2>
+<pre><code class="language-typescript">// Helper — mint a real JWT the same way the app does
+import { signToken } from "../src/middleware/auth";
+
+async function authHeader(userId = "test-user-id", role = "user") {
+  const token = await signToken({ sub: userId, role });
+  return { Authorization: `Bearer ${token}` };
+}
+
+test("GET /users/:id requires auth", async () => {
+  const app = createApp({ db: testDb });
+  const res = await request(app).get("/users/some-id");
+  expect(res.status).toBe(401);
+});
+
+test("GET /users/:id returns user when authenticated", async () => {
+  const app = createApp({ db: testDb });
+  await testDb.user.create({ data: { id: "some-id", email: "a@b.c", passwordHash: "x" } });
+  const res = await request(app)
+    .get("/users/some-id")
+    .set(await authHeader("some-id", "user"));
+  expect(res.status).toBe(200);
+  expect(res.body.email).toBe("a@b.c");
+  expect(res.body.passwordHash).toBeUndefined();  // confirm serialization strip
+});
+
+// Session-based auth: set the cookie instead
+test("GET /profile with session cookie", async () => {
+  const agent = request.agent(app);  // agent persists cookies across requests
+  await agent.post("/auth/login").send({ email: "a@b.c", password: "hunter22!" });
+  const res = await agent.get("/profile");
+  expect(res.status).toBe(200);
+});</code></pre>
+
+<h2>Coverage and CI</h2>
+<pre><code class="language-bash"># Run once with coverage report
+npx vitest run --coverage
+
+# vitest.config.ts — enforce a floor
+coverage: {
+  thresholds: { lines: 80, functions: 80 },
+  exclude: ["src/db/schema.ts", "src/config/env.ts"],
+}</code></pre>
+
+<pre><code class="language-yaml"># .github/workflows/test.yml
+- name: Test
+  run: npx vitest run --coverage</code></pre>
+
+<div class="callout py">
+  <div class="tag">Python bridge</div>
+  <p>supertest ≈ <code>httpx.AsyncClient(app=app)</code> in FastAPI or <code>TestClient(app)</code> in Starlette/Flask. Both create an in-process HTTP client that hits the real application stack without binding a port. Mocking the DB at the service boundary ≈ pytest fixtures with <code>monkeypatch</code> or <code>unittest.mock.patch</code>. The test-DB transaction rollback strategy has a direct analogue: pytest's <code>db_session</code> fixture that rolls back after each test.</p>
+</div>
+
+<div class="callout good">
+  <div class="tag">Test-DB strategies</div>
+  <ul>
+    <li><strong>Wrap-each-test-in-a-transaction-and-rollback</strong>. Fastest. Doesn't support code that commits internally.</li>
+    <li><strong>Truncate-tables-between-tests</strong>. Simple. Works with commits.</li>
+    <li><strong>Spin-up-fresh-container-per-suite</strong>. Isolation. Slower.</li>
+  </ul>
+</div>
+
+<details class="quiz">
+  <summary>Self-check — two questions</summary>
+  <div class="q">1. A service test mocks the repository and the test passes. Later, the real repository method is renamed but the mock still uses the old name. What's the failure mode?</div>
+  <p>The test continues passing against the mock while production fails at runtime — the classic mock/reality divergence. Remedies: (a) repository integration tests that verify the real method signature; (b) TypeScript typed mocks (<code>vi.mocked()</code>) that fail to compile if the mock no longer matches the type.</p>
+  <div class="q">2. Why does the auth-route test use <code>signToken()</code> (the real app function) rather than a hard-coded token string?</div>
+  <p>If the signing algorithm, secret, or claims change, a hard-coded token becomes stale and the test fails for the wrong reason (bad fixture, not a real regression). Using <code>signToken()</code> means the test always produces a token that matches whatever the current verification logic expects.</p>
+</details>
+
+<footer class="lesson-footer">
+  <a class="prev-card" href="#"><span class="dir">← Previous</span><span class="title"></span></a>
+  <a class="next-card next" href="#"><span class="dir">Next →</span><span class="title"></span></a>
+</footer>
+</article>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js" data-manual></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
+<script>Prism.plugins.autoloader.languages_path='https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/';Prism.highlightAll();</script>
+<script src="../assets/nav.js"></script>
+</body>
+</html>

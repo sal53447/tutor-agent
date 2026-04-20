@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>5f. Middleware &amp; edge runtime · JS Curriculum</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body data-lesson="5f">
+<nav class="topbar">
+  <a href="../index.html" class="home">← Index</a>
+  <span class="crumb">Part 5 · Next.js · 5f</span>
+  <span class="nav-links">
+    <a id="prev-link" href="#">← Prev</a>
+    <a id="next-link" href="#">Next →</a>
+  </span>
+</nav>
+<article class="lesson">
+<header>
+  <div>
+    <div class="lesson-id">Part 5 · Next.js · 5f</div>
+    <h1>Middleware &amp; Edge Runtime</h1>
+  </div>
+  <label class="mark-done"><input type="checkbox"> Mark as read</label>
+</header>
+
+<pre><code class="language-typescript">// middleware.ts at project root
+import { NextResponse } from "next/server";
+
+export function middleware(req) {
+  const token = req.cookies.get("session")?.value;
+  if (!token && req.nextUrl.pathname.startsWith("/dashboard")) {
+    return NextResponse.redirect(new URL("/login", req.url));
+  }
+}
+
+export const config = {
+  matcher: ["/dashboard/:path*", "/api/private/:path*"],
+};</code></pre>
+
+<p>Middleware runs on every matched request <em>before</em> routing. Great for auth gating, redirects, rewrites, A/B bucketing. Runs on Edge Runtime (V8 isolate) — no Node APIs, no heavy dependencies, no long-lived work. Keep it fast.</p>
+
+<h2>Advanced <code>matcher</code> config</h2>
+<p>The <code>matcher</code> array accepts path strings or objects with <code>source</code>, <code>has</code>, and <code>missing</code> for conditional matching.</p>
+
+<pre><code class="language-typescript">export const config = {
+  matcher: [
+    // String shorthand
+    "/dashboard/:path*",
+    // Object form: match only when the header is present
+    {
+      source: "/api/:path*",
+      has: [{ type: "header", key: "x-api-key" }],
+    },
+    // Object form: skip when a cookie is set (bypass for internal tools)
+    {
+      source: "/:path*",
+      missing: [{ type: "cookie", key: "bypass-middleware" }],
+    },
+  ],
+};</code></pre>
+
+<h2>Auth in middleware — verify JWT directly</h2>
+<p>Don't import your full Auth.js config into middleware — it pulls in DB drivers that won't run on the Edge. Verify the JWT with <code>jose</code> (a pure-JS JOSE library) instead.</p>
+
+<pre><code class="language-typescript">// middleware.ts
+import { jwtVerify } from "jose";
+import { NextResponse } from "next/server";
+
+const secret = new TextEncoder().encode(process.env.AUTH_SECRET!);
+
+export async function middleware(req) {
+  const token = req.cookies.get("session")?.value;
+
+  if (!token) {
+    return NextResponse.redirect(new URL("/login", req.url));
+  }
+
+  try {
+    await jwtVerify(token, secret);   // throws if invalid / expired
+    return NextResponse.next();
+  } catch {
+    return NextResponse.redirect(new URL("/login", req.url));
+  }
+}
+
+export const config = { matcher: ["/dashboard/:path*"] };</code></pre>
+
+<h2>Rate limiting example</h2>
+<p>Counter stored in Upstash Redis (HTTP-based, works in Edge). Returns 429 when a client exceeds the limit.</p>
+
+<pre><code class="language-typescript">// middleware.ts
+import { Redis } from "@upstash/redis/cloudflare";
+import { NextResponse } from "next/server";
+
+const redis = Redis.fromEnv();
+const LIMIT = 60;  // requests per window
+const WINDOW = 60; // seconds
+
+export async function middleware(req) {
+  const ip = req.headers.get("x-forwarded-for") ?? "anon";
+  const key = `rate:${ip}`;
+
+  const count = await redis.incr(key);
+  if (count === 1) await redis.expire(key, WINDOW);
+
+  if (count &gt; LIMIT) {
+    return new NextResponse("Too Many Requests", { status: 429 });
+  }
+  return NextResponse.next();
+}
+
+export const config = { matcher: ["/api/:path*"] };</code></pre>
+
+<div class="callout warn">
+  <div class="tag">Edge constraints to remember</div>
+  <ul>
+    <li>No Node built-ins (<code>fs</code>, <code>path</code>, most of <code>node:*</code>).</li>
+    <li>No long-lived connections (DB drivers usually need an HTTP-based alternative like Neon serverless or Prisma Accelerate).</li>
+    <li><strong>CPU time limit</strong> (~50ms on Vercel Edge), not a wall-clock timeout. Middleware must finish fast; it blocks every request on every matched path. The "30s" figure in older docs refers to Edge Function wall time, not middleware CPU budget.</li>
+    <li>Packages with native bindings (<code>bcrypt</code>, <code>sharp</code>) won't run. Use <code>bcryptjs</code> or move to a Node route.</li>
+    <li>Don't run full Auth.js in middleware — verify JWTs with <code>jose</code> directly (see example above).</li>
+  </ul>
+</div>
+
+<footer class="lesson-footer">
+  <a class="prev-card" href="#"><span class="dir">← Previous</span><span class="title"></span></a>
+  <a class="next-card next" href="#"><span class="dir">Next →</span><span class="title"></span></a>
+</footer>
+</article>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js" data-manual></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
+<script>Prism.plugins.autoloader.languages_path='https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/';Prism.highlightAll();</script>
+<script src="../assets/nav.js"></script>
+</body>
+</html>

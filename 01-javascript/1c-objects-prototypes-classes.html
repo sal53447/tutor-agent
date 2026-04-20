@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>1c. Objects, prototypes, classes · JS Curriculum</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body data-lesson="1c">
+<nav class="topbar">
+  <a href="../index.html" class="home">← Index</a>
+  <span class="crumb">Part 1 · JavaScript · 1c</span>
+  <span class="nav-links">
+    <a id="prev-link" href="#">← Prev</a>
+    <a id="next-link" href="#">Next →</a>
+  </span>
+</nav>
+<article class="lesson">
+<header>
+  <div>
+    <div class="lesson-id">Part 1 · JavaScript · 1c</div>
+    <h1>Objects, Prototypes, and Classes</h1>
+  </div>
+  <label class="mark-done"><input type="checkbox"> Mark as read</label>
+</header>
+
+<p>JS has no "dict" and no "class" in the Python sense. Everything non-primitive is an <em>object</em> — a property bag with a chain of parent prototypes. <code>class</code> is syntactic sugar over the same mechanism.</p>
+
+<h2>Object literals — the everyday workhorse</h2>
+<pre><code class="language-javascript">const user = {
+  name: "Pouyan",
+  age: 30,
+  greet() { return `hi, ${this.name}`; },   // shorthand method
+  [dynamicKey]: "value",                      // computed key
+  ...otherObj,                                // spread-copy
+};
+
+// Access:
+user.name           // dot
+user["name"]        // bracket
+user?.address?.city // nil-safe chain
+
+// Iterate:
+Object.keys(user);    // string keys
+Object.values(user);
+Object.entries(user); // [[k, v], ...] — use with for...of</code></pre>
+
+<h2>The prototype chain</h2>
+<p>Every object has an internal link (<code>[[Prototype]]</code>) to another object. Property lookup walks this chain. The chain ends at <code>Object.prototype</code>, then <code>null</code>.</p>
+
+<pre><code class="language-javascript">const parent = { hello() { return "hi"; } };
+const child = Object.create(parent);
+child.hello();   // "hi" — walked up to parent
+
+Object.getPrototypeOf(child) === parent;  // true</code></pre>
+
+<h2>Classes — sugar, not a new concept</h2>
+<pre><code class="language-javascript">class User {
+  #password;                    // private field (real private since ES2022)
+  static defaultRole = "guest"; // static field
+
+  constructor(name) {
+    this.name = name;
+  }
+  greet() { return `hi, ${this.name}`; }
+  get upperName() { return this.name.toUpperCase(); }   // computed property
+
+  static fromRow(row) { return new User(row.name); }    // factory
+}
+
+class Admin extends User {
+  constructor(name) { super(name); this.role = "admin"; }
+}</code></pre>
+
+<div class="callout py">
+  <div class="tag">Python bridge</div>
+  <p>JS classes look like Python classes but are subtly different. Python methods are "just functions stored on the class"; JS methods go on the prototype. Python has multiple inheritance and MRO; JS has single inheritance via <code>extends</code>. For "data classes," Python has <code>@dataclass</code>; JS just uses plain objects or TS <code>interface</code>s. Use classes when you have real invariants, methods, or polymorphism — otherwise a plain object is often cleaner.</p>
+</div>
+
+<h2>Destructuring</h2>
+<p>Destructuring pulls values out of objects or arrays into bindings. You'll see it everywhere — function parameters, imports, React hooks.</p>
+
+<pre><code class="language-javascript">// Object destructuring
+const { name, age } = user;
+const { name: userName, role = "guest" } = user;  // rename + default
+const { address: { city } } = user;               // nested
+
+// Rest in objects
+const { name, ...rest } = user;  // rest gets remaining own enumerable keys
+
+// Array destructuring
+const [first, second] = [10, 20, 30];
+const [, second2] = [10, 20];    // skip first
+const [head, ...tail] = arr;     // rest in arrays
+
+// Function parameter form — the most common use in practice
+function greet({ name, role = "guest" }) {
+  return `${name} (${role})`;
+}
+greet({ name: "Pouyan" });         // "Pouyan (guest)"</code></pre>
+
+<div class="callout py">
+  <div class="tag">Python bridge</div>
+  <p>Object destructuring is roughly Python's <code>name, age = user["name"], user["age"]</code> but cleaner. Array destructuring is Python's tuple unpacking: <code>first, *rest = items</code>. The default-value syntax (<code>= "guest"</code>) only fires on <code>undefined</code>, not on <code>null</code> — a common gotcha.</p>
+</div>
+
+<h2>Object spread and <code>Object.assign</code></h2>
+<p>Spread copies own enumerable properties shallowly. "Last write wins" when keys conflict — put overrides last.</p>
+
+<pre><code class="language-javascript">const defaults = { color: "blue", size: "medium", weight: 1 };
+const overrides = { color: "red" };
+
+const config = { ...defaults, ...overrides };
+// { color: "red", size: "medium", weight: 1 }
+
+// Object.assign is the pre-ES2018 equivalent (mutates the first argument):
+const config2 = Object.assign({}, defaults, overrides);
+
+// Common patterns:
+const updated = { ...user, email: "new@example.com" }; // "update" a field
+const clone   = { ...obj };                             // shallow copy</code></pre>
+
+<div class="callout warn">
+  <div class="tag">Shallow only</div>
+  <p>Both spread and <code>Object.assign</code> are one level deep. Nested objects are still shared by reference. For deep merging reach for a library (<code>lodash.merge</code>) or write it explicitly.</p>
+</div>
+
+<h2><code>hasOwnProperty</code> vs <code>in</code></h2>
+<pre><code class="language-javascript">const obj = { a: 1 };
+
+"a" in obj                    // true — own OR inherited
+"toString" in obj             // true — inherited from Object.prototype
+
+obj.hasOwnProperty("a")       // true — own only
+obj.hasOwnProperty("toString") // false
+
+// Safer alias (avoids prototype-shadowing edge cases):
+Object.hasOwn(obj, "a");      // true — ES2022, prefer this</code></pre>
+
+<p>Use <code>Object.hasOwn</code> (ES2022) or <code>Object.prototype.hasOwnProperty.call(obj, key)</code> when you need to know if a key was explicitly set on the object — not inherited. Use <code>in</code> when you want to check the full prototype chain (e.g., "does this object support this method?").</p>
+
+<div class="callout review">
+  <div class="tag">Code review</div>
+  <ul>
+    <li>Don't inherit deeply. The React and Node ecosystems are "composition over inheritance" — two levels max is a good rule.</li>
+    <li>Private fields (<code>#foo</code>) are real privacy, enforced at runtime. Use them over the old <code>_foo</code> naming convention.</li>
+    <li><code>Object.create(null)</code> gives you a prototype-free "pure map" — useful when keys might collide with <code>__proto__</code> / <code>toString</code>, e.g., caches keyed by user input. A <code>Map</code> is usually cleaner.</li>
+  </ul>
+</div>
+
+<footer class="lesson-footer">
+  <a class="prev-card" href="#"><span class="dir">← Previous</span><span class="title"></span></a>
+  <a class="next-card next" href="#"><span class="dir">Next →</span><span class="title"></span></a>
+</footer>
+</article>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js" data-manual></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
+<script>Prism.plugins.autoloader.languages_path='https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/';Prism.highlightAll();</script>
+<script src="../assets/nav.js"></script>
+</body>
+</html>

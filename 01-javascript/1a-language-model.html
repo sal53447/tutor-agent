@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>1a. Language Model · JS Curriculum</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+<link rel="stylesheet" href="../assets/styles.css">
+</head>
+<body data-lesson="1a">
+<nav class="topbar">
+  <a href="../index.html" class="home">← Index</a>
+  <span class="crumb">Part 1 · JavaScript · 1a</span>
+  <span class="nav-links">
+    <a id="prev-link" href="#">← Prev</a>
+    <a id="next-link" href="#">Next →</a>
+  </span>
+</nav>
+<article class="lesson">
+<header>
+  <div>
+    <div class="lesson-id">Part 1 · JavaScript · 1a</div>
+    <h1>The Language Model — history, runtime, values, equality</h1>
+  </div>
+  <label class="mark-done"><input type="checkbox"> Mark as read</label>
+</header>
+
+<p>This lesson makes you fluent in the <em>shape</em> of JS — the runtime, the value system, the equality rules, the legacy corners. Everything else (functions, async, React, Next) builds on this.</p>
+
+<h2>The 5-minute history</h2>
+<p>Brendan Eich designed JS in 10 days at Netscape in 1995. Originally Mocha, then LiveScript, then renamed to JavaScript to ride Java's marketing. The languages are unrelated. The spec is now called ECMAScript and updates yearly.</p>
+<p>ES2015 ("ES6") was the inflection point — <code>let</code>, <code>const</code>, arrow functions, classes, Promises, modules, destructuring, template literals. Modern JS is a legitimately good language if you stick to the post-2015 subset.</p>
+
+<div class="callout py">
+  <div class="tag">Python bridge</div>
+  <p>Python was designed deliberately by one person over years. JS was designed in 10 days, then governed by committee under a strict "don't break the web" constraint. This explains most of the "weird JS" you'll encounter — it's fossils from that rushed design that cannot be removed without breaking existing websites.</p>
+</div>
+
+<h2>The runtime model</h2>
+<p>JavaScript is single-threaded, event-loop-based, dynamically typed, garbage-collected, and JIT-compiled. Only one thing runs at a time. All concurrency happens through a task queue (covered in depth in 1f).</p>
+
+<div class="callout py">
+  <div class="tag">Python bridge</div>
+  <p>Python is also single-threaded (GIL) and dynamically typed. The key difference: Python uses threads with <code>asyncio</code> as an opt-in, while JS is non-blocking by default. If you block the JS thread, the entire program freezes — this shapes every JS API toward async.</p>
+</div>
+
+<h2>Values vs references: two buckets</h2>
+<p>There are exactly two kinds of things in JS. The seven primitives (<code>string</code>, <code>number</code>, <code>boolean</code>, <code>null</code>, <code>undefined</code>, <code>symbol</code>, <code>bigint</code>) are passed and compared by value. Everything else — arrays, functions, dates, objects, Maps — is passed and compared by reference.</p>
+
+<p><code>typeof null === "object"</code> — a JS fossil from 1995. <code>null</code> is a primitive, but the type tag was never fixed. Check for null explicitly with <code>=== null</code>, not <code>typeof</code>.</p>
+<p><code>symbol</code> creates a guaranteed-unique key: <code>const id = Symbol("id")</code>. Two calls with the same description are never equal. Symbols power the iterator protocol (<code>Symbol.iterator</code>) and other well-known hooks the runtime uses to extend built-in behaviour.</p>
+
+<pre><code class="language-javascript">// Primitives: value equality
+"hello" === "hello"   // true
+42 === 42             // true
+
+// Objects: reference equality only
+{ a: 1 } === { a: 1 } // false — two distinct objects
+[1, 2] === [1, 2]     // false
+
+const x = { a: 1 };
+const y = x;
+x === y               // true — same reference</code></pre>
+
+<div class="callout warn">
+  <div class="tag">Gotcha</div>
+  <p>JS has <strong>no built-in deep equality</strong>. You write it yourself or reach for <code>lodash.isEqual</code> / <code>assert.deepStrictEqual</code>. Python's <code>==</code> on lists/dicts does value equality; JS's <code>===</code> on objects does not.</p>
+</div>
+
+<h2>Equality: <code>==</code>, <code>===</code>, <code>Object.is</code></h2>
+<p>Three operators, all different. <code>==</code> performs type coercion and produces pretzel logic. <code>===</code> is strict — no coercion. <code>Object.is</code> is like <code>===</code> but treats <code>NaN</code> and <code>-0</code> differently.</p>
+
+<pre><code class="language-javascript">// Why == is banned in practice:
+0 == "0"           // true
+0 == ""            // true
+"" == false        // true
+null == undefined  // true
+[] == false        // true
+
+// === is the real equality:
+0 === "0"          // false
+null === undefined // false
+NaN === NaN        // false (the one weird case)
+Object.is(NaN, NaN) // true</code></pre>
+
+<div class="callout bad">
+  <div class="tag">Rule</div>
+  <p>Always use <code>===</code>. The only legitimate <code>==</code> is <code>x != null</code>, which uniquely catches both <code>null</code> and <code>undefined</code> in one check. Every respectable ESLint config enforces this via the <code>eqeqeq</code> rule.</p>
+</div>
+
+<h2>Truthiness — the Python-developer trap</h2>
+<p>The eight falsy values: <code>false</code>, <code>0</code>, <code>-0</code>, <code>0n</code>, <code>""</code>, <code>null</code>, <code>undefined</code>, <code>NaN</code>. Everything else is truthy — <strong>including <code>[]</code> and <code>{}</code></strong>.</p>
+
+<div class="callout py">
+  <div class="tag">Python bridge</div>
+  <p>In Python, <code>if my_list:</code> works as "is this non-empty?" because empty collections are falsy. In JS, <code>if (arr)</code> is <code>true</code> for <code>[]</code>. The idiomatic JS check is <code>if (arr.length)</code> or <code>if (arr.length > 0)</code>. This catches every Python dev at least once.</p>
+</div>
+
+<h2>Your daily tools: <code>??</code> and <code>?.</code></h2>
+<p>Nullish coalescing <code>??</code> defaults only on <code>null</code>/<code>undefined</code>. Optional chaining <code>?.</code> short-circuits on <code>null</code>/<code>undefined</code> without throwing.</p>
+
+<pre><code class="language-javascript">// || treats 0 and "" as "missing" — often a bug:
+const port = process.env.PORT || 3000;  // BUG if PORT is "" or "0"
+const port = process.env.PORT ?? 3000;  // only falls back if unset
+
+// Optional chaining:
+const city = user?.address?.city;   // undefined if any link missing
+callback?.();                        // only calls if defined
+arr?.[0];                            // nil-safe index</code></pre>
+
+<div class="callout good">
+  <div class="tag">Rule of thumb</div>
+  <p>Default to <code>??</code> for defaults. Use <code>||</code> only when you genuinely want to coalesce on all falsies (rare). Use <code>?.</code> aggressively — it's the closest JS gets to Python's <code>getattr(x, 'y', None)</code> chains, and much nicer.</p>
+</div>
+
+<h2><code>const</code> is a binding, not a value</h2>
+<pre><code class="language-javascript">const arr = [1, 2, 3];
+arr.push(4);      // legal — the binding is unchanged
+arr = [];         // TypeError — rebinding forbidden</code></pre>
+<p><code>const</code> means "this name always refers to the same value." It does not freeze the value. Immutability in JS is convention + spread operators + (optionally) tools like Immer. This matters enormously in React, where mutating state in place doesn't trigger re-renders.</p>
+
+<div class="callout review">
+  <div class="tag">Code review</div>
+  <ul>
+    <li><code>var</code> → reject. Use <code>const</code>; fall back to <code>let</code> when you need to reassign.</li>
+    <li><code>if (count)</code> — rejects 0. Use <code>if (count != null)</code>.</li>
+    <li><code>opts.x || default</code> for config — almost always a bug. Use <code>??</code>.</li>
+    <li><code>Object.freeze</code> used as "security" — pointless. It's shallow and advisory.</li>
+    <li>Global <code>isNaN(x)</code> — broken (coerces). Use <code>Number.isNaN(x)</code>.</li>
+  </ul>
+</div>
+
+<details class="quiz">
+  <summary>Self-check — two questions</summary>
+  <div class="q">1. A colleague writes <code>const ms = opts.timeoutMs || 5000;</code>. What's the bug?</div>
+  <p>If the caller passes <code>timeoutMs: 0</code> (a legitimate "no timeout" value in some APIs), they get 5000 instead. Fix: <code>opts.timeoutMs ?? 5000</code>.</p>
+  <div class="q">2. <code>if (user.preferences.darkMode) { ... }</code> — two things can go wrong. Which two?</div>
+  <p>(a) If <code>user.preferences</code> is <code>undefined</code>, this throws <code>TypeError</code>. Use <code>user.preferences?.darkMode</code>. (b) If <code>darkMode</code> is the string <code>"false"</code> (from, say, a query param), the condition is truthy. Don't rely on coercion — explicitly check <code>=== true</code> or parse the value.</p>
+</details>
+
+<footer class="lesson-footer">
+  <a class="prev-card" href="#"><span class="dir">← Previous</span><span class="title"></span></a>
+  <a class="next-card next" href="#"><span class="dir">Next →</span><span class="title"></span></a>
+</footer>
+</article>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js" data-manual></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
+<script>Prism.plugins.autoloader.languages_path='https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/';Prism.highlightAll();</script>
+<script src="../assets/nav.js"></script>
+</body>
+</html>
