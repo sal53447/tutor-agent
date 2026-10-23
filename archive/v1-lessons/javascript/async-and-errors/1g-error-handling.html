@@ -1,0 +1,794 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>1g. Error handling · JS Curriculum</title>
+<link rel="icon" href="/assets/favicon.svg">
+<link rel="stylesheet" href="/assets/vendor/prism.css">
+<link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body data-lesson="1g" data-level="interactive">
+<article class="lesson">
+
+<header>
+  <h1>Error Handling — Hierarchies, <code>cause</code> &amp; Async Boundaries</h1>
+</header>
+
+<section class="block" data-block="concept" id="1g-07">
+<p>1f covered how work is scheduled; this lesson covers how failure travels through it. Every boundary later in the curriculum — Express error middleware (3b), Zod validation (3d), React error boundaries, Next.js <code>error.tsx</code> — assumes you can answer two questions about any line: <em>what</em> can it throw, and <em>where</em> does that surface — as a synchronous throw, as a rejected promise, or nowhere at all.</p>
+</section>
+
+<section class="block" data-block="concept" id="1g-01">
+<h2>The model: throw anything, catch at boundaries</h2>
+<p><code>throw</code> accepts any value and <code>catch</code> receives any value. The idiom is to throw an <code>Error</code> (or a subclass) — it is the only thing that carries a <code>stack</code> — and to catch at <strong>boundaries</strong>: a request handler, a job runner, one <code>try</code> around a group of <code>await</code>s. Code in between lets errors propagate.</p>
+
+<pre><code class="language-javascript">function parsePort(raw) {
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n &lt; 1 || n &gt; 65535) throw new RangeError(`bad port: ${raw}`);
+  return n;
+}
+
+try {
+  parsePort("http");
+} catch (err) {
+  // err is whatever was thrown — not necessarily an Error
+  if (err instanceof Error) console.error(err.name, err.message);   // RangeError bad port: http
+  else console.error("non-Error thrown:", err);
+} finally {
+  // runs either way — after a return or throw in try or catch too
+}</code></pre>
+
+<p>Built-ins you will actually meet: <code>TypeError</code> (called undefined, wrong shape), <code>RangeError</code>, <code>SyntaxError</code> (<code>JSON.parse</code>), <code>DOMException</code> with <code>name</code> <code>"AbortError"</code> / <code>"TimeoutError"</code> (fetch + <code>AbortSignal</code>, 1f), and Node system errors, which are plain <code>Error</code>s distinguished by <code>code</code> (<code>"ENOENT"</code>, <code>"ECONNREFUSED"</code>) rather than by subclass.</p>
+
+<div class="callout warn">
+  <div class="tag">Gotcha</div>
+  <p><code>throw "not found"</code> is legal. The catch site gets a string: no <code>stack</code>, <code>err.message</code> is <code>undefined</code>, <code>instanceof Error</code> is <code>false</code>. Under TypeScript <code>strict</code> the catch variable is typed <code>unknown</code> (<code>useUnknownInCatchVariables</code>) precisely because of this — narrow before touching <code>.message</code>. ESLint: <code>@typescript-eslint/only-throw-error</code>.</p>
+</div>
+</section>
+
+<section class="block" data-block="concept" id="1g-09">
+<h2>Your own hierarchy: <code>class … extends Error</code></h2>
+<p>JS ships no domain hierarchy; you build one. The base class must get two things right: <code>name</code> — every subclass reports <code>"Error"</code> unless you set it, and that is what stack traces and loggers print — and a stable, machine-readable <code>code</code>, so handlers never match on message text. Everything else (<code>status</code>, <code>issues</code>, the id that was not found) is a plain field.</p>
+
+<pre><code class="language-javascript">class AppError extends Error {
+  constructor(message, { code = "APP_ERROR", cause } = {}) {
+    super(message, { cause });
+    this.name = this.constructor.name;   // "NotFoundError", not "Error" — see Gotcha
+    this.code = code;
+  }
+}
+
+class NotFoundError extends AppError {
+  constructor(resource, id, options) {
+    super(`${resource} ${id} not found`, { ...options, code: "NOT_FOUND" });
+    this.resource = resource;
+  }
+}
+
+class HttpError extends AppError {
+  constructor(status, message, options) {
+    super(message, { ...options, code: `HTTP_${status}` });
+    this.status = status;
+  }
+}
+
+const e = new NotFoundError("user", 42);
+console.log(e.name, e.code, e instanceof AppError, e instanceof Error);  // NotFoundError NOT_FOUND true true
+console.log(String(e));                                                   // NotFoundError: user 42 not found</code></pre>
+
+<div class="callout warn">
+  <div class="tag">Gotcha</div>
+  <p><code>this.constructor.name</code> is whatever the minifier left: in a production browser bundle it can be <code>"a"</code>. For code that ships minified, write <code>this.name = "NotFoundError"</code> literally in each subclass (or keep names: esbuild <code>--keep-names</code>, terser <code>keep_classnames</code>). Server-side Node is unminified, so the shortcut is fine there.</p>
+</div>
+
+<p><strong>Narrowing</strong> is <code>instanceof</code>. The rule that goes with it: handle what you own, rethrow what you don't.</p>
+
+<div class="callout good">
+  <div class="tag">Do</div>
+  <pre><code class="language-javascript">async function findUser(id) {
+  try {
+    return await users.findOrThrow(id);          // may throw NotFoundError — or whatever the driver throws
+  } catch (err) {
+    if (err instanceof NotFoundError) return null;   // expected: the caller asked "maybe"
+    throw err;                                       // not ours → the boundary logs it and maps to 500
+  }
+}</code></pre>
+</div>
+<div class="callout bad">
+  <div class="tag">Don't</div>
+  <pre><code class="language-javascript">async function findUser(id) {
+  try {
+    return await users.findOrThrow(id);
+  } catch (err) {
+    console.log(err);
+    return null;   // the database being down now means "no such user"
+  }
+}</code></pre>
+</div>
+
+<div class="callout warn">
+  <div class="tag"><code>instanceof</code> has an identity problem</div>
+  <p>It compares against one specific class object. Two copies of a library in <code>node_modules</code>, an error crossing a worker or iframe boundary, or a class re-bundled twice each give you an error whose <code>instanceof</code> is <code>false</code> against your import. That is the second reason <code>code</code> exists: <code>err.code === "NOT_FOUND"</code> survives all of those.</p>
+</div>
+</section>
+
+<section class="block" data-block="bridge" id="1g-08">
+<div class="tag">Python bridge</div>
+<p><code>raise HttpError(…) from err</code> ≈ <code>throw new HttpError(…, { cause: err })</code> — with one difference: Python also chains implicitly (<code>__context__</code>) whenever you raise inside <code>except</code>; JS chains <em>only</em> if you pass <code>cause</code>. Forget it and the original stack is gone. <code>except NotFoundError as e:</code> ≈ <code>catch (e) { if (e instanceof NotFoundError) … else throw e; }</code> — there is no per-type <code>catch</code> clause, so the narrow-and-rethrow is written by hand every time; <code>except (A, B)</code> is <code>instanceof A || instanceof B</code>. A bare <code>catch</code> is a bare <code>except:</code>, and in JS "everything" includes strings and <code>undefined</code>. <code>finally</code> is identical; there is no <code>else</code> clause. <code>traceback.print_exc()</code> ≈ <code>console.error(err)</code> — Node prints the whole <code>cause</code> chain.</p>
+</section>
+
+<section class="block" data-block="exercise" id="1g-16" data-kind="complete" data-lang="js">
+<div class="tag">Exercise</div>
+<p>Finish the hierarchy. <code>AppError(message, { code = "APP_ERROR", cause } = {})</code> must set <code>name</code> to the actual subclass name, <code>code</code>, and pass <code>cause</code> through. <code>HttpError(status, message, options)</code> has <code>code</code> <code>"HTTP_&lt;status&gt;"</code>, a <code>status</code> field, and forwards <code>options.cause</code>. <code>rootCause(err)</code> follows <code>.cause</code> to the last error in the chain (returns <code>err</code> itself if it has no cause). Tests check name, code, <code>instanceof</code>, cause identity and the chain walk.</p>
+<pre><code class="language-javascript">class AppError extends Error {
+  constructor(message, { code = "APP_ERROR", cause } = {}) {
+    super(message);
+    // TODO: name (subclass name), code, cause
+  }
+}
+
+class HttpError extends AppError {
+  constructor(status, message, options) {
+    super(message);
+    // TODO: code HTTP_&lt;status&gt; (keep options.cause), status
+  }
+}
+
+function rootCause(err) {
+  // TODO
+}</code></pre>
+<script type="application/json">{
+  "tests": "test(\"AppError defaults\", () => {\n  const e = new AppError(\"boom\");\n  assert.equal(e.name, \"AppError\");\n  assert.equal(e.code, \"APP_ERROR\");\n  assert.equal(e.message, \"boom\");\n  assert.equal(e instanceof Error, true);\n});\ntest(\"HttpError name, code, status, hierarchy\", () => {\n  const e = new HttpError(503, \"unavailable\");\n  assert.equal(e.name, \"HttpError\");\n  assert.equal(e.code, \"HTTP_503\");\n  assert.equal(e.status, 503);\n  assert.equal(e instanceof AppError, true);\n  assert.equal(String(e), \"HttpError: unavailable\");\n});\ntest(\"cause is passed through by identity\", () => {\n  const inner = new Error(\"socket\");\n  const e = new HttpError(502, \"bad gateway\", { cause: inner });\n  assert.equal(e.cause === inner, true);\n  assert.equal(e.code, \"HTTP_502\");\n  const a = new AppError(\"x\", { code: \"X\", cause: inner });\n  assert.equal(a.code, \"X\");\n  assert.equal(a.cause === inner, true);\n});\ntest(\"rootCause walks the chain\", () => {\n  const root = new Error(\"root\");\n  const mid = new AppError(\"mid\", { cause: root });\n  const top = new HttpError(500, \"top\", { cause: mid });\n  assert.equal(rootCause(top) === root, true);\n  assert.equal(rootCause(root) === root, true);\n});",
+  "hints": [
+    "<code>this.name = this.constructor.name</code> gives each subclass its own name without repeating it.",
+    "Forward options to the parent: <code>super(message, { code, cause })</code> in <code>AppError</code>, and <code>super(message, { ...options, code: `HTTP_${status}` })</code> in <code>HttpError</code>. Native <code>super(message, { cause })</code> stores <code>cause</code> for you.",
+    "<code>rootCause</code>: <code>let e = err; while (e.cause) e = e.cause; return e;</code>"
+  ],
+  "solution": "class AppError extends Error {\n  constructor(message, { code = \"APP_ERROR\", cause } = {}) {\n    super(message, { cause });\n    this.name = this.constructor.name;\n    this.code = code;\n  }\n}\n\nclass HttpError extends AppError {\n  constructor(status, message, options) {\n    super(message, { ...options, code: `HTTP_${status}` });\n    this.status = status;\n  }\n}\n\nfunction rootCause(err) {\n  let e = err;\n  while (e.cause) e = e.cause;\n  return e;\n}",
+  "explain": "Without <code>name</code> every subclass prints as <code>Error</code> in logs; without forwarding <code>cause</code> the original stack is lost. The chain is a linked list ending at <code>undefined</code>, hence the <code>while</code> loop (see 1g-02, 1g-13)."
+}</script>
+</section>
+
+<section class="block" data-block="concept" id="1g-02">
+<h2><code>error.cause</code> — wrapping without losing the original (ES2022)</h2>
+<p><code>new Error(message, { cause })</code> stores whatever you pass as <code>err.cause</code>. Each layer rewraps in its own vocabulary and keeps the layer below, so the handler at the top can say "profile unavailable" while the log still shows the socket timeout that started it.</p>
+
+<pre><code class="language-javascript">// Layer 1 — transport. Knows about sockets and signals.
+async function fetchJson(url) {
+  let res;
+  try {
+    res = await fetch(url, { signal: AbortSignal.timeout(3000) });
+  } catch (err) {                       // DOMException { name: "TimeoutError" } or TypeError (DNS, refused)
+    throw new NetworkError(`${url}: ${err.name}`, { cause: err });
+  }
+  if (!res.ok) throw new HttpError(res.status, `GET ${url} → ${res.status}`);
+  return res.json();
+}
+
+// Layer 2 — API client. Knows about users, not sockets.
+async function loadProfile(id) {
+  try {
+    return await fetchJson(`/api/users/${id}`);
+  } catch (err) {
+    throw new HttpError(503, `profile ${id} unavailable`, { cause: err });
+  }
+}
+
+// What the handler holds after a timeout:
+//   HttpError: profile 42 unavailable
+//     [cause] NetworkError: /api/users/42: TimeoutError
+//       [cause] DOMException [TimeoutError]: The operation was aborted due to timeout</code></pre>
+
+<p><code>cause</code> is just a property, so walking the chain is a loop:</p>
+
+<pre><code class="language-javascript">function causeChain(err) {
+  const chain = [];
+  for (let e = err; e; e = e.cause) chain.push(`${e.name}: ${e.message}`);
+  return chain;
+}
+// ["HttpError: profile 42 unavailable", "NetworkError: /api/users/42: TimeoutError", "TimeoutError: The operation was aborted due to timeout"]</code></pre>
+
+<div class="callout warn">
+  <div class="tag">Errors don't serialise</div>
+  <p><code>message</code>, <code>stack</code> and <code>cause</code> are non-enumerable own properties, so <code>JSON.stringify(err)</code> and <code>{ ...err }</code> drop all three and keep only the fields you assigned yourself — a bare <code>Error</code> becomes <code>{}</code>, the <code>NotFoundError</code> above becomes <code>{"name":"NotFoundError","code":"NOT_FOUND","resource":"user"}</code>: a shape that looks fine in a log and has lost the message and the stack. Node's <code>console.error(err)</code> / <code>util.inspect</code> print the nested <code>[cause]</code>; browser devtools show it too. For structured logs use the logger's error serialiser (pino's <code>err</code> key, <code>serialize-error</code>) and check it walks <code>cause</code>.</p>
+</div>
+</section>
+
+<section class="block" data-block="diagram" id="1g-13">
+<div class="tag">Mechanism</div>
+<script type="application/json">{
+  "direction": "right",
+  "nodes": [
+    {
+      "id": "top",
+      "label": "HttpError\nprofile 42 unavailable",
+      "kind": "box"
+    },
+    {
+      "id": "net",
+      "label": "NetworkError\n/api/users/42: TimeoutError",
+      "kind": "box"
+    },
+    {
+      "id": "root",
+      "label": "TimeoutError\nThe operation was aborted\ndue to timeout",
+      "kind": "box"
+    },
+    {
+      "id": "end",
+      "label": "undefined\nchain ends",
+      "kind": "note"
+    }
+  ],
+  "edges": [
+    {
+      "from": "top",
+      "to": "net",
+      "label": ".cause"
+    },
+    {
+      "from": "net",
+      "to": "root",
+      "label": ".cause"
+    },
+    {
+      "from": "root",
+      "to": "end",
+      "label": ".cause",
+      "dashed": true
+    }
+  ]
+}</script>
+<p class="caption"><code>cause</code> is an ordinary property, so the chain is a singly linked list that ends at <code>undefined</code> — which is exactly the loop condition in <code>causeChain()</code>. The <code>DOMException</code> at the tail is what the handler at the head would otherwise never see.</p>
+</section>
+
+
+<section class="block" data-block="playground" id="1g-15" data-lang="js">
+<div class="tag">Try it</div>
+<p>Run it, then break it: drop <code>{ cause: net }</code> from <code>top</code> and watch the chain shrink to one entry; add <code>root.cause = top</code> to see why a depth guard matters (the loop never ends and the 3 s timeout kills it). The last line shows what <code>JSON.stringify</code> keeps: only own enumerable fields (the <code>name</code> we assigned), never <code>message</code>, <code>stack</code> or <code>cause</code>.</p>
+<pre><code class="language-javascript">const root = new DOMException("The operation was aborted due to timeout", "TimeoutError");
+const net = new Error("/api/users/42: TimeoutError", { cause: root });
+net.name = "NetworkError";
+const top = new Error("profile 42 unavailable", { cause: net });
+top.name = "HttpError";
+
+function causeChain(err) {
+  const chain = [];
+  for (let e = err; e; e = e.cause) chain.push(`${e.name}: ${e.message}`);
+  return chain;
+}
+
+for (const line of causeChain(top)) console.log(line);
+console.log(JSON.stringify(top));</code></pre>
+<output>HttpError: profile 42 unavailable
+NetworkError: /api/users/42: TimeoutError
+TimeoutError: The operation was aborted due to timeout
+{"name":"HttpError"}</output>
+</section>
+
+<section class="block" data-block="concept" id="1g-03">
+<h2>A throw inside <code>async</code> is a rejection</h2>
+<p>An <code>async</code> function never throws synchronously. Whatever happens in its body — an explicit <code>throw</code>, a <code>TypeError</code> on line one, a rejected <code>await</code> — becomes a rejection of the promise it returned, and the caller sees it only through <code>await</code> or <code>.catch</code>. That makes the <em>position</em> of the <code>await</code> relative to <code>try</code> load-bearing:</p>
+
+<pre><code class="language-javascript">async function fails() { throw new Error("boom"); }
+
+function a() {
+  try { return fails(); }            // returns the (rejected) promise; try is already exited
+  catch (err) { return "caught in a"; }
+}
+
+async function b() {
+  try { return await fails(); }      // awaits here → the rejection surfaces inside try
+  catch (err) { return "caught in b"; }
+}
+
+a().catch(err =&gt; console.log("a:", err.message));   // a: boom      — catch in a never ran
+b().then(v =&gt; console.log("b:", v));                 // b: caught in b</code></pre>
+
+<p>Rule: inside <code>try</code>, <strong><code>return await</code></strong>. Outside <code>try</code>, <code>return promise</code> is fine. Same trap with <code>finally</code>: <code>return promise</code> runs the <code>finally</code> block <em>before</em> the promise settles, so a cleanup there (release a lock, clear a timer) happens while the work is still in flight. ESLint: <code>@typescript-eslint/return-await</code> (default <code>in-try-catch</code>).</p>
+</section>
+
+<section class="block" data-block="stepper" id="1g-14" data-kind="queue">
+<div class="tag">Step through</div>
+<script type="application/json">{
+ "code": "async function fails() { throw new Error(\"boom\"); }\nfunction a() {\n  try { return fails(); }\n  catch (err) { return \"caught in a\"; }\n}\nasync function b() {\n  try { return await fails(); }\n  catch (err) { return \"caught in b\"; }\n}\na().catch(err => console.log(\"a:\", err.message));\nb().then(v => console.log(\"b:\", v));",
+ "steps": [
+  {
+   "label": "a() calls fails()",
+   "line": 1,
+   "note": "<code>fails()</code> runs its body, hits <code>throw</code>, and the <code>async</code> wrapper turns that into a rejected promise. The stack does <em>not</em> unwind into <code>a</code>: the rejection is a <strong>value</strong> (a promise in state rejected), not a queued task. Nothing is on any queue.",
+   "state": {
+    "stack": [
+     "main()",
+     "a()",
+     "fails()"
+    ],
+    "pending": [],
+    "micro": [],
+    "macro": [],
+    "output": []
+   }
+  },
+  {
+   "label": "return fails() leaves try",
+   "line": 3,
+   "note": "<code>a</code> returns that rejected promise as-is and exits the <code>try</code> block normally. No exception is propagating, so <code>catch</code> has nothing to catch and will never run.",
+   "state": {
+    "stack": [
+     "main()",
+     "a()"
+    ],
+    "pending": [],
+    "micro": [],
+    "macro": [],
+    "output": []
+   }
+  },
+  {
+   "label": ".catch queues a microtask",
+   "line": 10,
+   "note": "The promise is already rejected, so <code>.catch</code> puts its handler straight on the microtask queue. Only the <em>handler</em> is queued; the stack must empty before it runs.",
+   "state": {
+    "stack": [
+     "main()"
+    ],
+    "pending": [],
+    "micro": [
+     "a .catch handler → log(\"a:\")"
+    ],
+    "macro": [],
+    "output": []
+   }
+  },
+  {
+   "label": "b() calls fails()",
+   "line": 7,
+   "note": "Same rejected promise comes back from <code>fails()</code>, this time to <code>await</code> inside <code>try</code>.",
+   "state": {
+    "stack": [
+     "main()",
+     "b()",
+     "fails()"
+    ],
+    "pending": [],
+    "micro": [
+     "a .catch handler → log(\"a:\")"
+    ],
+    "macro": [],
+    "output": []
+   }
+  },
+  {
+   "label": "await queues b's resume",
+   "line": 7,
+   "note": "<code>await</code> on an already-rejected promise queues a continuation job immediately, then suspends <code>b</code> and returns <code>b</code>'s own (pending) promise to <code>main</code>. The queue is FIFO: <code>a</code>'s handler is first.",
+   "state": {
+    "stack": [
+     "main()",
+     "b()"
+    ],
+    "pending": [],
+    "micro": [
+     "a .catch handler → log(\"a:\")",
+     "resume b() → throw reason"
+    ],
+    "macro": [],
+    "output": []
+   }
+  },
+  {
+   "label": ".then on pending promise",
+   "line": 11,
+   "note": "<code>b()</code>'s promise is still pending, so <code>.then</code> only registers the handler on it — nothing is queued yet.",
+   "state": {
+    "stack": [
+     "main()"
+    ],
+    "pending": [],
+    "micro": [
+     "a .catch handler → log(\"a:\")",
+     "resume b() → throw reason"
+    ],
+    "macro": [],
+    "output": []
+   }
+  },
+  {
+   "label": "Stack empties, a's handler runs",
+   "line": 10,
+   "note": "<code>main()</code> returns, the loop drains microtasks in order. <code>a</code>'s <code>catch</code> never ran; the caller's <code>.catch</code> receives the rejection.",
+   "state": {
+    "stack": [
+     "a .catch handler"
+    ],
+    "pending": [],
+    "micro": [
+     "resume b() → throw reason"
+    ],
+    "macro": [],
+    "output": [
+     "a: boom"
+    ]
+   }
+  },
+  {
+   "label": "b resumes inside try",
+   "line": 8,
+   "note": "The continuation re-enters <code>b</code> at the <code>await</code> by <strong>throwing</strong> the rejection reason there — inside <code>try</code>. <code>catch</code> runs and returns <code>\"caught in b\"</code>, fulfilling <code>b</code>'s promise, which queues the <code>.then</code> handler.",
+   "state": {
+    "stack": [
+     "b()"
+    ],
+    "pending": [],
+    "micro": [
+     "b .then handler → log(\"b:\")"
+    ],
+    "macro": [],
+    "output": [
+     "a: boom"
+    ]
+   }
+  },
+  {
+   "label": "then handler runs",
+   "line": 11,
+   "note": "The handler receives the fulfilled value.",
+   "state": {
+    "stack": [
+     "b .then handler"
+    ],
+    "pending": [],
+    "micro": [],
+    "macro": [],
+    "output": [
+     "a: boom",
+     "b: caught in b"
+    ]
+   }
+  },
+  {
+   "label": "Idle",
+   "note": "Output order: <strong>a: boom</strong>, <strong>b: caught in b</strong>. Same <code>fails()</code>, same <code>try/catch</code>; only <code>await</code> decided whether the rejection was thrown inside the <code>try</code>.",
+   "state": {
+    "stack": [],
+    "pending": [],
+    "micro": [],
+    "macro": [],
+    "output": [
+     "a: boom",
+     "b: caught in b"
+    ]
+   }
+  }
+ ]
+}</script>
+</section>
+
+
+<section class="block" data-block="exercise" id="1g-17" data-kind="predict" data-lang="js">
+<div class="tag">Exercise</div>
+<p>Where does the rejection surface? <code>return work()</code> inside <code>try</code> leaves the block before <code>work</code> has failed. What does this print, in order? One value per line.</p>
+<pre><code class="language-javascript">async function work() {
+  await null;
+  console.log("work done");
+  throw new Error("x");
+}
+
+async function run() {
+  try {
+    return work();
+  } catch (err) {
+    console.log("catch");
+  } finally {
+    console.log("finally");
+  }
+}
+
+run().catch(err =&gt; console.log("outer", err.message));</code></pre>
+<script type="application/json">{
+  "expected": "finally\nwork done\nouter x",
+  "hints": [
+    "<code>work()</code> runs synchronously up to its first <code>await</code>, then hands back a pending promise. What does <code>return</code> do with it?",
+    "<code>return promise</code> exits the <code>try</code> normally, so <code>finally</code> runs right away, before <code>work</code> has resumed. No exception exists yet for <code>catch</code> to see."
+  ],
+  "explain": "<code>return work()</code> exits <code>try</code> with a pending promise: <code>catch</code> is skipped and <code>finally</code> runs immediately, while the work is still in flight. The rejection later flows out of <code>run()</code> to the caller's <code>.catch</code>. With <code>return await work()</code> the order would be <code>work done</code>, <code>catch</code>, <code>finally</code>. See 1g-03 and 1g-14."
+}</script>
+</section>
+
+<section class="block" data-block="concept" id="1g-12">
+<h2>Two failure channels</h2>
+<p>The mirror image — a non-<code>async</code> function that returns a promise <em>and</em> can throw — gives the caller two failure channels, and they usually handle only one:</p>
+
+<pre><code class="language-javascript">function load(id) {
+  if (!id) throw new TypeError("id required");   // synchronous
+  return fetch(`/api/items/${id}`);              // asynchronous
+}
+load().catch(report);   // TypeError escapes before .catch is ever attached</code></pre>
+
+<div class="callout good">
+  <div class="tag">Do</div>
+  <p>Mark it <code>async</code>. Now the <code>TypeError</code> is a rejection like everything else, and one <code>.catch</code> / one <code>try</code> around the <code>await</code> covers both.</p>
+</div>
+</section>
+
+<section class="block" data-block="concept" id="1g-11">
+<h2>The forgotten <code>await</code> inside <code>try</code></h2>
+<p>The most expensive version of the previous block. The call is made, the body runs up to its first <code>await</code>, the returned promise is dropped on the floor — and the <code>catch</code> two lines down is not attached to it.</p>
+
+<pre><code class="language-javascript">async function save(row) { throw new Error("db down"); }
+
+async function handler() {
+  try {
+    save({ id: 1 });                     // forgot await — the rejected promise floats
+    return "saved";
+  } catch (err) {
+    return "failed: " + err.message;     // never runs
+  }
+}
+
+handler().then(console.log);
+// saved
+// …then, once the microtask queue drains: unhandled rejection "db down"
+//   Node ≥ 15: process exits with code 1. Browser: window "unhandledrejection", page carries on.</code></pre>
+
+<div class="callout py">
+  <div class="tag">Python bridge</div>
+  <p>Python tells you: calling <code>save(...)</code> without <code>await</code> creates a coroutine that never runs, and the interpreter prints <code>RuntimeWarning: coroutine 'save' was never awaited</code>. JS does the opposite — the body <em>starts</em> immediately, side effects and all, and nothing is said until the rejection has nobody to go to. The lint rule is your warning: <code>@typescript-eslint/no-floating-promises</code> (needs type information).</p>
+</div>
+
+<div class="callout good">
+  <div class="tag">Fire-and-forget on purpose</div>
+  <pre><code class="language-javascript">void audit.log(event).catch(report);   // explicit: not awaited, failures reported, lint satisfied</code></pre>
+  <p><code>void</code> is the conventional marker that the floating promise is intentional; the <code>.catch</code> is what makes it safe. <code>.catch(() =&gt; {})</code> is the same shape with the safety removed.</p>
+</div>
+</section>
+
+<section class="block" data-block="playground" id="1g-18" data-lang="js">
+<div class="tag">Try it</div>
+<p>Run it: <code>catch</code> never fires. Then edit: (1) put <code>await</code> before <code>save(</code> and the output becomes <code>failed: db down</code>; (2) replace the line with <code>void save({ id: 1 }).catch(err =&gt; console.log("reported:", err.message));</code> and you get <code>reported: db down</code>, then <code>saved</code>.</p>
+<pre><code class="language-javascript">async function save(row) { throw new Error("db down"); }
+
+async function handler() {
+  try {
+    save({ id: 1 });                     // forgot await: the rejected promise floats
+    return "saved";
+  } catch (err) {
+    return "failed: " + err.message;     // never runs
+  }
+}
+
+handler().then(console.log);</code></pre>
+<output>saved
+Unhandled promise rejection: Error: db down</output>
+</section>
+
+<section class="block" data-block="concept" id="1g-23">
+<h2>Throws that reach no <code>try</code> at all</h2>
+<p>The "nowhere" channel. A callback handed to the host — <code>setTimeout</code>, an event listener, a stream's data handler — runs later on an <em>empty</em> stack. The <code>try</code> that was open when you registered it is long gone. Only the <code>new Promise</code> executor is special: it catches a throw and turns it into a rejection. A timer callback gets no such wrapper: the throw climbs to the top and is an <strong><code>uncaughtException</code></strong> — Node exits with code 1, the browser logs it to the console.</p>
+
+<pre><code class="language-javascript">function risky() { throw new Error("late"); }
+
+try {
+  setTimeout(risky, 0);                                                      // registers the timer; try exits
+  new Promise(() =&gt; risky()).catch(e =&gt; console.log("promise:", e.message));  // executor throw → rejection
+} catch (err) {
+  console.log("caught:", err.message);                                       // never runs
+}
+// promise: late
+// Uncaught Error: late   ← the timer callback runs on an empty stack: uncaughtException, Node exits 1</code></pre>
+
+<p>Same family: an <code>EventEmitter</code> that emits <code>"error"</code> with no <code>"error"</code> listener <em>throws</em> from <code>emit()</code> — and since sockets and streams emit from I/O callbacks, that throw is also uncaught. The fix is the same everywhere: handle inside the callback (or attach the <code>"error"</code> listener), and surface failures through a promise you <code>await</code> (see <code>withTimeout</code> in 1f). This is exactly what 3b hits next: in Express 4 an <code>async</code> handler's rejection reaches nobody, and a throw inside a stream callback never reaches the error middleware either.</p>
+</section>
+
+<section class="block" data-block="exercise" id="1g-19" data-kind="fix" data-lang="js">
+<div class="tag">Exercise</div>
+<p><code>getUser</code> has the bug from the review list: it catches everything and rewraps without <code>cause</code>. Contract: a <code>NotFoundError</code> means <code>null</code>; a <code>DbError</code> becomes <code>LoadError</code> with the original as <code>cause</code>; anything else (a bug such as a <code>TypeError</code>) must be rethrown unchanged. The tests drive <code>db.nextError</code> and check identity of <code>cause</code> and of the rethrown error.</p>
+<pre><code class="language-javascript">class NotFoundError extends Error { constructor(id) { super(`user ${id} not found`); this.name = "NotFoundError"; } }
+class DbError extends Error { constructor(msg) { super(msg); this.name = "DbError"; } }
+class LoadError extends Error {
+  constructor(msg, options) { super(msg, options); this.name = "LoadError"; }
+}
+
+// --- instrumented fake db (leave as is)
+const db = {
+  nextError: null,
+  async find(id) {
+    if (this.nextError) throw this.nextError;
+    return { id, name: `user-${id}` };
+  },
+};
+
+// --- fix this
+async function getUser(id) {
+  try {
+    return await db.find(id);
+  } catch (err) {
+    throw new LoadError(`could not load user ${id}`);
+  }
+}</code></pre>
+<script type="application/json">{
+  "tests": "test(\"returns the user when the db works\", async () => {\n  db.nextError = null;\n  assert.equal(await getUser(1), { id: 1, name: \"user-1\" });\n});\ntest(\"NotFoundError means null\", async () => {\n  db.nextError = new NotFoundError(2);\n  assert.equal(await getUser(2), null);\n});\ntest(\"DbError becomes LoadError with the original as cause\", async () => {\n  const dbErr = new DbError(\"connection reset\");\n  db.nextError = dbErr;\n  let err;\n  try { await getUser(3); } catch (e) { err = e; }\n  assert.ok(err instanceof LoadError, \"should be a LoadError\");\n  assert.equal(err.cause === dbErr, true, \"cause must be the original error object\");\n});\ntest(\"foreign errors are rethrown unchanged\", async () => {\n  const bug = new TypeError(\"x is not a function\");\n  db.nextError = bug;\n  let err;\n  try { await getUser(4); } catch (e) { err = e; }\n  assert.equal(err === bug, true, \"the TypeError itself must propagate\");\n  assert.equal(err instanceof LoadError, false);\n});",
+  "hints": [
+    "Narrow with <code>instanceof</code> inside the <code>catch</code>: handle <code>NotFoundError</code> and <code>DbError</code>, then deal with everything else.",
+    "<code>new LoadError(msg, { cause: err })</code> keeps the original; for errors you don't own the last statement of the <code>catch</code> is <code>throw err;</code>.",
+    "Three branches: <code>if (err instanceof NotFoundError) return null; if (err instanceof DbError) throw new LoadError(..., { cause: err }); throw err;</code>"
+  ],
+  "solution": "class NotFoundError extends Error { constructor(id) { super(`user ${id} not found`); this.name = \"NotFoundError\"; } }\nclass DbError extends Error { constructor(msg) { super(msg); this.name = \"DbError\"; } }\nclass LoadError extends Error {\n  constructor(msg, options) { super(msg, options); this.name = \"LoadError\"; }\n}\n\n// --- instrumented fake db (leave as is)\nconst db = {\n  nextError: null,\n  async find(id) {\n    if (this.nextError) throw this.nextError;\n    return { id, name: `user-${id}` };\n  },\n};\n\nasync function getUser(id) {\n  try {\n    return await db.find(id);\n  } catch (err) {\n    if (err instanceof NotFoundError) return null;\n    if (err instanceof DbError) throw new LoadError(`could not load user ${id}`, { cause: err });\n    throw err;\n  }\n}",
+  "explain": "Handle what you own, rewrap what you translate (with <code>cause</code>), rethrow the rest. The catch-all version turned a <code>TypeError</code> bug and a missing user into the same opaque <code>LoadError</code> and discarded the only stack that pointed at the real problem."
+}</script>
+</section>
+
+<section class="block" data-block="concept" id="1g-04">
+<h2><code>AggregateError</code> — many failures, one throw</h2>
+<p>Three combinators, three different stories about partial failure. <code>Promise.all</code> rejects with the <em>first</em> reason and the rest are invisible (not unhandled — <code>all</code> subscribed to them — just dropped). <code>Promise.any</code> rejects only if every input rejects, and then with an <code>AggregateError</code> holding every reason in <code>.errors</code>. <code>Promise.allSettled</code> never rejects; you decide what a partial failure means, and the way to say "these N failed" as one error is to build the <code>AggregateError</code> yourself.</p>
+
+<pre><code class="language-javascript">const fail = (msg) =&gt; Promise.reject(new Error(msg));
+
+try {
+  await Promise.any([fail("primary down"), fail("mirror down")]);
+} catch (err) {
+  console.log(err instanceof AggregateError, err.errors.map(e =&gt; e.message));
+  // true [ "primary down", "mirror down" ]
+}
+
+const results = await Promise.allSettled([fail("a"), Promise.resolve(1), fail("b")]);
+const failed = results.filter(r =&gt; r.status === "rejected").map(r =&gt; r.reason);
+if (failed.length) {
+  throw new AggregateError(failed, `${failed.length}/${results.length} jobs failed`);
+}</code></pre>
+
+<div class="callout py">
+  <div class="tag">Python bridge</div>
+  <p><code>AggregateError(errors, message)</code> ≈ <code>ExceptionGroup(message, errors)</code> (3.11). There is no <code>except*</code>; you catch the group and iterate <code>.errors</code>.</p>
+</div>
+</section>
+
+<section class="block" data-block="exercise" id="1g-20" data-kind="predict" data-lang="js">
+<div class="tag">Exercise</div>
+<p>Three combinators, three stories about partial failure. Timers fire in order of delay (5, 10, 15 ms). What does this print, in order? One value per line.</p>
+<pre><code class="language-javascript">const fail = (msg, ms) =&gt; new Promise((_, reject) =&gt; setTimeout(() =&gt; reject(new Error(msg)), ms));
+const ok = (v, ms) =&gt; new Promise(resolve =&gt; setTimeout(() =&gt; resolve(v), ms));
+
+Promise.any([fail("a", 5), ok("b", 15), ok("c", 25)])
+  .then(v =&gt; console.log("any:", v));
+
+Promise.all([fail("x", 5), fail("y", 10)])
+  .catch(err =&gt; console.log("all:", err.message));
+
+Promise.any([fail("p", 5), fail("q", 10)])
+  .catch(err =&gt; console.log(err.name, err.errors.map(e =&gt; e.message).join(",")));</code></pre>
+<script type="application/json">{
+  "expected": "all: x\nAggregateError p,q\nany: b",
+  "hints": [
+    "<code>Promise.all</code> settles on the first rejection (at 5 ms) and never reports <code>y</code>. <code>Promise.any</code> ignores rejections as long as one input can still fulfil.",
+    "The second <code>any</code> has no fulfilling input: it rejects once the last one (<code>q</code>, 10 ms) rejects, with every reason in <code>.errors</code>."
+  ],
+  "explain": "<code>all</code> rejects at 5 ms with the first reason only. The second <code>any</code> rejects at 10 ms with an <code>AggregateError</code> carrying both reasons. The first <code>any</code> skips <code>a</code> and fulfils at 15 ms with <code>b</code>. See 1g-04."
+}</script>
+</section>
+
+<section class="block" data-block="concept" id="1g-05">
+<h2>Throw vs Result</h2>
+<p>Nothing in a JS signature says what a function throws — there are no checked exceptions, and TypeScript does not track them. Throwing is right for the <em>unexpected</em>: bugs, infrastructure down, anything the immediate caller cannot act on and a boundary several frames up will log and map. For <em>expected</em> outcomes the direct caller must branch on — validation, parsing, a lookup that may miss — returning a value puts the failure in the type, where the compiler enforces that it is handled.</p>
+
+<pre><code class="language-typescript">type Result&lt;T, E = Error&gt; = { ok: true; value: T } | { ok: false; error: E };
+
+function parsePort(raw: string): Result&lt;number, RangeError&gt; {
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n &lt; 1 || n &gt; 65535) {
+    return { ok: false, error: new RangeError(`bad port: ${raw}`) };
+  }
+  return { ok: true, value: n };
+}
+
+const r = parsePort(process.env.PORT ?? "3000");
+if (!r.ok) { console.error(r.error.message); process.exit(1); }
+listen(r.value);   // r.value is only typed on this side of the guard — listen(): elided</code></pre>
+
+<p>You already use this shape: <code>Promise.allSettled</code> returns <code>{ status, value | reason }</code>; Zod's <code>safeParse</code> returns <code>{ success, data | error }</code> (3d). Libraries like <code>neverthrow</code> add <code>map</code>/<code>andThen</code> so you are not writing <code>if (!r.ok) return r;</code> at every layer — which is the cost of Result: it does not propagate by itself.</p>
+
+<div class="callout good">
+  <div class="tag">Rule of thumb</div>
+  <ul>
+    <li><strong>Throw</strong> for programmer errors (<code>TypeError</code>), infra failures, anything handled at a boundary rather than by the caller.</li>
+    <li><strong>Result</strong> when the caller branches on the outcome, and on public API surfaces where "what can fail" must be visible in the type.</li>
+    <li><strong>Neither extreme:</strong> Result for everything means every layer re-wraps; throwing for control flow (<code>throw</code> to mean "not found" in a hot loop) is slow and reads as a bug.</li>
+  </ul>
+</div>
+</section>
+
+<section class="block" data-block="exercise" id="1g-21" data-kind="complete" data-lang="js">
+<div class="tag">Exercise</div>
+<p>Implement <code>tryCatch(fn)</code>: it calls <code>fn</code> (sync or async) and always resolves, never rejects, with <code>{ ok: true, value }</code> or <code>{ ok: false, error }</code>. A synchronous throw and a rejection are both captured. If the thrown value is not an <code>Error</code>, wrap it: <code>error</code> must be an <code>Error</code> whose <code>cause</code> is the original thrown value.</p>
+<pre><code class="language-javascript">async function tryCatch(fn) {
+  // TODO
+}</code></pre>
+<script type="application/json">{
+  "tests": "test(\"sync success\", async () => {\n  assert.equal(await tryCatch(() => 42), { ok: true, value: 42 });\n});\ntest(\"async success\", async () => {\n  assert.equal(await tryCatch(async () => \"hi\"), { ok: true, value: \"hi\" });\n});\ntest(\"sync throw is captured, not thrown\", async () => {\n  const boom = new Error(\"boom\");\n  const r = await tryCatch(() => { throw boom; });\n  assert.equal(r.ok, false);\n  assert.equal(r.error === boom, true);\n});\ntest(\"rejection is captured\", async () => {\n  const boom = new RangeError(\"late\");\n  const r = await tryCatch(() => Promise.reject(boom));\n  assert.equal(r.ok, false);\n  assert.equal(r.error === boom, true);\n});\ntest(\"non-Error thrown values are wrapped with cause\", async () => {\n  const r = await tryCatch(() => { throw \"not found\"; });\n  assert.equal(r.ok, false);\n  assert.equal(r.error instanceof Error, true);\n  assert.equal(r.error.cause, \"not found\");\n});",
+  "hints": [
+    "Wrap the call in <code>try</code> and <code>await</code> it there, so both sync throws and rejections land in <code>catch</code>.",
+    "In the <code>catch</code>, branch on <code>err instanceof Error</code>: keep it as is, otherwise <code>new Error(String(err), { cause: err })</code>.",
+    "<code>try { return { ok: true, value: await fn() }; } catch (err) { return { ok: false, error: err instanceof Error ? err : new Error(String(err), { cause: err }) }; }</code>"
+  ],
+  "solution": "async function tryCatch(fn) {\n  try {\n    return { ok: true, value: await fn() };\n  } catch (err) {\n    const error = err instanceof Error ? err : new Error(String(err), { cause: err });\n    return { ok: false, error };\n  }\n}",
+  "explain": "Because <code>fn()</code> is called and awaited inside <code>try</code>, both failure channels (sync throw, rejection) end up in the same <code>catch</code> (1g-03, 1g-12). Normalising non-Errors keeps <code>error</code> typed and the original value reachable via <code>cause</code>. This is the Result shape from 1g-05."
+}</script>
+</section>
+
+<section class="block" data-block="review" id="1g-10">
+<div class="tag">Code review</div>
+<ul>
+  <li><strong>Catch-all that continues.</strong> <code>catch (err) { log(err); return null; }</code> or <code>.catch(() =&gt; {})</code> turns a database outage into "no result" and the caller proceeds with garbage. Narrow with <code>instanceof</code> / <code>code</code>, handle what you own, rethrow (or <code>next(err)</code>) the rest.</li>
+  <li><strong>Throwing non-Errors.</strong> <code>throw "msg"</code>, <code>throw { code }</code>: no stack, <code>unknown</code> at every catch site. <code>@typescript-eslint/only-throw-error</code>.</li>
+  <li><strong>Rewrapping without <code>cause</code>.</strong> <code>catch (err) { throw new Error("load failed"); }</code> discards the one error that had the real stack. Pass <code>{ cause: err }</code>; ESLint core <code>preserve-caught-error</code> flags the omission (built-in constructors only — it won't flag <code>new LoadError(...)</code> without <code>cause</code>).</li>
+  <li><strong><code>return promise</code> inside <code>try</code>.</strong> The <code>catch</code> never fires and <code>finally</code> runs before the work completes. <code>return await</code>; <code>@typescript-eslint/return-await</code>.</li>
+  <li><strong>Floating promise.</strong> A call without <code>await</code>, <code>return</code>, or <code>.catch</code> — inside <code>try</code> it is a catch that does nothing, elsewhere it is a crash in Node. <code>@typescript-eslint/no-floating-promises</code>; if intentional, <code>void p.catch(report)</code>.</li>
+  <li><strong>Logging <code>JSON.stringify(err)</code> or <code>{ ...err }</code>.</strong> Drops <code>message</code>, <code>stack</code> and <code>cause</code> (non-enumerable) and keeps only own enumerable fields (<code>name</code>, <code>code</code>, …) — a bare <code>Error</code> logs as <code>{}</code>, a custom one logs as a plausible-looking object with no stack. Use the logger's error serialiser and confirm it includes <code>cause</code>.</li>
+  <li><strong>Boundaries.</strong> Unexpected errors propagate to one top-level handler per surface (Express 4-arity middleware, Next.js <code>error.tsx</code>, a job runner's loop). <code>process.on("uncaughtException")</code> / <code>"unhandledRejection"</code> is log-then-exit, never log-and-continue: after one the process state is unknown.</li>
+</ul>
+</section>
+
+<section class="block" data-block="exercise" id="1g-22" data-kind="mcq">
+<div class="tag">Check</div>
+<p>A Node 20 service has <code>try { save(row); return "ok"; } catch (err) { return "failed"; }</code> where <code>save</code> is <code>async</code> and the database is down. No <code>unhandledRejection</code> listener is installed. What happens in production?</p>
+<script type="application/json">{
+  "options": [
+    "<code>catch</code> runs, the handler returns <code>\"failed\"</code>, and the error is logged.",
+    "The client gets <code>\"ok\"</code> and the rejection is silently ignored, as in the browser.",
+    "The client gets <code>\"ok\"</code>, then the rejection goes unhandled and the process exits with code 1, taking every in-flight request with it.",
+    "<code>save(row)</code> throws synchronously because the database is unreachable, so <code>catch</code> runs after all."
+  ],
+  "answer": 2,
+  "explain": "Without <code>await</code> the <code>try</code> exits before the rejection exists, so <code>catch</code> cannot see it. Node (15+) treats an unhandled rejection like an uncaught exception and exits; a browser would only fire <code>unhandledrejection</code> and continue, which is why this bug can pass browser-like tests. See 1g-11."
+}</script>
+</section>
+
+<section class="block" data-block="recall" id="1g-06">
+<div class="tag">Recall</div>
+<dl>
+  <dt>What must a custom error base class set so logs and handlers are useful, and what does passing <code>{ cause }</code> do?</dt>
+  <dd>A correct <code>name</code> (otherwise every subclass reports <code>"Error"</code>) and a machine-readable <code>code</code> so handlers never match on message text. <code>new Error(msg, { cause })</code> stores the original as <code>err.cause</code>; JS only chains if you pass it, unlike Python's implicit <code>__context__</code>.</dd>
+
+  <dt>A <code>catch</code> handles <code>NotFoundError</code> and must not hide anything else. Write the pattern.</dt>
+  <dd><p><code>if (err instanceof NotFoundError) return null; throw err;</code> Handle what you own, rethrow what you don't. A catch-all that returns <code>null</code> turns a database outage into "no such user".</p></dd>
+
+  <dt>Is <code>err instanceof Error</code> always true inside <code>catch (err)</code>? What else is <code>instanceof</code> unreliable for?</dt>
+  <dd><p>No: <code>throw "x"</code> is legal and gives a string with no <code>stack</code> or <code>message</code>. <code>instanceof</code> also fails across duplicate package copies, workers and iframes, so <code>err.code</code> is the stable discriminator.</p></dd>
+
+  <dt>What does this print?
+<pre><code class="language-javascript">async function work() {
+  await null;
+  console.log("work done");
+  throw new Error("x");
+}
+async function run() {
+  try { return work(); }
+  catch (err) { console.log("catch"); }
+  finally { console.log("finally"); }
+}
+run().catch(err => console.log("outer", err.message));</code></pre></dt>
+  <dd><p><code>finally</code>, <code>work done</code>, <code>outer x</code>. <code>return promise</code> leaves <code>try</code> before the rejection exists, so <code>catch</code> is skipped and <code>finally</code> runs while the work is in flight. <code>return await</code> inside <code>try</code> fixes both.</p></dd>
+
+  <dt>An <code>async</code> function throws on its first line. Does the caller see a synchronous throw? What about a plain function that returns a promise?</dt>
+  <dd><p>No: an <code>async</code> function turns every throw into a rejection, so one <code>.catch</code> or <code>try/await</code> covers it. A non-async function that can throw <em>and</em> return a promise has two failure channels; mark it <code>async</code>.</p></dd>
+
+  <dt>Inside <code>try</code>, you call an async <code>save()</code> without <code>await</code> and it rejects. What happens in Node vs the browser?</dt>
+  <dd><p><code>catch</code> never runs. Node (15+) reports an unhandled rejection and exits with code 1; the browser fires <code>unhandledrejection</code> and carries on. Lint: <code>no-floating-promises</code>; intentional fire-and-forget is <code>void p.catch(report)</code>.</p></dd>
+
+  <dt>What does this print?
+<pre><code class="language-javascript">const fail = (m, ms) => new Promise((_, rej) => setTimeout(() => rej(new Error(m)), ms));
+Promise.all([fail("x", 5), fail("y", 10)])
+  .catch(err => console.log("all:", err.message));
+Promise.any([fail("p", 5), fail("q", 10)])
+  .catch(err => console.log(err.name, err.errors.map(e => e.message).join(",")));</code></pre></dt>
+  <dd><p><code>all: x</code> then <code>AggregateError p,q</code>. <code>Promise.all</code> keeps only the first reason; <code>Promise.any</code> rejects only when every input rejects, with an <code>AggregateError</code> whose <code>.errors</code> holds all reasons.</p></dd>
+
+  <dt>When should a function throw and when should it return a Result?</dt>
+  <dd><p>Throw for the unexpected (bugs, infrastructure down) that a boundary logs and maps. Return <code>{ ok, value } | { ok: false, error }</code> for expected outcomes the direct caller must branch on (validation, lookup miss). Result does not propagate by itself, so using it everywhere means rewrapping at every layer.</p></dd>
+</dl>
+</section>
+</article>
+<script type="module" src="/assets/runtime/boot.js"></script>
+</body>
+</html>

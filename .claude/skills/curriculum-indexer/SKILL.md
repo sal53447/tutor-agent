@@ -1,148 +1,78 @@
 ---
 name: curriculum-indexer
-description: Build or refresh INDEX.md — a tree-structured, concept-level map of a teaching/curriculum repo. Each lesson gets a 1–2 sentence summary that names concepts by vocabulary so learners can target specific topics without opening every file. Also detects what's been added, changed, or removed since the last index was built. Use this skill whenever the user says "make / build / update / refresh the index", "summarize the curriculum", "what's in this teaching repo", "list all topics", "what's new?", or wants a table-of-contents view of lesson material. Excludes code/build folders (node_modules, dist, build, .git, etc.); focuses exclusively on HTML / Markdown teaching content.
+description: Build or refresh INDEX.md — the concept-level map of the curriculum (topic → section → lesson, each with a 1–2 sentence summary naming the vocabulary taught, plus the goals from its frontmatter). Source of truth is assets/manifest.js; changed lessons are found with git. Use when the user says "update/refresh/rebuild the index", "is INDEX.md current?", "what changed since the index was built?", or after add-lesson finishes. Not for answering "what topics exist" — read INDEX.md for that.
 ---
 
-# Curriculum Indexer
+# Curriculum indexer
 
-Builds a scannable, tree-structured index of a teaching repository so learners and contributors can find specific concepts without opening every file. The output is **concept-focused**, not file-focused: each entry explains what a learner will know after reading the lesson, named by the vocabulary they'd actually search for.
+`INDEX.md` is how the tutor agent (and the learner) find *where a concept lives* without opening
+every file. Entries name concepts by the vocabulary a practitioner would search for. The structure comes
+from the manifest; the summaries come from reading the lesson **sources** (`src/**/*.md`, never the
+generated `content/` HTML).
 
-## When to run
+## Inputs
 
-- User asks to "make / build / update / refresh the index"
-- User asks "what's in this curriculum?" / "list the topics" / "summarize the content"
-- After lessons are added, to check whether `INDEX.md` needs updating
-- On first arrival in an unfamiliar teaching repo, to orient
+- `assets/manifest.js` → `CURRICULUM.topics[].sections[].lessons[]` (order, titles, paths). Import it:
+  `node -e "import('./assets/manifest.js').then(m => console.log(JSON.stringify(m.allLessons().map(l => [l.id, l.src, l.title]))))"`
+- Each source's frontmatter (`title`, `goals`), its `##` headings, and the block types present (`grep -n '^::: ' <src>`).
+- The existing `INDEX.md` (update mode).
 
-## What counts as teaching content
+## Update mode (default when `INDEX.md` exists)
 
-**Include:**
-- HTML lesson pages (usually `<article>` / `<section>` with headings)
-- Markdown docs (`.md`, `.mdx`) that explain concepts
-- Notebooks (`.ipynb`) if expository
+1. **Manifest ↔ index diff**: lessons in the manifest with no entry → *added*; entries with no manifest lesson → *removed*; section/topic placement differs → *moved*.
+2. **Changed lessons** since the index was last written:
+   ```bash
+   git diff --name-only $(git log -1 --format=%H -- INDEX.md) -- src/
+   ```
+   (if `INDEX.md` has no commits yet, treat every lesson as changed). Include uncommitted changes (`git status --short src/`).
+3. Report before writing:
+   ```
+   Added:    d1c  src/dsa/foundations/d1c-….md
+   Removed:  d9z
+   Moved:    d2a  foundations → sorting
+   Changed:  d1b  (+stepper, +2 exercises)
+   Unchanged: 1
+   ```
+4. If the user only asked whether it's current / what's new — **stop here**.
+5. Otherwise rewrite `INDEX.md`: regenerate the skeleton from the manifest, **reuse existing summaries verbatim for unchanged lessons**, write new summaries only for added/changed ones (read those files fully). Consistency across runs is a feature.
 
-**Exclude:**
-- Build / cache folders: `node_modules/`, `.git/`, `dist/`, `build/`, `out/`, `.next/`, `.cache/`, `coverage/`
-- Pure source folders: `src/`, `lib/`, `app/` — unless the repo explicitly documents lessons there
-- Shared asset folders: `assets/`, `public/`, `static/` (unless they contain prose)
-- `package.json`, `tsconfig.json`, lockfiles, configs
-- `README.md`, `CONTRIBUTING.md`, `LICENSE` — these are **metadata**; link once in the intro, don't index their sections
-- Plugin / tool directories like `.claude/`, `.vscode/`
+Also run `npm run build` and surface manifest↔source mismatches in the report — a source that isn't in the manifest is invisible to the site.
 
-If you're unsure whether a folder is code or content, peek at one or two files. Teaching content is mostly prose with embedded examples; code is mostly source.
+## Fresh build
 
-## How to build the index
-
-1. **Find teaching files** using Glob with the include/exclude rules above.
-2. **Find sectioning.** Most teaching repos group lessons into ordered folders (`01-foo`, `part-1-intro`, `module-a`). Preserve on-disk order — it encodes the intended learning sequence.
-3. **Per file, extract:**
-   - Title — usually `<h1>` or first `#`
-   - Top-level headings — `<h2>` / `##` for subtopics
-   - The actual point — enough prose to understand what a learner will know after finishing
-4. **Write the summary** using the vocabulary test (below).
-5. **Assemble `INDEX.md`** at the repo root.
-
-Prefer reading content over trusting filenames. Filenames are lossy; content isn't.
+Read every lesson (one section at a time; for >80 lessons, one subagent per topic, merged at the end) and write all summaries.
 
 ## Output format
-
-Write `INDEX.md` at the repo root. Structure:
 
 ```markdown
 # Curriculum Index
 
-_One paragraph: what this curriculum teaches, who it's for, the learning arc._
+_One paragraph: what this curriculum teaches, who it's for, the arc, how to open it._
 
-See [`README.md`](./README.md) for setup and contribution notes.
+<How to read this file; pointer to manifest/README/CLAUDE.>
 
 ---
 
-## Part 1 — <Section Title> (N lessons)
+## Data structures & algorithms (2 lessons) — `src/dsa/`
 
-_One-sentence summary of the part as a whole._
+_Topic desc from the manifest._ · time
 
-- **1a — Lesson Title** — One-to-two sentence summary naming concepts by vocabulary (e.g., "closures, hoisting, TDZ, `this` binding, class field arrows").
-  - Subtopic — brief note (only when the lesson holds separable searchable concepts)
-- **1b — Next Lesson Title** — Summary.
+### Foundations — `foundations/`
 
-## Part 2 — <Next Section> (N lessons)
-
-_Summary._
-
-- **2a — ...** — Summary.
+- **d1b — Binary search and its invariant** — Lower/upper bound, the `[lo, hi)` invariant, `lo < hi` vs `lo <= hi`, overflow-safe midpoint, binary search on the answer; `bisect_left` bridge.
+- **d1c — …** — …
 ```
 
 ### Summary rules
 
-- **Name concepts by vocabulary.** A learner searching for "discriminated unions" or "`unstable_cache`" must be able to find the lesson from the summary alone. Vague summaries like "covers advanced types" fail the test.
-- **Say what the learner will be able to do, not what you'll discuss.** "Write typed Express middleware with declaration merging" beats "introduces middleware typing".
-- **1–2 sentences. No more.** If you need three, split into subtopics.
-- **Cut fluff.** No "this lesson covers", "we'll explore", "you'll learn about". State the content.
-- **Preserve on-disk ordering.** The index follows lesson order; don't alphabetize or re-prioritize.
+- **Vocabulary test.** A learner searching for "loop invariant" or "amortized" must find the lesson from the summary alone. "Covers advanced types" fails.
+- **What the learner can do**, not what is discussed. "Pick `<` vs `<=` from the invariant" beats "introduces binary search variants".
+- **1–2 sentences.** Mention the interactive pieces only when they're the point ("steps through each probe", "fix-the-infinite-loop exercise").
+- No "this lesson covers", "we'll explore". Match the terse voice of the lessons.
+- Preserve manifest order. Never alphabetize.
 
-### Subtopics
+## Pitfalls
 
-Add nested bullets only when:
-- The lesson is substantial enough to hold multiple separable concepts, AND
-- Those concepts are terms a learner would search for independently.
-
-Don't invent subtopics to pad short lessons — a single summary line is fine.
-
-## Update mode: diffing an existing index
-
-If `INDEX.md` already exists, this is an **update**, not a rebuild:
-
-1. Read existing `INDEX.md`.
-2. List current teaching files on disk.
-3. Compute the diff:
-   - **Added** — files on disk with no entry → draft new entries
-   - **Removed** — entries with no file on disk → delete
-   - **Changed** — files whose titles or top-level headings have materially shifted → refresh
-4. **Report the diff to the user before writing anything:**
-
-   ```
-   Added:     05-nextjs/5l-new-lesson.html
-   Removed:   03-express/3z-deleted.html
-   Changed:   04-react/4i-forms.html (added React 19 Form Actions section)
-   Unchanged: 48 files
-   ```
-
-5. If the user asked **"is the index up to date?"** or **"what's new?"** — stop after reporting. Don't rewrite unless asked.
-
-6. If the user asked to update — write the new `INDEX.md`. **Preserve existing summaries verbatim for unchanged lessons.** Consistency across re-runs is a feature; don't paraphrase stable entries.
-
-## Efficiency for large repos
-
-- Start with Glob to list candidates; don't read everything upfront.
-- For updates, read `INDEX.md` once and track which files already have entries — skip re-reading those unless headings changed.
-- For fresh builds on very large repos (>80 lessons), spawn parallel subagents — one per top-level section — each producing its part of the index. Merge at the end.
-
-## Common pitfalls
-
-- **Don't index code folders.** If a teaching repo has a companion `/examples/` with runnable code, link to it once in the intro; don't enumerate files.
-- **Don't mirror the filesystem.** The index is a **content map**, not a directory listing. If a filename is cryptic (`1f-...`) but the title is clear ("Async & the Event Loop"), use the title.
-- **Don't duplicate the README.** README = audience, setup, contributing. INDEX = topic lookup. Keep them distinct.
-- **Don't under-summarize.** "Covers React." is useless. Test: could a learner searching for "`useReducer` with discriminated unions" find the right lesson from your summary alone?
-- **Match the curriculum's voice.** If lessons are terse and practitioner-focused, summaries are too. Don't inject enthusiasm the source material lacks.
-
-## Example excerpt
-
-```markdown
-# Curriculum Index
-
-_A five-part curriculum taking Python-fluent engineers through modern full-stack JS/TS: JavaScript → TypeScript → Express → React → Next.js. Lessons are HTML, readable in any browser._
-
-See [`README.md`](./README.md) for audience, setup, and contribution notes.
-
----
-
-## Part 1 — JavaScript (11 lessons)
-
-_Language semantics and runtime model JS developers need day-to-day._
-
-- **1a — Language model** — Values, primitives, equality, truthiness, `??` / `?.`, `const` semantics, the `typeof null` fossil, symbols.
-- **1b — Functions & scope** — Declarations vs expressions, closures, hoisting vs TDZ, `this` binding, class field arrow functions, rest over `arguments`.
-- **1c — Objects, prototypes, classes** — Object literals, the prototype chain, ES classes, destructuring (object / array / parameter forms), spread + `Object.assign`, `hasOwn` vs `in`.
-- **1d — Arrays & iteration** — Array methods (mutating vs immutable), `for...of`, `Map`, `Set`, generators, `reduce` for object-building.
-...
-```
+- Don't index `README.md`, `CLAUDE.md`, `.claude/`, `assets/`, `scripts/`, `tests/`, `archive/` — link once, don't enumerate.
+- Don't mirror the filesystem; the index is a content map. Section and topic headers come from manifest titles, with the slug in backticks for navigation.
+- Don't paraphrase stable entries. If a lesson didn't change, its line doesn't change.

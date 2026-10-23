@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>3h. Testing — unit, integration, supertest · JS Curriculum</title>
+<link rel="icon" href="/assets/favicon.svg">
+<link rel="stylesheet" href="/assets/vendor/prism.css">
+<link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body data-lesson="3h" data-level="interactive">
+<article class="lesson">
+
+<header>
+  <h1>Testing — Unit, Integration, Supertest</h1>
+</header>
+
+<section class="block" data-block="concept" id="3h-01">
+<p>The layered architecture from 3c exists for this lesson: each layer gets the cheapest test that can catch its bugs, and the <code>createApp(deps)</code> seam is what lets a route test run the whole stack in-process with a fake database. Runner: <strong>Vitest</strong> — ESM-native, Jest-compatible API (<code>describe</code> / <code>it</code> / <code>expect</code> / <code>vi</code>), so migration from Jest is mechanical. Stay on Jest only if the project already is. 4m applies the same ideas to React.</p>
+</section>
+
+<section class="block" data-block="concept" id="3h-02">
+<h2>Layers = testing strategy</h2>
+<ul>
+  <li><strong>Services</strong> — pure logic. Unit test with a fake repository; cover every branch. Milliseconds each, hundreds of them.</li>
+  <li><strong>Repositories</strong> — the SQL. Integration test against a <em>real</em> Postgres (testcontainers or a local instance). Don't mock the driver: a mocked <code>prisma.user.findUnique</code> proves the mock was called, not that the query works.</li>
+  <li><strong>Routes</strong> — the wiring: middleware order, validation, status codes, serialization. Integration test with <code>supertest</code>: build the app in-process, send requests, assert on responses. No port, no network.</li>
+  <li><strong>End-to-end</strong> — a handful of flows through the deployed stack (Playwright against a staging URL). Slow and flaky by nature; keep to the money paths.</li>
+</ul>
+
+<pre><code class="language-typescript">import request from "supertest";
+import { createApp } from "../src/app";
+
+test("POST /users creates a user", async () =&gt; {
+  const app = createApp({ db: testDb, mailer: fakeMailer });   // fresh app per test
+  const res = await request(app)
+    .post("/users")
+    .send({ email: "a@b.c", password: "hunter22!" });
+  expect(res.status).toBe(201);
+  expect(res.body.id).toBeDefined();
+  expect(fakeMailer.sent).toHaveLength(1);
+});</code></pre>
+<p><code>supertest</code> takes the Express app object directly — it binds an ephemeral port internally — so nothing is listening, nothing is shared between test files, and Vitest can run files in parallel workers.</p>
+</section>
+
+<section class="block" data-block="diagram" id="3h-06">
+<div class="tag">Mechanism</div>
+<script type="application/json">{
+  "direction": "down",
+  "nodes": [
+    { "id": "e2e",   "label": "end-to-end\nPlaywright vs staging",          "kind": "box",  "row": 0 },
+    { "id": "e2en",  "label": "a few flows\nminutes, flaky",                 "kind": "note", "row": 0 },
+    { "id": "route", "label": "route tests\nsupertest + fake deps",          "kind": "box",  "row": 1 },
+    { "id": "repo",  "label": "repository tests\nreal Postgres",             "kind": "box",  "row": 1 },
+    { "id": "intn",  "label": "dozens\nseconds",                             "kind": "note", "row": 1 },
+    { "id": "unit",  "label": "service unit tests\nfake repository",         "kind": "box",  "row": 2 },
+    { "id": "unitn", "label": "hundreds\nmilliseconds",                      "kind": "note", "row": 2 }
+  ],
+  "edges": [
+    { "from": "e2e",   "to": "route", "label": "catches wiring" },
+    { "from": "e2e",   "to": "repo",  "label": "catches SQL" },
+    { "from": "route", "to": "unit",  "label": "catches logic" },
+    { "from": "repo",  "to": "unit",  "dashed": true }
+  ]
+}</script>
+<p class="caption">Each layer down is cheaper and more precise; a bug caught at the bottom never needs the slow layer above to find it. Repositories are the exception: their only bug class is SQL, and only a real database can catch it.</p>
+</section>
+
+<section class="block" data-block="concept" id="3h-07">
+<h2>The seam: <code>createApp(deps)</code> and test doubles</h2>
+<p>A test can only replace what is injected. <code>createApp({ db, mailer, clock })</code> from 3c takes every side-effecting dependency as a parameter, so a route test passes an in-memory repository and a recording mailer, and asserts on them afterwards. Module-level singletons (<code>export const prisma = new PrismaClient()</code> imported directly by the service) are the thing that makes a codebase untestable: the only way to replace them is <code>vi.mock</code>, which patches the module graph and makes tests order-sensitive.</p>
+<pre><code class="language-typescript">// src/app.ts
+export function createApp({ users, mailer }: Deps) {
+  const app = express();
+  app.use(express.json());
+  app.post("/users", async (req, res) =&gt; {
+    const user = await users.create(req.body);
+    await mailer.send(user.email, "Welcome");
+    res.status(201).json({ id: user.id });
+  });
+  return app;
+}
+
+// test/doubles.ts — hand-written fakes beat vi.fn() when the contract is more than one call
+export function memoryUsers(seed: User[] = []) {
+  const rows = [...seed];
+  return {
+    async create(data: NewUser) { const u = { id: rows.length + 1, ...data }; rows.push(u); return u; },
+    async findById(id: number) { return rows.find(u =&gt; u.id === id) ?? null; },
+    rows,
+  };
+}
+export function recordingMailer() {
+  const sent: { to: string; subject: string }[] = [];
+  return { sent, async send(to: string, subject: string) { sent.push({ to, subject }); } };
+}</code></pre>
+
+<div class="callout warn">
+  <div class="tag"><code>vi.mock</code> is hoisted</div>
+  <p><code>vi.mock("../src/db", () =&gt; …)</code> runs before every import in the file, regardless of where it is written — so a factory that references a <code>const</code> declared above it throws <code>ReferenceError</code>. Use <code>vi.hoisted(() =&gt; …)</code> for values the factory needs, or avoid module mocking entirely by injecting. Reserve <code>vi.mock</code> for third-party modules you don't own (<code>stripe</code>, <code>@aws-sdk/*</code>).</p>
+</div>
+</section>
+
+<section class="block" data-block="bridge" id="3h-08">
+<div class="tag">Python bridge</div>
+<p>supertest ≈ Starlette/FastAPI <code>TestClient(app)</code> or <code>httpx.AsyncClient(transport=ASGITransport(app))</code>: an in-process client through the real middleware stack. Vitest's <code>beforeEach</code> + a factory function ≈ a pytest <strong>fixture</strong> — but there is no dependency-injected fixture graph; you call <code>memoryUsers()</code> yourself in each test or in <code>beforeEach</code>. <code>vi.spyOn(obj, "method")</code> ≈ <code>monkeypatch.setattr</code>; <code>vi.mock("module")</code> ≈ <code>unittest.mock.patch("pkg.module")</code> with the same hoisting surprise as patching at import time. <code>conftest.py</code> ≈ <code>setupFiles</code> in <code>vitest.config.ts</code>. The transaction-rollback test DB ≈ pytest-django's <code>db</code> fixture / SQLAlchemy's nested-transaction session fixture.</p>
+</section>
+
+<section class="block" data-block="playground" id="3h-09" data-lang="js">
+<div class="tag">Try it</div>
+<p>A route test, supertest-style, in the sandbox: <code>request(app, { method, path, body })</code> stands in for <code>request(app).post(path).send(body)</code>, and the harness's <code>assert</code> for <code>expect</code>. Try: send the POST without a body and see which status you get; build one shared <code>app</code> for both blocks and watch the second id change; add an <code>assert</code> that the mailer was called with the right subject.</p>
+<pre><code class="language-javascript">function createApp({ users, mailer }) {
+  const app = express();
+  app.use(express.json());
+  app.post("/users", async (req, res) =&gt; {
+    if (!req.body?.email) return res.status(400).json({ error: "email required" });
+    const user = await users.create(req.body);
+    await mailer.send(user.email, "Welcome");
+    res.status(201).json({ id: user.id });
+  });
+  app.get("/users/:id", async (req, res) =&gt; {
+    const user = await users.findById(Number(req.params.id));
+    user ? res.json(user) : res.status(404).json({ error: "not found" });
+  });
+  return app;
+}
+
+function memoryUsers(seed = []) {
+  const rows = [...seed];
+  return {
+    rows,
+    async create(data) { const u = { id: rows.length + 1, ...data }; rows.push(u); return u; },
+    async findById(id) { return rows.find(u =&gt; u.id === id) ?? null; },
+  };
+}
+const recordingMailer = () =&gt; { const sent = []; return { sent, async send(to, subject) { sent.push({ to, subject }); } }; };
+
+// test 1 — fresh deps
+{
+  const users = memoryUsers(), mailer = recordingMailer();
+  const app = createApp({ users, mailer });
+  const res = await request(app, { method: "POST", path: "/users", body: { email: "a@b.c" } });
+  assert.equal(res.status, 201);
+  assert.equal(res.body, { id: 1 });
+  assert.equal(mailer.sent, [{ to: "a@b.c", subject: "Welcome" }]);
+  console.log("✓ POST /users creates and mails");
+}
+// test 2 — fresh deps again, so ids start at 1 regardless of test order
+{
+  const users = memoryUsers([{ id: 1, email: "seed@x.y" }]), mailer = recordingMailer();
+  const app = createApp({ users, mailer });
+  const res = await request(app, { path: "/users/1" });
+  assert.equal(res.status, 200);
+  assert.equal(res.body.email, "seed@x.y");
+  assert.equal((await request(app, { path: "/users/9" })).status, 404);
+  console.log("✓ GET /users/:id finds seeded user, 404 otherwise");
+}</code></pre>
+<output>✓ POST /users creates and mails
+✓ GET /users/:id finds seeded user, 404 otherwise</output>
+</section>
+
+<section class="block" data-block="exercise" id="3h-10" data-kind="predict" data-lang="js">
+<div class="tag">Exercise</div>
+<p>Two "test files" share one module-level app; a third builds its own. One assertion forgets <code>await</code>. What does this print? One value per line.</p>
+<pre><code class="language-javascript">function createApp(store) {
+  const app = express();
+  app.use(express.json());
+  app.post("/items", (req, res) =&gt; { store.push(req.body); res.status(201).json({ id: store.length }); });
+  app.get("/items", (req, res) =&gt; res.json(store));
+  return app;
+}
+
+const shared = createApp([]);
+
+// "file A"
+const a = await request(shared, { method: "POST", path: "/items", body: { n: "a" } });
+console.log(a.body.id);
+
+// "file B" — assumes an empty store
+const b = await request(shared, { method: "POST", path: "/items", body: { n: "b" } });
+console.log(b.body.id);
+console.log((await request(shared, { path: "/items" })).body.length);
+
+// "file C" — its own app
+const fresh = createApp([]);
+const c = await request(fresh, { method: "POST", path: "/items", body: { n: "c" } });
+console.log(c.body.id);
+
+const r = request(fresh, { path: "/items" });   // no await
+console.log(r.status);</code></pre>
+<script type="application/json">{
+  "expected": "1\n2\n2\n1\nundefined",
+  "hints": [
+    "<code>store</code> is captured by closure; both POSTs to <code>shared</code> push into the same array.",
+    "<code>fresh</code> closes over a different, empty array.",
+    "<code>request()</code> returns a Promise; a Promise has no <code>status</code> property."
+  ],
+  "explain": "Test B passes or fails depending on whether A ran first — the order-dependence that per-test factories exist to remove. The last line is the un-awaited supertest call: the assertion runs against a pending Promise, reads <code>undefined</code>, and in Vitest an <code>expect(undefined).toBe(200)</code> at least fails — but <code>expect(res.body.id).toBeDefined()</code> on a Promise throws a <code>TypeError</code> for a reason unrelated to the code under test. ESLint <code>@typescript-eslint/no-floating-promises</code> catches it."
+}</script>
+</section>
+
+<section class="block" data-block="exercise" id="3h-11" data-kind="fix" data-lang="js">
+<div class="tag">Exercise</div>
+<p><code>createApp</code> accepts <code>deps</code> but ignores them: the handlers reach for the module-level <code>db</code> and <code>mailer</code> singletons. The tests build two apps with separate fakes and expect them to be isolated — ids restart at 1 for each app, the second app never sees the first app's rows, and a welcome mail lands in the <em>injected</em> mailer. Make the handlers use what they were given.</p>
+<pre><code class="language-javascript">// --- "src/db.js" and "src/mailer.js" — module-level singletons
+const db = { rows: [], async create(data) { const u = { id: this.rows.length + 1, ...data }; this.rows.push(u); return u; } };
+const mailer = { sent: [], async send(to, subject) { this.sent.push({ to, subject }); } };
+
+// --- fix this
+function createApp(deps) {
+  const app = express();
+  app.use(express.json());
+  app.post("/users", async (req, res) =&gt; {
+    const user = await db.create(req.body);
+    await mailer.send(user.email, "Welcome");
+    res.status(201).json({ id: user.id });
+  });
+  app.get("/users", (req, res) =&gt; res.json(db.rows));
+  return app;
+}
+
+// --- test doubles (leave as is)
+function memoryUsers() { const rows = []; return { rows, async create(data) { const u = { id: rows.length + 1, ...data }; rows.push(u); return u; } }; }
+function recordingMailer() { const sent = []; return { sent, async send(to, subject) { sent.push({ to, subject }); } }; }</code></pre>
+<script type="application/json">{
+  "tests": "test(\"ids restart per app\", async () => { const a = createApp({ users: memoryUsers(), mailer: recordingMailer() }); const b = createApp({ users: memoryUsers(), mailer: recordingMailer() }); const r1 = await request(a, { method: \"POST\", path: \"/users\", body: { email: \"a@x.y\" } }); const r2 = await request(b, { method: \"POST\", path: \"/users\", body: { email: \"b@x.y\" } }); assert.equal(r1.body, { id: 1 }); assert.equal(r2.body, { id: 1 }); });\ntest(\"apps do not share rows\", async () => { const ua = memoryUsers(), ub = memoryUsers(); const a = createApp({ users: ua, mailer: recordingMailer() }); const b = createApp({ users: ub, mailer: recordingMailer() }); await request(a, { method: \"POST\", path: \"/users\", body: { email: \"a@x.y\" } }); const list = (await request(b, { path: \"/users\" })).body; assert.equal(list, []); assert.equal(ua.rows.length, 1); });\ntest(\"mail goes to the injected mailer\", async () => { const m = recordingMailer(); const a = createApp({ users: memoryUsers(), mailer: m }); await request(a, { method: \"POST\", path: \"/users\", body: { email: \"c@x.y\" } }); assert.equal(m.sent, [{ to: \"c@x.y\", subject: \"Welcome\" }]); });\ntest(\"singletons untouched\", async () => { const before = db.rows.length; const a = createApp({ users: memoryUsers(), mailer: recordingMailer() }); await request(a, { method: \"POST\", path: \"/users\", body: { email: \"d@x.y\" } }); assert.equal(db.rows.length, before); });",
+  "hints": [
+    "Destructure the dependencies: <code>function createApp({ users, mailer })</code>.",
+    "Every reference to <code>db</code> and <code>mailer</code> inside the handlers must become the injected <code>users</code> / <code>mailer</code> — including the <code>GET</code> that lists <code>rows</code>.",
+    "The module-level objects can stay for production wiring (<code>createApp({ users: db, mailer })</code> in <code>server.ts</code>); the app itself must not import them."
+  ],
+  "solution": "// --- \"src/db.js\" and \"src/mailer.js\" — module-level singletons\nconst db = { rows: [], async create(data) { const u = { id: this.rows.length + 1, ...data }; this.rows.push(u); return u; } };\nconst mailer = { sent: [], async send(to, subject) { this.sent.push({ to, subject }); } };\n\n// --- fixed\nfunction createApp({ users, mailer }) {\n  const app = express();\n  app.use(express.json());\n  app.post(\"/users\", async (req, res) => {\n    const user = await users.create(req.body);\n    await mailer.send(user.email, \"Welcome\");\n    res.status(201).json({ id: user.id });\n  });\n  app.get(\"/users\", (req, res) => res.json(users.rows));\n  return app;\n}\n\n// --- test doubles (leave as is)\nfunction memoryUsers() { const rows = []; return { rows, async create(data) { const u = { id: rows.length + 1, ...data }; rows.push(u); return u; } }; }\nfunction recordingMailer() { const sent = []; return { sent, async send(to, subject) { sent.push({ to, subject }); } }; }",
+  "explain": "The parameter named <code>deps</code> was documentation, not a seam: the handlers closed over the module singletons, so every test shared one store and one outbox, and the only way to isolate them would have been <code>vi.mock</code>. With real injection, each test owns its fakes, tests run in any order and in parallel workers, and production wiring is one call in <code>server.ts</code>."
+}</script>
+</section>
+
+<section class="block" data-block="concept" id="3h-03">
+<h2>Testing auth-protected routes</h2>
+<pre><code class="language-typescript">// Helper — mint a real JWT the same way the app does
+import { signToken } from "../src/middleware/auth";
+
+async function authHeader(userId = "test-user-id", role = "user") {
+  const token = await signToken({ sub: userId, role });
+  return { Authorization: `Bearer ${token}` };
+}
+
+test("GET /users/:id requires auth", async () =&gt; {
+  const app = createApp({ db: testDb });
+  const res = await request(app).get("/users/some-id");
+  expect(res.status).toBe(401);
+});
+
+test("GET /users/:id returns user when authenticated", async () =&gt; {
+  const app = createApp({ db: testDb });
+  await testDb.user.create({ data: { id: "some-id", email: "a@b.c", passwordHash: "x" } });
+  const res = await request(app)
+    .get("/users/some-id")
+    .set(await authHeader("some-id", "user"));
+  expect(res.status).toBe(200);
+  expect(res.body.email).toBe("a@b.c");
+  expect(res.body.passwordHash).toBeUndefined();  // confirm serialization strip
+});
+
+// Session-based auth: an agent persists cookies across requests
+test("GET /profile with session cookie", async () =&gt; {
+  const agent = request.agent(createApp({ db: testDb }));
+  await agent.post("/auth/login").send({ email: "a@b.c", password: "hunter22!" });
+  const res = await agent.get("/profile");
+  expect(res.status).toBe(200);
+});</code></pre>
+<p>Mint tokens with the app's own <code>signToken</code>, never a pasted string: when the secret, algorithm or claims change, a hard-coded token fails for the wrong reason. The <code>passwordHash</code> assertion is the one that earns its keep — serialization leaks are invisible in unit tests and obvious in a route test.</p>
+</section>
+
+<section class="block" data-block="exercise" id="3h-12" data-kind="complete" data-lang="js">
+<div class="tag">Exercise</div>
+<p>Write the test doubles for this app. <code>memoryUsers(seed = [])</code> returns <code>{ rows, create, findByEmail }</code>: <code>create({ email, name })</code> assigns ids <code>1..n</code> (continuing after the seed), stores and returns the row, and throws an <code>Error</code> with <code>code = "DUPLICATE"</code> if the email already exists; <code>findByEmail(email)</code> returns the row or <code>null</code>. <code>recordingMailer({ failFor = [] } = {})</code> returns <code>{ sent, send }</code>: <code>send(to, subject)</code> records <code>{ to, subject }</code> — unless <code>to</code> is in <code>failFor</code>, in which case it throws <code>Error("smtp down")</code> and records nothing. Tests drive the app through <code>request()</code> and inspect the doubles: 201 + mail on success, 409 on duplicate with no mail, 502 when the mailer fails, ids continuing after a seed.</p>
+<pre><code class="language-javascript">// --- the app under test (leave as is)
+function createApp({ users, mailer }) {
+  const app = express();
+  app.use(express.json());
+  app.post("/users", async (req, res, next) =&gt; {
+    try {
+      const user = await users.create(req.body);
+      try { await mailer.send(user.email, "Welcome"); }
+      catch { return res.status(502).json({ error: "mail failed", id: user.id }); }
+      res.status(201).json({ id: user.id });
+    } catch (err) {
+      if (err.code === "DUPLICATE") return res.status(409).json({ error: "email taken" });
+      next(err);
+    }
+  });
+  return app;
+}
+
+// --- write these
+function memoryUsers(seed = []) {
+  // TODO
+}
+
+function recordingMailer({ failFor = [] } = {}) {
+  // TODO
+}</code></pre>
+<script type="application/json">{
+  "tests": "test(\"201 + welcome mail\", async () => { const users = memoryUsers(), mailer = recordingMailer(); const app = createApp({ users, mailer }); const r = await request(app, { method: \"POST\", path: \"/users\", body: { email: \"a@x.y\", name: \"A\" } }); assert.equal(r.status, 201); assert.equal(r.body, { id: 1 }); assert.equal(users.rows, [{ id: 1, email: \"a@x.y\", name: \"A\" }]); assert.equal(mailer.sent, [{ to: \"a@x.y\", subject: \"Welcome\" }]); });\ntest(\"409 on duplicate, no mail\", async () => { const users = memoryUsers([{ id: 1, email: \"a@x.y\", name: \"A\" }]), mailer = recordingMailer(); const app = createApp({ users, mailer }); const r = await request(app, { method: \"POST\", path: \"/users\", body: { email: \"a@x.y\", name: \"Again\" } }); assert.equal(r.status, 409); assert.equal(mailer.sent, []); assert.equal(users.rows.length, 1); });\ntest(\"ids continue after the seed\", async () => { const users = memoryUsers([{ id: 1, email: \"a@x.y\", name: \"A\" }, { id: 2, email: \"b@x.y\", name: \"B\" }]); const app = createApp({ users, mailer: recordingMailer() }); const r = await request(app, { method: \"POST\", path: \"/users\", body: { email: \"c@x.y\", name: \"C\" } }); assert.equal(r.body, { id: 3 }); assert.equal(await users.findByEmail(\"c@x.y\"), { id: 3, email: \"c@x.y\", name: \"C\" }); assert.equal(await users.findByEmail(\"nobody@x.y\"), null); });\ntest(\"502 when the mailer fails, nothing recorded\", async () => { const users = memoryUsers(), mailer = recordingMailer({ failFor: [\"d@x.y\"] }); const app = createApp({ users, mailer }); const r = await request(app, { method: \"POST\", path: \"/users\", body: { email: \"d@x.y\", name: \"D\" } }); assert.equal(r.status, 502); assert.equal(r.body.id, 1); assert.equal(mailer.sent, []); });\ntest(\"duplicate error carries a code, not a message match\", async () => { const users = memoryUsers([{ id: 1, email: \"a@x.y\", name: \"A\" }]); let err; try { await users.create({ email: \"a@x.y\", name: \"X\" }); } catch (e) { err = e; } assert.equal(err && err.code, \"DUPLICATE\"); assert.equal(err instanceof Error, true); });",
+  "hints": [
+    "Copy the seed (<code>const rows = [...seed]</code>) so one seed array can't leak between tests; return <code>rows</code> so tests can inspect it.",
+    "Duplicate: <code>const e = new Error(\"duplicate email\"); e.code = \"DUPLICATE\"; throw e;</code> — the app matches on <code>code</code> (1g).",
+    "Mailer: <code>if (failFor.includes(to)) throw new Error(\"smtp down\"); sent.push({ to, subject });</code> — the throw must come before the push."
+  ],
+  "solution": "// --- the app under test (leave as is)\nfunction createApp({ users, mailer }) {\n  const app = express();\n  app.use(express.json());\n  app.post(\"/users\", async (req, res, next) => {\n    try {\n      const user = await users.create(req.body);\n      try { await mailer.send(user.email, \"Welcome\"); }\n      catch { return res.status(502).json({ error: \"mail failed\", id: user.id }); }\n      res.status(201).json({ id: user.id });\n    } catch (err) {\n      if (err.code === \"DUPLICATE\") return res.status(409).json({ error: \"email taken\" });\n      next(err);\n    }\n  });\n  return app;\n}\n\nfunction memoryUsers(seed = []) {\n  const rows = [...seed];\n  return {\n    rows,\n    async create(data) {\n      if (rows.some(u => u.email === data.email)) { const e = new Error(\"duplicate email\"); e.code = \"DUPLICATE\"; throw e; }\n      const u = { id: rows.length + 1, ...data };\n      rows.push(u);\n      return u;\n    },\n    async findByEmail(email) { return rows.find(u => u.email === email) ?? null; },\n  };\n}\n\nfunction recordingMailer({ failFor = [] } = {}) {\n  const sent = [];\n  return {\n    sent,\n    async send(to, subject) {\n      if (failFor.includes(to)) throw new Error(\"smtp down\");\n      sent.push({ to, subject });\n    },\n  };\n}",
+  "explain": "A good fake implements the <em>contract</em> the code under test relies on — including the failure modes (duplicate, SMTP down) — and exposes its state (<code>rows</code>, <code>sent</code>) for assertions. That is what <code>vi.fn().mockResolvedValue(…)</code> can't give you once a handler makes two calls that depend on each other. Note the 502 test: the user row exists but no mail was sent — a partial-failure state the route test makes visible."
+}</script>
+</section>
+
+<section class="block" data-block="concept" id="3h-04">
+<h2>Coverage, test databases and CI</h2>
+<pre><code class="language-bash"># Coverage needs the provider package once: pnpm add -D @vitest/coverage-v8
+npx vitest run --coverage</code></pre>
+<pre><code class="language-typescript">// vitest.config.ts
+export default defineConfig({
+  test: {
+    environment: "node",                        // never jsdom for a backend — see 1f on unhandled rejections
+    setupFiles: ["./test/setup.ts"],            // ≈ conftest.py: env vars, global fakes
+    coverage: {
+      provider: "v8",
+      thresholds: { lines: 80, functions: 80 },
+      exclude: ["src/db/schema.ts", "src/config/env.ts"],
+    },
+  },
+});</code></pre>
+<pre><code class="language-yaml"># .github/workflows/test.yml
+services:
+  postgres:
+    image: postgres:16
+    env: { POSTGRES_PASSWORD: test }
+    ports: ["5432:5432"]
+    options: --health-cmd pg_isready --health-interval 5s
+steps:
+  - run: npx prisma migrate deploy
+    env: { DATABASE_URL: postgresql://postgres:test@localhost:5432/postgres }
+  - run: npx vitest run --coverage</code></pre>
+
+<div class="callout good">
+  <div class="tag">Test-DB strategies</div>
+  <ul>
+    <li><strong>Transaction per test, rolled back.</strong> Fastest. Breaks for code that commits internally or opens a second connection.</li>
+    <li><strong>Truncate tables between tests.</strong> Simple, works with commits. Serialize the test files that touch the DB (<code>fileParallelism: false</code> or one schema per worker).</li>
+    <li><strong>Fresh container per suite</strong> (testcontainers). Full isolation, slowest start; the right choice for repository tests in CI.</li>
+  </ul>
+</div>
+</section>
+
+<section class="block" data-block="review" id="3h-13">
+<div class="tag">Code review</div>
+<ul>
+  <li><strong>Mocking the repository in a repository test.</strong> <code>vi.mock("@prisma/client")</code> proves the mock was called; a renamed column or a wrong <code>where</code> passes green. Repository tests hit a real database.</li>
+  <li><strong>Shared app or store across tests.</strong> A module-level <code>const app = createApp(…)</code> makes tests order-dependent and breaks under Vitest's parallel workers. Factory per test, or <code>beforeEach</code>.</li>
+  <li><strong>Un-awaited supertest calls.</strong> Assertions run against a Promise and pass or fail for unrelated reasons. <code>@typescript-eslint/no-floating-promises</code>, and <code>expect.assertions(n)</code> in tests that assert inside callbacks.</li>
+  <li><strong>Hard-coded tokens and timestamps.</strong> Tests that expire or break when the secret rotates. Mint with the app's <code>signToken</code>; inject a <code>clock</code> and use <code>vi.useFakeTimers</code>.</li>
+  <li><strong>Mock drift.</strong> A service test's fake still matches the old repository signature. Type the fakes (<code>satisfies UserRepo</code>) so renames fail to compile.</li>
+  <li><strong>Coverage as the goal.</strong> 80 % lines with assertions-free tests is worse than 60 % with real ones. Reviewers read the assertions, not the number.</li>
+  <li><strong>jsdom for a backend.</strong> Unhandled rejections that crash Node pass silently in a browser-like environment (1f). <code>environment: "node"</code> for Express projects.</li>
+</ul>
+</section>
+
+<section class="block" data-block="exercise" id="3h-14" data-kind="mcq">
+<div class="tag">Check</div>
+<p>A PR adds repository tests that <code>vi.mock("@prisma/client")</code> and assert <code>prisma.user.findUnique</code> was called with <code>{ where: { email } }</code>. All green. A week later a migration renames the column to <code>email_address</code> and the Prisma schema is updated. What do these tests do?</p>
+<script type="application/json">{
+  "options": [
+    "Fail — the mocked client is generated from the schema, so the old argument shape no longer type-checks.",
+    "Stay green — they assert what the repository passed to a mock, not whether the query works; the breakage surfaces in production (or in a route test that uses a real database).",
+    "Fail at runtime because <code>vi.mock</code> re-imports the real client after the schema changes.",
+    "Stay green, but Vitest prints a warning that a mocked module's exports changed."
+  ],
+  "answer": 1,
+  "explain": "A mock verifies the call, not the contract. The only thing that can catch SQL/schema drift is the database. This is why the pyramid (3h-06) sends repository tests to real Postgres and reserves fakes for the layers above."
+}</script>
+</section>
+
+<section class="block" data-block="recall" id="3h-05">
+<div class="tag">Recall</div>
+<dl>
+  <dt>1. A service test mocks the repository and the test passes. Later, the real repository method is renamed but the mock still uses the old name. What's the failure mode?</dt>
+  <dd><p>The test continues passing against the mock while production fails at runtime — the classic mock/reality divergence. Remedies: (a) repository integration tests that verify the real method signature; (b) TypeScript typed mocks (<code>vi.mocked()</code>, <code>satisfies UserRepo</code>) that fail to compile if the mock no longer matches the type.</p></dd>
+  <dt>2. Why does the auth-route test use <code>signToken()</code> (the real app function) rather than a hard-coded token string?</dt>
+  <dd><p>If the signing algorithm, secret, or claims change, a hard-coded token becomes stale and the test fails for the wrong reason (bad fixture, not a real regression). Using <code>signToken()</code> means the test always produces a token that matches whatever the current verification logic expects.</p></dd>
+  <dt>Which layer of an Express app should be tested against a real database, and why not with a mock?</dt>
+  <dd>Repositories. Their only bug class is SQL/schema drift; a mocked client proves the call happened, not that the query is right.</dd>
+  <dt>What does supertest do with the app object you pass it?</dt>
+  <dd>Binds an ephemeral port internally and sends real HTTP through the full middleware stack, in-process — no <code>listen</code>, no shared server between test files.</dd>
+  <dt>Why is <code>createApp(deps)</code> the seam that makes route tests possible?</dt>
+  <dd>A test can only replace what is injected. With dependencies as parameters each test passes its own fakes; with module-level singletons the only option is <code>vi.mock</code>, which patches the module graph and makes tests order-sensitive.</dd>
+  <dt>What does this print?
+<pre><code class="language-javascript">const app = createApp([]);           // store captured by closure
+const a = await request(app, { method: "POST", path: "/items", body: {} });
+const b = await request(app, { method: "POST", path: "/items", body: {} });
+const r = request(app, { path: "/items" });
+console.log(a.body.id, b.body.id, r.status);</code></pre></dt>
+  <dd><code>1 2 undefined</code>. Both POSTs share the closed-over store, so ids continue; the un-awaited <code>request()</code> is a Promise, which has no <code>status</code>.</dd>
+  <dt>What surprises people about <code>vi.mock</code>, and what is the escape hatch?</dt>
+  <dd>It is hoisted above all imports, so its factory can't reference variables declared later in the file. <code>vi.hoisted()</code> for values it needs — or inject the dependency instead of mocking the module.</dd>
+  <dt>Name the three test-database strategies and the trade-off of the fastest one.</dt>
+  <dd>Transaction-per-test rollback (fastest; breaks when code commits or uses a second connection), truncate between tests (works with commits; serialize DB test files), fresh container per suite (full isolation; slowest start).</dd>
+  <dt>Why <code>environment: "node"</code> rather than jsdom for an Express project's Vitest config?</dt>
+  <dd>Unhandled promise rejections crash Node but only log in a browser-like environment, so jsdom hides a class of production crashes.</dd>
+</dl>
+</section>
+</article>
+<script type="module" src="/assets/runtime/boot.js"></script>
+</body>
+</html>

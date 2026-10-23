@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>1h. Runtimes · JS Curriculum</title>
+<link rel="icon" href="/assets/favicon.svg">
+<link rel="stylesheet" href="/assets/vendor/prism.css">
+<link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body data-lesson="1h" data-level="interactive">
+<article class="lesson">
+
+<header>
+  <h1>Runtimes — Node, Browser, Edge</h1>
+</header>
+
+<section class="block" data-block="concept" id="1h-01">
+<p>The language is ECMAScript; everything else — files, sockets, the DOM, <code>fetch</code> — comes from the <strong>host</strong>. The same source runs in Node, in a browser tab, in a worker, and in an edge isolate, and the only thing that changes is which globals exist. Every later "why doesn't this work in production" in this curriculum (Next.js middleware on the edge, <code>process.env</code> being <code>undefined</code> in a client component, a library that imports <code>node:fs</code>) is a runtime-capability question, so learn to ask it first.</p>
+</section>
+
+<section class="block" data-block="concept" id="1h-02">
+<h2>One language, three hosts</h2>
+<p>V8 (Chrome, Node, Cloudflare Workers) or JavaScriptCore (Safari, Bun) runs the language. The host then installs globals. Three capability tiers matter in practice:</p>
+<ul>
+  <li><strong>ECMAScript</strong> — <code>Promise</code>, <code>Map</code>, <code>Intl</code>, <code>structuredClone</code>, <code>globalThis</code>. Everywhere.</li>
+  <li><strong>Web-standard APIs</strong> — <code>fetch</code>, <code>Request</code>/<code>Response</code>, <code>URL</code>, <code>TextEncoder</code>, Web Streams, <code>crypto.subtle</code>, <code>AbortController</code>, <code>setTimeout</code>. Browsers, edge isolates, and Node ≥ 18 all ship these (the <strong>WinterCG</strong> minimum common API). Write to this tier and the code is portable.</li>
+  <li><strong>Host-specific</strong> — Node: <code>node:fs</code>, <code>node:http</code>, <code>process</code>, <code>Buffer</code>. Browser: <code>document</code>, <code>window</code>, <code>localStorage</code>. Edge: the <code>fetch</code> handler export, bindings (KV, D1) passed in as <code>env</code>.</li>
+</ul>
+
+<table>
+  <tr><th>Capability</th><th>Node.js</th><th>Browser</th><th>Edge (Cloudflare, Vercel Edge)</th></tr>
+  <tr><td>File system</td><td><code>node:fs</code></td><td>No</td><td>No</td></tr>
+  <tr><td>HTTP server</td><td><code>node:http</code>, Express</td><td>No</td><td><code>fetch(request, env)</code> handler</td></tr>
+  <tr><td>DOM</td><td>No</td><td>Yes</td><td>No</td></tr>
+  <tr><td><code>fetch</code> / <code>Response</code></td><td>Yes (18+)</td><td>Yes</td><td>Yes</td></tr>
+  <tr><td>Streams</td><td>Node streams + Web Streams</td><td>Web Streams</td><td>Web Streams only</td></tr>
+  <tr><td>Env/config</td><td><code>process.env</code></td><td>Inlined at build time</td><td><code>env</code> argument</td></tr>
+  <tr><td>Cold start</td><td>~100 ms+ (process)</td><td>N/A</td><td>~ms (isolate)</td></tr>
+  <tr><td>Long-lived connections</td><td>Yes</td><td>Yes</td><td>Usually no (request-scoped)</td></tr>
+</table>
+
+<div class="callout warn">
+  <div class="tag">Gotcha</div>
+  <p><code>process.env.X</code> in browser code does not read the environment — the bundler string-replaces it at <em>build</em> time (Vite: only <code>import.meta.env.VITE_*</code>; Next.js: only <code>NEXT_PUBLIC_*</code>). Anything else is <code>undefined</code> in the browser, and <code>process</code> itself is a <code>ReferenceError</code> unless the bundler shims it.</p>
+</div>
+</section>
+
+<section class="block" data-block="diagram" id="1h-03">
+<div class="tag">Mechanism</div>
+<script type="application/json">{
+  "direction": "down",
+  "nodes": [
+    { "id": "lang",    "label": "ECMAScript\nV8 · JavaScriptCore", "kind": "box", "row": 0 },
+    { "id": "web",     "label": "Web-standard APIs\nfetch · URL · Streams · crypto.subtle", "kind": "box", "row": 1 },
+    { "id": "node",    "label": "Node.js\nnode:fs · node:http · process", "kind": "box", "row": 2 },
+    { "id": "browser", "label": "Browser\ndocument · window · localStorage", "kind": "box", "row": 2 },
+    { "id": "edge",    "label": "Edge isolate\nfetch handler · env bindings", "kind": "box", "row": 2 },
+    { "id": "note",    "label": "portable code targets\nthe middle tier", "kind": "note", "row": 1 }
+  ],
+  "edges": [
+    { "from": "lang", "to": "web",      "label": "always" },
+    { "from": "web",  "to": "node",     "label": "+ Node globals" },
+    { "from": "web",  "to": "browser",  "label": "+ DOM" },
+    { "from": "web",  "to": "edge",     "label": "nothing more" },
+    { "from": "note", "to": "web",      "dashed": true }
+  ]
+}</script>
+<p class="caption">An edge isolate is the middle tier and nothing else. Code that only touches the top two tiers runs unchanged in all three hosts.</p>
+</section>
+
+<section class="block" data-block="bridge" id="1h-04">
+<div class="tag">Python bridge</div>
+<p>In Python the language and the standard library arrive together: <code>import os</code> works wherever CPython runs. JS has no bundled stdlib — the <em>host</em> is the stdlib. <code>node:fs</code> / <code>node:path</code> ≈ <code>os</code> / <code>pathlib</code>, but only in Node; <code>process.env</code> ≈ <code>os.environ</code>, but only in Node. The browser is Pyodide: the language is intact, <code>os.fork</code> does not exist. An edge isolate is a Lambda with a read-only tmpfs and no <code>socket</code>: only the request/response surface. The one cross-host API you can lean on is <code>fetch</code> + <code>Request</code>/<code>Response</code>, which is why modern Node servers and edge handlers converge on the same <code>(Request) =&gt; Response</code> shape.</p>
+</section>
+
+<section class="block" data-block="playground" id="1h-05" data-lang="js">
+<div class="tag">Try it</div>
+<p>This runs in a browser worker here and in Node in the curriculum's test runner, with identical output — it only touches the portable tier. Try adding <code>console.log(typeof process, typeof document)</code> to see what this host has; then try <code>Buffer.from("x")</code> to watch a Node-only API fail in the browser.</p>
+<pre><code class="language-javascript">const url = new URL("/users/42?expand=posts", "https://api.example.test");
+console.log(url.pathname, url.searchParams.get("expand"));
+
+const bytes = new TextEncoder().encode("héllo");
+console.log(bytes.length, "bytes");                      // UTF-8, not string length
+
+const digest = await crypto.subtle.digest("SHA-256", bytes);
+console.log([...new Uint8Array(digest)].slice(0, 4).map(b =&gt; b.toString(16).padStart(2, "0")).join(""));
+
+const res = new Response(JSON.stringify({ ok: true }), { status: 201, headers: { "content-type": "application/json" } });
+console.log(res.status, await res.json());</code></pre>
+<output>/users/42 posts
+6 bytes
+3c48591d
+201 { ok: true }</output>
+</section>
+
+<section class="block" data-block="exercise" id="1h-06" data-kind="predict" data-lang="js">
+<div class="tag">Exercise</div>
+<p><code>Response</code> is a Web-standard object with the same semantics in Node, browsers and edge. What does this print? One value per line.</p>
+<pre><code class="language-javascript">const res = new Response(JSON.stringify({ id: 7 }), { headers: { "content-type": "application/json" } });
+console.log(res.status, res.ok);
+console.log(res.bodyUsed);
+const body = await res.json();
+console.log(body.id, res.bodyUsed);
+try {
+  await res.text();
+} catch (err) {
+  console.log(err.name);
+}</code></pre>
+<script type="application/json">{
+  "expected": "200 true\nfalse\n7 true\nTypeError",
+  "hints": [
+    "A <code>Response</code> built without <code>status</code> defaults to 200; <code>ok</code> means 2xx.",
+    "The body is a stream. Reading it (<code>json()</code>, <code>text()</code>) consumes it exactly once — the second read throws a <code>TypeError</code> in every host.",
+    "<code>bodyUsed</code> flips to <code>true</code> as soon as a read starts."
+  ],
+  "explain": "<code>Response</code> wraps a one-shot <code>ReadableStream</code>. That is why middleware that logs a request body must <code>clone()</code> it first, and why Express's <code>express.json()</code> buffers once and stores the result on <code>req.body</code>. The rule is identical in Node's <code>undici</code>, Chrome and Workers because they implement the same Fetch spec."
+}</script>
+</section>
+
+<section class="block" data-block="concept" id="1h-07">
+<h2>Edge runtimes — V8 isolates, Web APIs only</h2>
+<p>Cloudflare Workers, Vercel Edge Functions and Deno Deploy run your module inside a <strong>V8 isolate</strong>: a sandbox the size of a browser tab, not a process. Startup is milliseconds because nothing boots; the trade is that there is no Node — no <code>fs</code>, no <code>net</code>, no <code>process</code>, usually no <code>node:*</code> at all (Workers polyfill a subset behind <code>nodejs_compat</code>). The program is a <code>fetch</code> handler: config arrives as the <code>env</code> argument, not a global.</p>
+
+<pre><code class="language-javascript">export default {
+  async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+    if (url.pathname === "/health") return Response.json({ ok: true });
+
+    const upstream = await fetch(env.API_URL + url.pathname, {
+      headers: { authorization: `Basic ${btoa(`${env.USER}:${env.PASS}`)}` },
+      signal: AbortSignal.timeout(2000),
+    });
+    ctx.waitUntil(logRequest(request));          // runs after the response is sent
+    return new Response(upstream.body, { status: upstream.status });   // stream through
+  },
+};</code></pre>
+
+<p>This matters most in Next.js: <code>middleware.ts</code> runs on the edge runtime by default, so any import chain that reaches <code>node:fs</code>, a native module, or a database driver that opens TCP sockets fails at build time. Per-route code opts in with <code>export const runtime = "edge"</code> and gets the same constraints.</p>
+
+<div class="callout good">
+  <div class="tag">Do</div>
+  <pre><code class="language-javascript">const token = btoa(`${user}:${pass}`);              // Web API — Node, browser, edge
+const hash  = await crypto.subtle.digest("SHA-256", data);
+const env   = { apiUrl: process.env.API_URL };       // read once at the Node boundary, pass it down</code></pre>
+</div>
+<div class="callout bad">
+  <div class="tag">Don't</div>
+  <pre><code class="language-javascript">const token = Buffer.from(`${user}:${pass}`).toString("base64");   // Node only
+const hash  = createHash("sha256").update(data).digest("hex");       // node:crypto
+fs.writeFileSync("./uploads/" + name, bytes);                        // no disk on edge; ephemeral on serverless</code></pre>
+</div>
+</section>
+
+<section class="block" data-block="exercise" id="1h-08" data-kind="fix" data-lang="js">
+<div class="tag">Exercise</div>
+<p>This handler was written for Node and is being moved to an edge runtime, where <code>process</code> and <code>Buffer</code> do not exist and configuration arrives as the <code>env</code> argument. Rewrite it with Web APIs only. The tests simulate the edge host by hiding <code>process</code> and <code>Buffer</code>, then check the proxied URL and the <code>Basic</code> header.</p>
+<pre><code class="language-javascript">// --- simulated edge bindings (leave as is): the host passes these in, there is no process.env
+const bindings = { API_URL: "https://api.example.test", BASIC_USER: "svc", BASIC_PASS: "s3cret" };
+
+// --- fix this: must not touch process or Buffer
+async function handler(request, env) {
+  const url = new URL(request.url);
+  const upstream = process.env.API_URL + url.pathname;
+  const creds = `${process.env.BASIC_USER}:${process.env.BASIC_PASS}`;
+  const token = Buffer.from(creds).toString("base64");
+  return Response.json({ upstream, auth: `Basic ${token}` });
+}</code></pre>
+<script type="application/json">{
+  "tests": "const process = undefined; const Buffer = undefined; // edge isolate: no Node globals\ntest(\"builds the upstream URL from env\", async () => { const r = await handler(new Request(\"https://edge.test/users/1\"), bindings); assert.equal(r.status, 200); const b = await r.json(); assert.equal(b.upstream, \"https://api.example.test/users/1\"); });\ntest(\"Basic auth header uses btoa\", async () => { const r = await handler(new Request(\"https://edge.test/x\"), bindings); const b = await r.json(); assert.equal(b.auth, \"Basic \" + btoa(\"svc:s3cret\")); });\ntest(\"env comes from the argument, not a global\", async () => { const r = await handler(new Request(\"https://edge.test/a\"), { API_URL: \"https://other.test\", BASIC_USER: \"u\", BASIC_PASS: \"p\" }); const b = await r.json(); assert.equal(b.upstream, \"https://other.test/a\"); assert.equal(b.auth, \"Basic \" + btoa(\"u:p\")); });",
+  "hints": [
+    "Every <code>process.env.X</code> becomes <code>env.X</code> — the edge host hands bindings to the handler as an argument.",
+    "<code>btoa(string)</code> is the Web-standard base64 encoder and exists in Node ≥ 16, browsers and all edge runtimes.",
+    "Final shape: <code>const token = btoa(`${env.BASIC_USER}:${env.BASIC_PASS}`)</code> and <code>env.API_URL + url.pathname</code>."
+  ],
+  "solution": "// --- simulated edge bindings (leave as is): the host passes these in, there is no process.env\nconst bindings = { API_URL: \"https://api.example.test\", BASIC_USER: \"svc\", BASIC_PASS: \"s3cret\" };\n\nasync function handler(request, env) {\n  const url = new URL(request.url);\n  const upstream = env.API_URL + url.pathname;\n  const token = btoa(`${env.BASIC_USER}:${env.BASIC_PASS}`);\n  return Response.json({ upstream, auth: `Basic ${token}` });\n}",
+  "explain": "Config-as-argument is the edge model (Cloudflare's <code>fetch(request, env, ctx)</code>); reading globals at import time is the Node habit that breaks it. <code>btoa</code> is ASCII/Latin-1 only — for arbitrary bytes go through <code>TextEncoder</code> + <code>Uint8Array.toBase64()</code> (ES2025) or a tiny loop. Note the tests shadowed <code>process</code> with <code>const process = undefined</code>: that is also how you unit-test a handler for edge-safety under Node."
+}</script>
+</section>
+
+<section class="block" data-block="concept" id="1h-09">
+<h2>Node, Deno, Bun — the full runtimes</h2>
+<ul>
+  <li><strong>Node.js</strong> — the production default. LTS lines (22, 24) get 30 months of support; pin one in <code>engines</code> and <code>.nvmrc</code>. Ships <code>fetch</code>, Web Streams, <code>crypto.subtle</code>, a test runner (<code>node --test</code>), <code>--watch</code>, <code>--env-file</code>, and since 22.18 / 23.6 runs <code>.ts</code> files directly by <strong>type stripping</strong> (types erased, no type-checking, no <code>enum</code>/<code>namespace</code>). Prefix built-ins: <code>import { readFile } from "node:fs/promises"</code>.</li>
+  <li><strong>Deno</strong> — TypeScript-native, permission flags (<code>--allow-net</code>), Web-API-first, runs most npm packages via <code>npm:</code> specifiers. The design the others are converging on.</li>
+  <li><strong>Bun</strong> — JavaScriptCore, very fast startup and install, bundler + test runner + package manager in one binary, broad Node compatibility. Common for tooling and scripts; production backends are still mostly Node.</li>
+</ul>
+
+<pre><code class="language-javascript">// Node: the host-specific tier, by name
+import { readFile } from "node:fs/promises";
+import { createServer } from "node:http";
+
+const cfg = JSON.parse(await readFile(new URL("./config.json", import.meta.url), "utf8"));
+createServer((req, res) =&gt; res.end(cfg.greeting)).listen(process.env.PORT ?? 3000);</code></pre>
+
+<div class="callout warn">
+  <div class="tag">Gotcha</div>
+  <p><code>__dirname</code> and <code>require</code> do not exist in ES modules. Use <code>import.meta.url</code> + <code>new URL("./file", import.meta.url)</code> (Node 20.11+ also has <code>import.meta.dirname</code>). A file that uses <code>require</code> under <code>"type": "module"</code> throws <code>ReferenceError: require is not defined</code> — the single most common Node-upgrade stack trace.</p>
+</div>
+</section>
+
+<section class="block" data-block="exercise" id="1h-10" data-kind="complete" data-lang="js">
+<div class="tag">Exercise</div>
+<p>Implement <code>sha256Hex(text)</code> — a portable hash that runs unchanged in Node, browsers and edge: UTF-8 encode the string, digest with <code>crypto.subtle</code>, return lowercase hex. No <code>node:crypto</code>, no <code>Buffer</code>. Tests check known vectors, a non-ASCII input (UTF-8, not UTF-16), and that the result is a 64-char lowercase hex string.</p>
+<pre><code class="language-javascript">async function sha256Hex(text) {
+  // TODO: TextEncoder → crypto.subtle.digest("SHA-256", …) → hex string
+}</code></pre>
+<script type="application/json">{
+  "tests": "const Buffer = undefined; // portable: no Node globals\ntest(\"known vector: abc\", async () => assert.equal(await sha256Hex(\"abc\"), \"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\"));\ntest(\"empty string\", async () => assert.equal(await sha256Hex(\"\"), \"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"));\ntest(\"non-ASCII is UTF-8 encoded\", async () => assert.equal(await sha256Hex(\"é\"), \"4a99557e4033c3539de2eb65472017cad5f9557f7a0625a09f1c3f6e2ba69c4c\"));\ntest(\"64 lowercase hex chars\", async () => { const h = await sha256Hex(\"hello world\"); assert.equal(h.length, 64); assert(/^[0-9a-f]+$/.test(h), \"lowercase hex\"); });",
+  "hints": [
+    "<code>new TextEncoder().encode(text)</code> gives a <code>Uint8Array</code> of UTF-8 bytes.",
+    "<code>await crypto.subtle.digest(\"SHA-256\", bytes)</code> returns an <code>ArrayBuffer</code>; wrap it in <code>new Uint8Array(...)</code> to iterate.",
+    "Hex: <code>[...u8].map(b => b.toString(16).padStart(2, \"0\")).join(\"\")</code> — <code>padStart</code> matters for bytes below 16."
+  ],
+  "solution": "async function sha256Hex(text) {\n  const bytes = new TextEncoder().encode(text);\n  const digest = await crypto.subtle.digest(\"SHA-256\", bytes);\n  return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, \"0\")).join(\"\");\n}",
+  "explain": "Web Crypto is async (<code>digest</code> returns a promise) and byte-oriented, which is why the string has to be encoded first; <code>node:crypto</code>'s <code>createHash(...).digest(\"hex\")</code> is sync and string-friendly but Node-only. The portable version is what a Next.js middleware, a Worker and a Node route handler can all share."
+}</script>
+</section>
+
+<section class="block" data-block="review" id="1h-11">
+<div class="tag">Code review</div>
+<ul>
+  <li><strong>Node-only import in edge-bound code.</strong> <code>node:fs</code>, <code>node:crypto</code>, <code>Buffer</code>, native addons, TCP database drivers in <code>middleware.ts</code> or a <code>runtime = "edge"</code> route. Check the library's <code>engines</code>, its <code>exports</code> conditions (<code>"workerd"</code>, <code>"edge-light"</code>, <code>"browser"</code>) and whether it has an HTTP-based driver (Neon, PlanetScale, Turso) before pulling it into the edge.</li>
+  <li><strong><code>process.env</code> read in shared or client code.</strong> It is <code>undefined</code> in the browser after bundling and absent on the edge. Read env once at the boundary (server entry, <code>env</code> argument) into a validated config object and pass it down.</li>
+  <li><strong>Writing to local disk on serverless or edge.</strong> The filesystem is read-only, ephemeral, or absent, and never shared between instances. Uploads and generated files go to object storage (S3, R2, Blob).</li>
+  <li><strong>Reading a <code>Request</code>/<code>Response</code> body twice.</strong> The stream is one-shot; the second read throws. <code>clone()</code> before logging, or read once and pass the parsed value along.</li>
+  <li><strong>Unpinned Node version.</strong> No <code>engines</code> + <code>.nvmrc</code>/<code>.node-version</code> means CI, Docker and laptops drift; <code>engines</code> plus <code>engine-strict=true</code> in <code>.npmrc</code> fails the install loudly.</li>
+  <li><strong>CommonJS assumptions in ESM.</strong> <code>__dirname</code>, <code>require</code>, <code>module.exports</code> under <code>"type": "module"</code>. Use <code>import.meta.url</code> / <code>import.meta.dirname</code> and <code>createRequire</code> only for the rare CJS-only dependency.</li>
+</ul>
+</section>
+
+<section class="block" data-block="exercise" id="1h-12" data-kind="mcq">
+<div class="tag">Check</div>
+<p>A Next.js 15 <code>middleware.ts</code> (edge runtime by default) imports an auth helper whose dependency chain reaches <code>node:fs</code> at import time. What happens?</p>
+<script type="application/json">{
+  "options": [
+    "It works: Vercel runs middleware on Node servers, so Node built-ins are available.",
+    "Next.js polyfills <code>node:fs</code> on the edge with an in-memory filesystem, so reads succeed and writes are discarded.",
+    "The build (or first request in dev) fails with an unsupported-module error, because the edge runtime is a V8 isolate without Node built-ins. Move the logic to a Node-runtime route handler or use a Web-API-only library.",
+    "It works but every request pays a Node cold start, since the edge runtime falls back to a Node process when it sees a <code>node:</code> import."
+  ],
+  "answer": 2,
+  "explain": "The edge runtime has no Node built-ins and no fallback; Next.js reports the unsupported module at build. The fix is architectural: keep middleware to the portable tier (JWT verification with <code>crypto.subtle</code>, cookie checks, redirects) and do the Node-only work in a route handler or server component. Option A is the Node habit; B and D describe behaviours no runtime has."
+}</script>
+</section>
+
+<section class="block" data-block="recall" id="1h-13">
+<div class="tag">Recall</div>
+<dl>
+  <dt>Which API tier does portable JS target, and name four members of it.</dt>
+  <dd>The Web-standard (WinterCG) tier shared by Node, browsers and edge: <code>fetch</code> / <code>Request</code> / <code>Response</code>, <code>URL</code>, <code>TextEncoder</code>, Web Streams, <code>crypto.subtle</code>, <code>AbortController</code>, <code>btoa</code>.</dd>
+
+  <dt>What is an edge runtime, and what does it lack?</dt>
+  <dd>A V8 isolate (Cloudflare Workers, Vercel Edge, Deno Deploy) running a <code>fetch(request, env, ctx)</code> handler: millisecond cold starts, request-scoped, but no <code>fs</code>, no <code>process</code>, no TCP sockets, no <code>node:*</code> (beyond small compat shims).</dd>
+
+  <dt>What does this print?
+<pre><code class="language-javascript">const res = new Response("{\"id\":7}", { headers: { "content-type": "application/json" } });
+console.log(res.status, res.bodyUsed);
+await res.json();
+console.log(res.bodyUsed);
+try { await res.text(); } catch (e) { console.log(e.name); }</code></pre></dt>
+  <dd><code>200 false</code>, <code>true</code>, <code>TypeError</code>. The body is a one-shot stream: default status 200, <code>bodyUsed</code> flips on first read, a second read throws in every host. <code>clone()</code> if you need two reads.</dd>
+
+  <dt>Why is <code>process.env.API_KEY</code> <code>undefined</code> in browser code even though it is set on the build machine?</dt>
+  <dd>Bundlers inline env at build time and only for allow-listed prefixes (<code>VITE_*</code>, <code>NEXT_PUBLIC_*</code>). There is no <code>process</code> in the browser; everything else is replaced with <code>undefined</code> or throws.</dd>
+
+  <dt>Web-API replacements for <code>Buffer.from(s).toString("base64")</code> and <code>createHash("sha256")</code>?</dt>
+  <dd><code>btoa(s)</code> (ASCII) or <code>Uint8Array.toBase64()</code> for bytes; <code>await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s))</code> — async, returns an <code>ArrayBuffer</code>.</dd>
+
+  <dt>In an ES module under Node, what replaces <code>__dirname</code> and <code>require</code>?</dt>
+  <dd><code>import.meta.dirname</code> (Node 20.11+) or <code>new URL("./x", import.meta.url)</code>; <code>import</code> — or <code>createRequire(import.meta.url)</code> for a CJS-only dependency.</dd>
+
+  <dt>What does Node's type stripping (22.18+ / 23.6+) do and not do?</dt>
+  <dd>Runs <code>.ts</code> files by erasing type annotations — no type-checking, and no <code>enum</code>, <code>namespace</code> or parameter properties, which need real transforms.</dd>
+</dl>
+</section>
+</article>
+<script type="module" src="/assets/runtime/boot.js"></script>
+</body>
+</html>

@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>2a. What TypeScript actually is · JS Curriculum</title>
+<link rel="icon" href="/assets/favicon.svg">
+<link rel="stylesheet" href="/assets/vendor/prism.css">
+<link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body data-lesson="2a" data-level="interactive">
+<article class="lesson">
+
+<header>
+  <h1>What TypeScript Actually Is</h1>
+</header>
+
+<section class="block" data-block="concept" id="2a-01">
+<p>TypeScript is a <em>static type checker</em> that compiles to plain JavaScript. Every later lesson — generics (2c), type-level tools (2d), typed React props (2g), typed Express handlers (2h) — rests on one fact from this one: <strong>types exist only before the build</strong>. Get the erasure model right and the rest of the topic is vocabulary.</p>
+</section>
+
+<section class="block" data-block="concept" id="2a-04">
+<h2>Types are erased at build time</h2>
+<pre><code class="language-typescript">// TS source:
+function add(a: number, b: number): number { return a + b; }
+
+// After compilation — types gone:
+function add(a, b) { return a + b; }</code></pre>
+
+<p>Two consequences. First, <strong>types are a design tool, not a runtime guarantee.</strong> <code>JSON.parse</code>, <code>req.body</code>, <code>localStorage</code>, a database row — anything that enters from outside has whatever shape it has, and an annotation on the receiving variable changes nothing. Validate external data at runtime (3d covers <code>zod</code>). Second, <strong>adoption is incremental.</strong> Rename a <code>.js</code> to <code>.ts</code>, fix errors, move on; the emitted JS is the same program.</p>
+
+<div class="callout warn">
+  <div class="tag">Not everything erases</div>
+  <p><code>enum</code>, <code>namespace</code>, constructor parameter properties (<code>constructor(private x: number)</code>) and <code>import x = require()</code> emit runtime code. TS 5.8's <code>--erasableSyntaxOnly</code> rejects them, and recent Node (23.6+ / 22.18+) runs <code>.ts</code> files directly by <em>stripping</em> types — it refuses the same constructs. Treat "annotations only" as the modern baseline.</p>
+</div>
+</section>
+
+<section class="block" data-block="stepper" id="2a-05" data-kind="timeline">
+<div class="tag">Step through</div>
+<script type="application/json">{
+  "code": "type User = { id: number; name: string };\nfunction greet(u: User) { return \"hi \" + u.name; }\nconst u: User = JSON.parse(input);\nconsole.log(greet(u));",
+  "steps": [
+    { "label": "Source written", "note": "Four lines of TS. Nothing has run; <code>tsc</code> owns the file until emit.",
+      "state": { "lanes": [
+        { "name": "tsc", "items": [{ "label": "parse", "state": "idle" }, { "label": "bind", "state": "idle" }, { "label": "check", "state": "idle" }, { "label": "emit .js", "state": "idle" }] },
+        { "name": "Runtime", "items": [{ "label": "load .js", "state": "idle" }, { "label": "JSON.parse", "state": "idle" }, { "label": "greet(u)", "state": "idle" }, { "label": "print", "state": "idle" }] }
+      ] } },
+    { "label": "Parse + bind", "line": 1, "note": "The parser builds an AST; the binder links every identifier to its declaration. <code>User</code> becomes a symbol in the <em>type</em> namespace — it will never have a value.",
+      "state": { "lanes": [
+        { "name": "tsc", "items": [{ "label": "parse", "state": "done" }, { "label": "bind", "state": "active" }, { "label": "check", "state": "idle" }, { "label": "emit .js", "state": "idle" }] },
+        { "name": "Runtime", "items": [{ "label": "load .js", "state": "idle" }, { "label": "JSON.parse", "state": "idle" }, { "label": "greet(u)", "state": "idle" }, { "label": "print", "state": "idle" }] }
+      ] } },
+    { "label": "Check", "line": 3, "note": "The only moment type errors exist. <code>JSON.parse</code> returns <code>any</code>, so assigning it to <code>User</code> is accepted without a look. <code>greet(42)</code> would be rejected here (TS2345) — and only here.",
+      "state": { "lanes": [
+        { "name": "tsc", "items": [{ "label": "parse", "state": "done" }, { "label": "bind", "state": "done" }, { "label": "check", "state": "active" }, { "label": "emit .js", "state": "idle" }] },
+        { "name": "Runtime", "items": [{ "label": "load .js", "state": "idle" }, { "label": "JSON.parse", "state": "idle" }, { "label": "greet(u)", "state": "idle" }, { "label": "print", "state": "idle" }] }
+      ] } },
+    { "label": "Emit — types erased", "line": 1, "note": "Line 1 disappears entirely; <code>: User</code> and <code>u: User</code> are deleted. The output is byte-for-byte what you'd have written by hand in JS. Bundlers (esbuild, SWC) do <em>only</em> this step.",
+      "state": { "lanes": [
+        { "name": "tsc", "items": [{ "label": "parse", "state": "done" }, { "label": "bind", "state": "done" }, { "label": "check", "state": "done" }, { "label": "emit .js", "state": "active" }] },
+        { "name": "Runtime", "items": [{ "label": "load .js", "state": "idle" }, { "label": "JSON.parse", "state": "idle" }, { "label": "greet(u)", "state": "idle" }, { "label": "print", "state": "idle" }] }
+      ] } },
+    { "label": "Node loads the .js", "note": "From here on there is no TypeScript. No <code>User</code>, no <code>number</code>, no checker.",
+      "state": { "lanes": [
+        { "name": "tsc", "items": [{ "label": "parse", "state": "done" }, { "label": "bind", "state": "done" }, { "label": "check", "state": "done" }, { "label": "emit .js", "state": "done" }] },
+        { "name": "Runtime", "items": [{ "label": "load .js", "state": "active" }, { "label": "JSON.parse", "state": "idle" }, { "label": "greet(u)", "state": "idle" }, { "label": "print", "state": "idle" }] }
+      ] } },
+    { "label": "Data arrives", "line": 3, "note": "<code>input</code> is <code>'{\"id\":\"42\"}'</code>. It becomes <code>{ id: \"42\" }</code> — a string id, no <code>name</code>. Nothing compares this to <code>User</code>; the annotation was deleted two steps ago.",
+      "state": { "lanes": [
+        { "name": "tsc", "items": [{ "label": "parse", "state": "done" }, { "label": "bind", "state": "done" }, { "label": "check", "state": "done" }, { "label": "emit .js", "state": "done" }] },
+        { "name": "Runtime", "items": [{ "label": "load .js", "state": "done" }, { "label": "JSON.parse", "state": "active" }, { "label": "greet(u)", "state": "idle" }, { "label": "print", "state": "idle" }] }
+      ] } },
+    { "label": "greet(u) runs", "line": 4, "note": "<code>u.name</code> is <code>undefined</code>; string concatenation happily produces <code>\"hi undefined\"</code>. The checker approved this program and the runtime ran it — they never met.",
+      "state": { "lanes": [
+        { "name": "tsc", "items": [{ "label": "parse", "state": "done" }, { "label": "bind", "state": "done" }, { "label": "check", "state": "done" }, { "label": "emit .js", "state": "done" }] },
+        { "name": "Runtime", "items": [{ "label": "load .js", "state": "done" }, { "label": "JSON.parse", "state": "done" }, { "label": "greet(u)", "state": "active" }, { "label": "print", "state": "idle" }] }
+      ] } },
+    { "label": "Printed", "note": "Output: <code>hi undefined</code>. The fix is never \"a better annotation\" — it's a runtime check at the boundary where the data came in.",
+      "state": { "lanes": [
+        { "name": "tsc", "items": [{ "label": "parse", "state": "done" }, { "label": "bind", "state": "done" }, { "label": "check", "state": "done" }, { "label": "emit .js", "state": "done" }] },
+        { "name": "Runtime", "items": [{ "label": "load .js", "state": "done" }, { "label": "JSON.parse", "state": "done" }, { "label": "greet(u)", "state": "done" }, { "label": "print", "state": "done" }] }
+      ] } }
+  ]
+}</script>
+</section>
+
+<section class="block" data-block="concept" id="2a-02">
+<h2>Run your first compile</h2>
+<pre><code class="language-bash">npm install -D typescript
+npx tsc --init          # generates tsconfig.json
+echo 'const x: number = "oops";' &gt; hello.ts
+npx tsc hello.ts</code></pre>
+
+<p>The compiler prints:</p>
+<pre><code class="language-text">hello.ts:1:7 - error TS2322: Type 'string' is not assignable to type 'number'.
+
+1 const x: number = "oops";
+        ~</code></pre>
+
+<p>Fix it (<code>const x: number = 42;</code>), run <code>npx tsc hello.ts</code> again — it emits <code>hello.js</code> with types stripped. That <code>.js</code> file is what Node (or the browser) actually runs.</p>
+
+<div class="callout good">
+  <div class="tag">Workflow</div>
+  <p>In real projects you rarely invoke <code>tsc</code> for output — Vite, Next.js, <code>tsx</code>, or Node's own type stripping run the code. Those tools <em>don't type-check</em>. The check is a separate command, <code>tsc --noEmit</code>, and it belongs in CI and in the editor (the TS language server is what powers the red squiggles).</p>
+</div>
+
+<div class="callout py">
+  <div class="tag">Python bridge</div>
+  <p>Think of Python's type hints + <code>mypy</code>, but <em>enforced</em> and with much deeper inference. Python hints are often aspirational; TS is where teams actually rely on the types. The cultural adoption is more like Rust than like Python annotations. The erasure story is the same, though: <code>def f(x: int)</code> accepts a <code>str</code> at runtime just as <code>function f(x: number)</code> does.</p>
+</div>
+</section>
+
+<section class="block" data-block="playground" id="2a-08" data-lang="ts">
+<div class="tag">Try it</div>
+<p>This runs after type stripping, exactly like production. Try: give <code>data</code> real numbers; add <code>: Named</code> to <code>user</code>; pass <code>{ name: "P", age: 30 }</code> straight into <code>greet</code> — it still runs here, but <code>tsc</code> would reject it (see 2a-03).</p>
+<pre><code class="language-typescript">function add(a: number, b: number): number { return a + b; }
+
+const data = JSON.parse('{"a":"1","b":2}');   // any — compiles
+console.log(add(data.a, data.b));
+console.log(typeof add(1, 2));
+
+type Named = { name: string };
+function greet(x: Named) { return "hi " + x.name; }
+const user = { name: "P", age: 30 };
+console.log(greet(user));</code></pre>
+<output>12
+number
+hi P</output>
+</section>
+
+<section class="block" data-block="exercise" id="2a-09" data-kind="predict" data-lang="ts">
+<div class="tag">Exercise</div>
+<p>This compiles without error. What does it print, one value per line?</p>
+<pre><code class="language-typescript">type User = { id: number; name: string };
+const u: User = JSON.parse('{"id":"42"}');
+console.log(typeof u.id);
+console.log(u.id === 42);
+console.log(u.name);
+const n: number = u.id;
+console.log(n + 1);</code></pre>
+<script type="application/json">{
+  "expected": "string\nfalse\nundefined\n421",
+  "hints": [
+    "<code>JSON.parse</code> returns <code>any</code>, so the <code>: User</code> annotation is accepted — and then deleted.",
+    "At runtime <code>u</code> is exactly <code>{ id: \"42\" }</code>. What is <code>\"42\" + 1</code> in JS?"
+  ],
+  "explain": "No line is checked against <code>User</code> at runtime. <code>u.id</code> is the string <code>\"42\"</code>, <code>u.name</code> is missing, and <code>n + 1</code> is string concatenation. The annotations were true only in the editor."
+}</script>
+</section>
+
+<section class="block" data-block="concept" id="2a-03">
+<h2>Structural typing — the mental model</h2>
+<p>TS is <strong>structural</strong>: a value is assignable to a type if its shape has every required member with a compatible type, regardless of what the value was declared as. Python classes, Java and C# are <em>nominal</em> — the name (or the inheritance chain) decides.</p>
+
+<pre><code class="language-typescript">type Named = { name: string };
+function greet(x: Named) { return "hi " + x.name; }
+
+const user = { name: "P", age: 30 };
+greet(user);                     // OK — has name: string; extra age is fine
+greet({ name: "P" });            // OK
+greet({ age: 30 });              // Error TS2345 — name is missing</code></pre>
+
+<div class="callout warn">
+  <div class="tag">Excess property checks</div>
+  <p><code>greet({ name: "P", age: 30 })</code> — the same object as <code>user</code>, but as a <em>fresh</em> object literal in a typed position — is an error (TS2353 "Object literal may only specify known properties"). That is a typo lint for literals, not a nominal check: assign to a variable first and it passes. Expect it when building options bags inline.</p>
+</div>
+</section>
+
+<section class="block" data-block="diagram" id="2a-06">
+<div class="tag">Mechanism</div>
+<script type="application/json">{
+  "direction": "down",
+  "nodes": [
+    { "id": "a", "label": "{ name: \"P\", age: 30 }", "kind": "box", "row": 0 },
+    { "id": "b", "label": "{ name: \"P\" }", "kind": "box", "row": 0 },
+    { "id": "c", "label": "{ age: 30 }", "kind": "box", "row": 0 },
+    { "id": "named", "label": "Named\n{ name: string }", "kind": "pill", "row": 1 },
+    { "id": "fresh", "label": "fresh literal\nwith extra keys", "kind": "note", "row": 1 },
+    { "id": "greet", "label": "greet(x: Named)", "kind": "box", "row": 2 }
+  ],
+  "edges": [
+    { "from": "a", "to": "named", "label": "has name ✓" },
+    { "from": "b", "to": "named", "label": "exact ✓" },
+    { "from": "c", "to": "named", "label": "no name ✗", "dashed": true },
+    { "from": "fresh", "to": "named", "label": "TS2353", "dashed": true },
+    { "from": "named", "to": "greet", "label": "assignable" }
+  ]
+}</script>
+<p class="caption">Assignability asks one question per required member of the target: is it present with a compatible type? Extra members never matter — except on a fresh literal, where they're flagged as probable typos.</p>
+</section>
+
+<section class="block" data-block="bridge" id="2a-07">
+<div class="tag">Python bridge</div>
+<p>Python classes are nominal: <code>isinstance(x, Named)</code> needs inheritance. <code>typing.Protocol</code> opts <em>one</em> type into structural matching — TS has no opt-in, every object type behaves like a Protocol. What mypy calls "compatible with protocol <code>Named</code>" is what TS calls "assignable to <code>Named</code>", and both ignore extra attributes. The flip side: Python's <code>NewType("UserId", str)</code> is a one-liner for a nominal wrapper; TS needs a <em>branded type</em> (2f) to stop <code>userId</code> and <code>orderId</code> — both <code>string</code> — from being interchangeable.</p>
+</section>
+
+<section class="block" data-block="exercise" id="2a-10" data-kind="fix" data-lang="ts">
+<div class="tag">Exercise</div>
+<p><code>parseUser</code> type-checks and returns a <code>User</code> — on paper. At runtime it returns whatever the JSON was. Make it <em>throw</em> on anything that isn't an object with a numeric <code>id</code> and a string <code>name</code>, and return exactly those two fields otherwise. The tests feed it valid JSON, a string <code>id</code>, a missing <code>name</code>, and a bare number.</p>
+<pre><code class="language-typescript">type User = { id: number; name: string };
+
+// --- fix this: a cast is a promise to the compiler, not a check
+function parseUser(raw: string): User {
+  return JSON.parse(raw) as User;
+}</code></pre>
+<script type="application/json">{
+  "tests": "test(\"valid JSON becomes a User\", () => assert.equal(parseUser('{\"id\":1,\"name\":\"Ada\"}'), { id: 1, name: \"Ada\" }));\ntest(\"string id is rejected\", () => assert.throws(() => parseUser('{\"id\":\"1\",\"name\":\"Ada\"}')));\ntest(\"missing name is rejected\", () => assert.throws(() => parseUser('{\"id\":1}')));\ntest(\"non-object is rejected\", () => assert.throws(() => parseUser('42')));\ntest(\"extra keys are dropped\", () => assert.equal(parseUser('{\"id\":2,\"name\":\"Bob\",\"admin\":true}'), { id: 2, name: \"Bob\" }));",
+  "hints": [
+    "Type the parsed value as <code>unknown</code> instead of casting, then narrow with <code>typeof</code> checks before touching any field.",
+    "<code>typeof null === \"object\"</code> — check for <code>null</code> explicitly. Then <code>typeof o.id === \"number\" &amp;&amp; typeof o.name === \"string\"</code>.",
+    "Return a <em>new</em> object built from the validated fields, so unknown keys don't leak through."
+  ],
+  "solution": "type User = { id: number; name: string };\n\nfunction parseUser(raw: string): User {\n  const v: unknown = JSON.parse(raw);\n  if (typeof v !== \"object\" || v === null) throw new TypeError(\"User must be an object\");\n  const o = v as Record<string, unknown>;\n  if (typeof o.id !== \"number\" || typeof o.name !== \"string\") throw new TypeError(\"bad User shape\");\n  return { id: o.id, name: o.name };\n}",
+  "explain": "<code>as User</code> was erased, so the original function was <code>return JSON.parse(raw)</code>. The fix moves the guarantee to runtime: narrow from <code>unknown</code>, throw at the boundary, and construct the value you promised. In a real service this is <code>zod</code>'s <code>schema.parse(raw)</code> — 3d — but the shape of the check is identical."
+}</script>
+</section>
+
+<section class="block" data-block="exercise" id="2a-11" data-kind="complete" data-lang="ts">
+<div class="tag">Exercise</div>
+<p>Implement <code>isNamed</code> as a structural type guard: true only for non-null objects whose <code>name</code> is a string. <code>greetAll</code> already uses it to filter a mixed array. Tests check objects with extra keys (accepted), <code>null</code>, strings, arrays, and a numeric <code>name</code> (all rejected).</p>
+<pre><code class="language-typescript">type Named = { name: string };
+
+function isNamed(x: unknown): x is Named {
+  return false; // TODO
+}
+
+function greetAll(items: unknown[]): string[] {
+  return items.filter(isNamed).map(n =&gt; "hi " + n.name);
+}</code></pre>
+<script type="application/json">{
+  "tests": "test(\"accepts an object with a string name\", () => assert.equal(isNamed({ name: \"A\" }), true));\ntest(\"extra keys are fine (structural)\", () => assert.equal(isNamed({ name: \"A\", age: 3 }), true));\ntest(\"rejects null, strings, arrays, numeric names\", () => { assert.equal(isNamed(null), false); assert.equal(isNamed(\"name\"), false); assert.equal(isNamed([\"name\"]), false); assert.equal(isNamed({ name: 2 }), false); });\ntest(\"greetAll keeps only the Named ones\", () => assert.equal(greetAll([{ name: \"A\" }, { name: 2 }, null, \"x\", { name: \"B\", age: 1 }]), [\"hi A\", \"hi B\"]));",
+  "hints": [
+    "Three checks in order: <code>typeof x === \"object\"</code>, <code>x !== null</code>, then look at <code>name</code>.",
+    "To read <code>name</code> off an <code>unknown</code> you've narrowed to <code>object</code>, use the <code>in</code> operator: <code>\"name\" in x</code> narrows further (TS 4.9+), then <code>typeof x.name === \"string\"</code>."
+  ],
+  "solution": "type Named = { name: string };\n\nfunction isNamed(x: unknown): x is Named {\n  return typeof x === \"object\" && x !== null && \"name\" in x && typeof (x as { name: unknown }).name === \"string\";\n}\n\nfunction greetAll(items: unknown[]): string[] {\n  return items.filter(isNamed).map(n => \"hi \" + n.name);\n}",
+  "explain": "A type guard is a plain boolean function with an <code>x is Named</code> return annotation; the annotation is erased, the boolean does the work at runtime, and the checker uses the annotation to narrow <code>items.filter(isNamed)</code> to <code>Named[]</code>. The check is structural by construction — it never asks what the value was declared as."
+}</script>
+</section>
+
+<section class="block" data-block="review" id="2a-12">
+<div class="tag">Code review</div>
+<ul>
+  <li><strong><code>JSON.parse(x) as T</code> / <code>(await res.json()) as T</code>.</strong> A cast is erased; the data is unchecked. Validate at every boundary — HTTP body, env vars, storage, DB rows — with a schema (<code>zod</code>, 3d) and derive the type from it with <code>z.infer</code>.</li>
+  <li><strong><code>any</code> leaking in.</strong> <code>JSON.parse</code>, <code>req.body</code>, untyped libraries. Turn on <code>strict</code> (which includes <code>noImplicitAny</code> and <code>useUnknownInCatchVariables</code>) and the <code>@typescript-eslint/no-unsafe-*</code> rules so <code>any</code> can't spread silently.</li>
+  <li><strong>Green bundler build ≠ type-checked.</strong> esbuild, SWC, Vite, Next's compiler and Node's type stripping only erase. CI must run <code>tsc --noEmit</code> (or the framework's typecheck step) or type errors ship.</li>
+  <li><strong><code>// @ts-ignore</code>.</strong> Prefer <code>// @ts-expect-error</code> with a reason: it fails the build once the error goes away, so suppressions don't outlive their cause.</li>
+  <li><strong>Non-erasable syntax.</strong> <code>enum</code>, <code>namespace</code>, parameter properties emit code and break under type stripping; <code>--erasableSyntaxOnly</code> (TS 5.8) makes the compiler say so.</li>
+  <li><strong>Structural confusion of ids.</strong> <code>userId: string</code> and <code>orderId: string</code> are interchangeable to the checker. Brand them (2f) when a mix-up would be a production incident, not a typo.</li>
+</ul>
+</section>
+
+<section class="block" data-block="exercise" id="2a-13" data-kind="mcq">
+<div class="tag">Check</div>
+<p>A Next.js production build (SWC) is green and the app is deployed. A colleague opens the project in an editor and sees type errors in a file that was changed in that deploy. Which statement is correct?</p>
+<script type="application/json">{
+  "options": [
+    "Impossible — a build that emits JavaScript has type-checked it; the editor's TS version must differ.",
+    "Expected — SWC only strips types. Nothing in the deploy ran the checker; <code>tsc --noEmit</code> (or <code>next build</code>'s typecheck step, if not disabled) is what would have caught it.",
+    "The errors are harmless — if the code had been wrong, it would have thrown at runtime where the annotations were violated.",
+    "The deploy must have used <code>// @ts-ignore</code> somewhere; otherwise erased types can't disagree with the editor."
+  ],
+  "answer": 1,
+  "explain": "Erasure is a separate step from checking. Transpilers (SWC, esbuild, Node's stripping) never run the checker, so a green emit says nothing about types. Option 2 is the dangerous belief: annotations are deleted, so a violated one throws nothing — the program just runs with the wrong shape."
+}</script>
+</section>
+
+<section class="block" data-block="recall" id="2a-14">
+<div class="tag">Recall</div>
+<dl>
+  <dt>What does <code>const u: User = JSON.parse('{"id":"42"}')</code> do at runtime, and why does it compile?</dt>
+  <dd>It assigns <code>{ id: "42" }</code> unchanged — the annotation is erased. It compiles because <code>JSON.parse</code> returns <code>any</code>, which is assignable to everything.</dd>
+
+  <dt>What does this print?
+<pre><code class="language-typescript">const u: { id: number } = JSON.parse('{"id":"42"}');
+console.log(typeof u.id, u.id === 42);</code></pre></dt>
+  <dd><code>string false</code>. Types are deleted before the code runs; <code>u.id</code> is whatever the JSON held.</dd>
+
+  <dt>Which TS constructs are <em>not</em> erasable, and which compiler flag rejects them?</dt>
+  <dd><code>enum</code>, <code>namespace</code> (with values), constructor parameter properties, <code>import x = require()</code>. <code>--erasableSyntaxOnly</code> (TS 5.8) — matching what Node's type stripping can run.</dd>
+
+  <dt>Does a green Vite / Next / esbuild build mean the code type-checks?</dt>
+  <dd>No. Those tools only strip types. Type-checking is <code>tsc --noEmit</code> (or the editor's language server) and must run separately, typically in CI.</dd>
+
+  <dt>Structural typing in one sentence — and the one case where an extra property is an error.</dt>
+  <dd>A value is assignable to a type if it has every required member with a compatible type; extras are ignored. Exception: a <em>fresh</em> object literal in a typed position gets an excess-property check (TS2353).</dd>
+
+  <dt>Python equivalent of TS's default assignability rule?</dt>
+  <dd><code>typing.Protocol</code> — structural matching — except TS applies it to every object type without opting in. <code>NewType</code> has no direct TS equivalent; use branded types.</dd>
+
+  <dt>What is a type guard, and what part of it survives compilation?</dt>
+  <dd>A function returning <code>boolean</code> annotated <code>x is T</code>. The boolean logic survives and runs; the <code>x is T</code> annotation is erased and only tells the checker to narrow after a <code>true</code> result.</dd>
+</dl>
+</section>
+</article>
+<script type="module" src="/assets/runtime/boot.js"></script>
+</body>
+</html>

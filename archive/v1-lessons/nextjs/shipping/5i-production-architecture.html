@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>5i. Production architecture · JS Curriculum</title>
+<link rel="icon" href="/assets/favicon.svg">
+<link rel="stylesheet" href="/assets/vendor/prism.css">
+<link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body data-lesson="5i" data-level="migrated">
+<article class="lesson">
+
+<header>
+  <h1>Production Architecture — What a Real App Looks Like</h1>
+</header>
+
+<section class="block" data-block="concept" id="5i-01">
+<pre><code class="language-bash">src/
+  app/                      # routes, layouts, pages
+    (marketing)/
+    (app)/                  # authed
+      dashboard/
+  components/
+    ui/                     # primitives (Button, Input, Dialog)
+    features/               # feature-scoped components
+  lib/
+    db.ts                   # Prisma / Drizzle client
+    auth.ts                 # Auth.js config
+    env.ts                  # zod-parsed env
+  server/                   # SERVER-ONLY code (explicit boundary)
+    actions/
+    services/
+  styles/
+    globals.css
+  types/</code></pre>
+
+<div class="callout good">
+  <div class="tag">The "server-only" guard</div>
+  <p><code>import "server-only";</code> at the top of a file throws at build time if a client component tries to import it. Put it on DB clients, auth helpers, secrets. Catches the "I accidentally bundled my DB library into the browser" bug.</p>
+</div>
+
+<ul>
+  <li>Separate client-only modules (<code>"use client"</code>) from universal ones. Be deliberate.</li>
+  <li>Environment schema in <code>src/lib/env.ts</code> — Zod-parsed, throws on missing at boot.</li>
+  <li>Shared Zod schemas live in <code>lib/schemas/</code>; forms and server actions both import them.</li>
+  <li>Keep <code>app/</code> thin. Heavy logic lives in <code>server/services/</code> that both server components and server actions call.</li>
+</ul>
+</section>
+
+<section class="block" data-block="concept" id="5i-02">
+<h2>The inverse guard — <code>client-only</code></h2>
+<p>The <code>client-only</code> package is the mirror of <code>server-only</code>. Import it at the top of files that must never run on the server (e.g., files using <code>window</code>, browser-only APIs, or client-only state). Throws at build if a server component imports it.</p>
+
+<pre><code class="language-typescript">// lib/browser-analytics.ts
+import "client-only";    // guarantees this file never reaches the server
+export function track(event: string) { window.dataLayer?.push({ event }); }</code></pre>
+</section>
+
+<section class="block" data-block="concept" id="5i-03">
+<h2>Service functions — shared by components and actions</h2>
+<p>The canonical pattern: business logic lives in a service function in <code>server/services/</code>, called from both server components (for reading) and server actions (for mutations). The action adds authorization; the component just fetches.</p>
+
+<pre><code class="language-typescript">// server/services/posts.ts
+import "server-only";
+import { db } from "@/lib/db";
+
+export async function getPostsByUser(userId: string) {
+  return db.post.findMany({ where: { authorId: userId }, orderBy: { createdAt: "desc" } });
+}
+
+// app/dashboard/page.tsx (server component — reads)
+import { getPostsByUser } from "@/server/services/posts";
+const posts = await getPostsByUser(session.user.id);
+
+// app/actions.ts (server action — mutates, re-authorizes first)
+export async function deletePost(postId: string) {
+  const session = await auth();
+  if (!session) throw new Error("Unauthenticated");
+  const post = await db.post.findUnique({ where: { id: postId } });
+  if (post?.authorId !== session.user.id) throw new Error("Forbidden");
+  await db.post.delete({ where: { id: postId } });
+}</code></pre>
+</section>
+
+<section class="block" data-block="concept" id="5i-04">
+<h2>Connection pooling in serverless</h2>
+<p>Serverless functions spin up hundreds of instances under load. Each instance opening its own DB connection quickly exhausts Postgres's connection limit.</p>
+<ul>
+  <li><strong>Prisma</strong> — use <strong>PgBouncer</strong> (set <code>?pgbouncer=true&amp;connection_limit=1</code> in the URL) or <strong>Prisma Accelerate</strong> (managed pooling proxy from Prisma).</li>
+  <li><strong>Drizzle</strong> — same problem; use <code>pg</code> with a pooled Neon / Supabase connection string, or a PgBouncer sidecar.</li>
+  <li>Long-running servers (Docker / Fly.io) don't have this problem — the single process holds a small pool.</li>
+</ul>
+</section>
+
+<section class="block" data-block="concept" id="5i-05">
+<h2>Observability</h2>
+<ul>
+  <li>Structured logging with <strong>pino</strong> — JSON logs, minimal overhead, works in Node and Edge.</li>
+  <li>Error tracking via <strong>Sentry</strong> — wrap <code>next.config.ts</code> with <code>withSentryConfig()</code>; add <code>instrumentation.ts</code> for server-side init (see 5h).</li>
+  <li>Traces via <code>instrumentation.ts</code> — initialize OpenTelemetry once at startup; works with Datadog, Grafana, Honeycomb.</li>
+</ul>
+
+<div class="callout py">
+  <div class="tag">Python bridge</div>
+  <p>The service layer pattern (<code>server/services/</code>) is identical to Django's service layer or a Flask <code>services.py</code> module. The view (server component) calls the service to get data; the form handler (server action) calls the service after authorization. Separating concerns this way makes everything individually testable — which is exactly why you'd do it in Django too.</p>
+</div>
+</section>
+</article>
+<script type="module" src="/assets/runtime/boot.js"></script>
+</body>
+</html>

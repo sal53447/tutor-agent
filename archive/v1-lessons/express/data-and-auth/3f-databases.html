@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>3f. Databases · JS Curriculum</title>
+<link rel="icon" href="/assets/favicon.svg">
+<link rel="stylesheet" href="/assets/vendor/prism.css">
+<link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body data-lesson="3f" data-level="migrated">
+<article class="lesson">
+
+<header>
+  <h1>Databases — ORMs, Migrations, Transactions</h1>
+</header>
+
+<section class="block" data-block="concept" id="3f-01">
+<h2>Connection URL anatomy</h2>
+<pre><code class="language-bash">postgresql://user:password@host:5432/dbname?schema=public&amp;connection_limit=10
+#            ^^^^  ^^^^^^^^  ^^^^  ^^^^  ^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+#            user  password  host  port  db      query params (Prisma-specific)</code></pre>
+<p>Put this in <code>DATABASE_URL</code>. Never commit it. In production, the password comes from a secret manager injected as an env var at runtime.</p>
+</section>
+
+<section class="block" data-block="concept" id="3f-02">
+<h2>Connection pool — why it matters</h2>
+<p>Node is long-lived (unlike Python/PHP where each request can be a new process). A pool of, say, 10 persistent connections handles hundreds of requests per second without the overhead of TCP+TLS+auth per query. The right pool size is roughly <code>cpu_cores * 2</code> per instance — too high and you saturate the DB; too low and requests queue. In <strong>serverless</strong> environments (Lambda, Vercel Functions) each instance is short-lived and can spin up many concurrent cold-starts simultaneously, overwhelming a traditional pool. Use <strong>PgBouncer</strong> or Prisma Accelerate as a connection proxy in front of the DB.</p>
+</section>
+
+<section class="block" data-block="concept" id="3f-03">
+<h2>The three idioms</h2>
+<ul>
+  <li><strong>Prisma</strong> — schema-first, generates a typed client. Great DX. The de facto default for new Node apps. Migration tooling is strong. Downside: less flexible for unusual queries.</li>
+  <li><strong>Drizzle</strong> — SQL-first schemas in TS, thin wrapper. If you like SQL, this is the one. Gaining ground fast.</li>
+  <li><strong>Kysely</strong> — type-safe query builder. Closer to the metal; no heavy abstraction. Great when you want full SQL control with typing.</li>
+</ul>
+
+<div class="callout py">
+  <div class="tag">Python bridge</div>
+  <p>Prisma ≈ SQLAlchemy ORM + Alembic with better TS integration. Drizzle ≈ SQLAlchemy Core. Kysely ≈ bare <code>sqlalchemy.select()</code> with type stubs. Migration workflow: Alembic's <code>alembic upgrade head</code> = <code>prisma migrate deploy</code>; <code>alembic revision --autogenerate</code> = <code>prisma migrate dev</code>. The concepts (revision files, upgrade/downgrade, keeping them in VCS) are identical.</p>
+</div>
+</section>
+
+<section class="block" data-block="concept" id="3f-04">
+<h2>Drizzle — code example</h2>
+<pre><code class="language-typescript">// schema.ts
+import { pgTable, serial, text, timestamp } from "drizzle-orm/pg-core";
+
+export const users = pgTable("users", {
+  id:           serial("id").primaryKey(),
+  email:        text("email").notNull().unique(),
+  passwordHash: text("password_hash").notNull(),
+  createdAt:    timestamp("created_at").defaultNow().notNull(),
+});
+
+// db.ts
+import { drizzle } from "drizzle-orm/node-postgres";
+import { Pool } from "pg";
+export const db = drizzle(new Pool({ connectionString: env.DATABASE_URL }));
+
+// Repository usage
+import { eq } from "drizzle-orm";
+import { db } from "../lib/db";
+import { users } from "../db/schema";
+
+export async function findByEmail(email: string) {
+  return db.select().from(users).where(eq(users.email, email)).limit(1).then(r =&gt; r[0]);
+}
+export async function create(data: typeof users.$inferInsert) {
+  return db.insert(users).values(data).returning().then(r =&gt; r[0]);
+}</code></pre>
+</section>
+
+<section class="block" data-block="concept" id="3f-05">
+<h2>Migrations</h2>
+<p>Migrations are VCS-tracked SQL files that describe schema changes incrementally. Never edit the DB by hand in any environment you care about.</p>
+<table>
+  <tr><th>Command</th><th>When to use</th></tr>
+  <tr><td><code>prisma migrate dev</code></td><td>Local development — generates migration files, applies them, regenerates client.</td></tr>
+  <tr><td><code>prisma migrate deploy</code></td><td>CI/CD and production — applies pending migrations without prompting or generating new files. Safe to run as part of a deploy pipeline.</td></tr>
+  <tr><td><code>prisma migrate reset</code></td><td>Local only — drops the DB and replays all migrations. Never run in production.</td></tr>
+</table>
+<p>Drizzle equivalent: <code>drizzle-kit generate</code> (generate migration SQL) + <code>drizzle-kit migrate</code> (apply). The deploy pattern is identical: generate locally, commit the SQL, apply in CI.</p>
+</section>
+
+<section class="block" data-block="concept" id="3f-06">
+<h2>Transactions</h2>
+<pre><code class="language-typescript">// Prisma
+await prisma.$transaction(async (tx) =&gt; {
+  const user = await tx.user.create({ data: {...} });
+  await tx.audit.create({ data: { userId: user.id, action: "created" } });
+});</code></pre>
+</section>
+
+<section class="block" data-block="concept" id="3f-07">
+<h2>The N+1 problem</h2>
+<p>You query 100 users, then loop and query each user's posts one at a time. That's 101 queries. Solution: <em>eager loading</em> (Prisma: <code>include</code>, Drizzle: <code>with</code>), or batch fetch with an <code>IN</code> clause. In GraphQL, use DataLoader.</p>
+
+<div class="callout review">
+  <div class="tag">Review flags</div>
+  <ul>
+    <li>Migrations not checked into VCS. Reject.</li>
+    <li>Direct SQL with string interpolation. SQL injection risk — use parameterized queries always.</li>
+    <li>Connection pools not sized for the deployment. Too high = DB dies; too low = app queues.</li>
+    <li>Long-running transactions. Acquire locks for as short a window as possible.</li>
+    <li><code>prisma migrate deploy</code> missing from the deploy pipeline. Schema drift between DB and code causes 500s at runtime.</li>
+    <li>Default pool size (10) used unchanged in a serverless function that can fork 500 concurrent instances. Use a proxy.</li>
+  </ul>
+</div>
+</section>
+
+<section class="block" data-block="recall" id="3f-08">
+<dl>
+  <dt>1. You run <code>prisma migrate dev</code> on a feature branch that adds a <code>NOT NULL</code> column with no default. It works locally on an empty DB but fails in staging. Why?</dt>
+  <dd><p>Staging has existing rows. Adding a <code>NOT NULL</code> column with no default requires either a <code>DEFAULT</code> value or a two-step migration: add nullable → backfill → add constraint. Prisma generates the SQL but it's your responsibility to handle existing data.</p></dd>
+  <dt>2. A colleague opens a transaction, calls an external HTTP API inside it, then commits. What's the risk?</dt>
+  <dd><p>The external call can be slow or hang, holding the transaction open and locking rows for the duration. Other requests queue waiting for the lock. Rule: never call external services inside a transaction — do the external call first, then open the transaction for DB writes.</p></dd>
+</dl>
+</section>
+</article>
+<script type="module" src="/assets/runtime/boot.js"></script>
+</body>
+</html>

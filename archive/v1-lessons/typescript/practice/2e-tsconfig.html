@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>2e. tsconfig deep dive · JS Curriculum</title>
+<link rel="icon" href="/assets/favicon.svg">
+<link rel="stylesheet" href="/assets/vendor/prism.css">
+<link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body data-lesson="2e" data-level="interactive">
+<article class="lesson">
+
+<header>
+  <h1>tsconfig Deep Dive</h1>
+</header>
+
+<section class="block" data-block="concept" id="2e-04">
+<p><code>tsconfig.json</code> decides what counts as an error, how an <code>import</code> specifier turns into a file, and what <code>tsc</code> writes to disk. Most "TypeScript is weird" moments in a new codebase are a config choice, not a language rule: <code>arr[0]</code> being <code>T | undefined</code> (2f), the <code>.js</code> extension on imports of <code>.ts</code> files (2h), <code>@/</code> aliases that type-check and then crash under <code>node</code>. Two configs below cover 90% of projects; the rest of the lesson is the flags that make them differ.</p>
+</section>
+
+<section class="block" data-block="concept" id="2e-05">
+<h2>Four groups of options</h2>
+<p>Every <code>compilerOptions</code> key belongs to one of four groups, and each group changes a different stage of the compiler:</p>
+<ul>
+  <li><strong>Strictness</strong> — <code>strict</code>, <code>noUncheckedIndexedAccess</code>, <code>exactOptionalPropertyTypes</code>, <code>noImplicitOverride</code>, <code>noFallthroughCasesInSwitch</code>. Change only <em>which errors are reported</em>. Zero effect on output.</li>
+  <li><strong>Modules</strong> — <code>module</code>, <code>moduleResolution</code>, <code>paths</code>, <code>esModuleInterop</code>, <code>verbatimModuleSyntax</code>. How a specifier string maps to a file, and what import/export syntax survives emit.</li>
+  <li><strong>Emit</strong> — <code>target</code>, <code>lib</code>, <code>jsx</code>, <code>outDir</code>, <code>declaration</code>, <code>noEmit</code>, <code>sourceMap</code>. What <code>tsc</code> writes, and in which dialect of JS.</li>
+  <li><strong>Program</strong> — <code>include</code>, <code>exclude</code>, <code>files</code>, <code>rootDir</code>, <code>types</code>, <code>skipLibCheck</code>. Which files form one compilation, and which <code>.d.ts</code> get checked.</li>
+</ul>
+<p>Bundler-based projects (Vite, Next.js, esbuild) use only the first, second and fourth groups: the bundler emits, <code>tsc --noEmit</code> type-checks. Only a <code>tsc</code>-built Node service cares about the Emit group.</p>
+</section>
+
+<section class="block" data-block="diagram" id="2e-06">
+<div class="tag">Mechanism</div>
+<script type="application/json">{
+  "direction": "down",
+  "nodes": [
+    { "id": "cfg",     "label": "tsconfig.json\ncompilerOptions", "kind": "box", "row": 0 },
+    { "id": "strict",  "label": "Strictness\nstrict, noUnchecked…", "kind": "box", "row": 1 },
+    { "id": "modules", "label": "Modules\nmodule, paths", "kind": "box", "row": 1 },
+    { "id": "emit",    "label": "Emit\ntarget, jsx, outDir", "kind": "box", "row": 1 },
+    { "id": "program", "label": "Program\ninclude, types", "kind": "box", "row": 1 },
+    { "id": "errors",  "label": "which errors\ntsc reports", "kind": "note", "row": 2 },
+    { "id": "resolve", "label": "specifier → file,\nimport syntax kept", "kind": "note", "row": 2 },
+    { "id": "output",  "label": "what tsc writes\n(or noEmit)", "kind": "note", "row": 2 },
+    { "id": "files",   "label": "which files are\none compilation", "kind": "note", "row": 2 }
+  ],
+  "edges": [
+    { "from": "cfg", "to": "strict" },
+    { "from": "cfg", "to": "modules" },
+    { "from": "cfg", "to": "emit" },
+    { "from": "cfg", "to": "program" },
+    { "from": "strict",  "to": "errors",  "label": "check only" },
+    { "from": "modules", "to": "resolve", "label": "check + emit" },
+    { "from": "emit",    "to": "output",  "label": "emit only" },
+    { "from": "program", "to": "files",   "label": "both" }
+  ]
+}</script>
+<p class="caption">Strictness flags never change the emitted JavaScript; module flags change both what type-checks and what the emitted <code>import</code> lines say. That is why a strictness flag is safe to flip in an existing project and a module flag is not.</p>
+</section>
+
+<section class="block" data-block="bridge" id="2e-07">
+<div class="tag">Python bridge</div>
+<p>The Strictness group is <code>[tool.mypy]</code>: <code>strict = true</code> ≈ <code>"strict": true</code>, <code>disallow_untyped_defs</code> ≈ <code>noImplicitAny</code>, <code>no_implicit_optional</code> ≈ <code>strictNullChecks</code>, <code>warn_unreachable</code> ≈ <code>allowUnreachableCode: false</code>. <code>files</code> / <code>mypy_path</code> ≈ <code>include</code> / <code>paths</code>. The difference: mypy only reports; it never rewrites your code or decides how <code>import x</code> is found at runtime. <code>tsconfig</code> does both, and the Modules and Emit groups have no Python counterpart — the closest is the interpreter's own <code>sys.path</code> and version, which you configure outside the type checker.</p>
+</section>
+
+<section class="block" data-block="concept" id="2e-01">
+<h2>Frontend / Vite config</h2>
+<p>The bundler emits; <code>tsc</code> only checks (<code>noEmit</code>). <code>moduleResolution: "bundler"</code> accepts extensionless relative imports and <code>package.json</code> <code>exports</code>; <code>jsx: "react-jsx"</code> uses the automatic runtime (no <code>import React</code> in every file). Next.js sets <code>jsx: "preserve"</code> instead because its own compiler handles JSX.</p>
+<pre><code class="language-json">{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "noEmit": true,
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "exactOptionalPropertyTypes": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  },
+  "include": ["src"]
+}</code></pre>
+</section>
+
+<section class="block" data-block="concept" id="2e-02">
+<h2>Node / Express backend config</h2>
+<p>Node's native ESM resolver is stricter than a bundler's. Use <code>module: "NodeNext"</code>; since TS 5.2 that implies <code>moduleResolution: "NodeNext"</code> and <code>esModuleInterop</code>, and <code>tsc</code> errors if you set a <em>different</em> resolution. Whether a <code>.ts</code> file is ESM or CommonJS is decided the way Node decides it: the nearest <code>package.json</code> <code>"type"</code> field, or a <code>.mts</code> / <code>.cts</code> extension.</p>
+
+<pre><code class="language-json">{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "verbatimModuleSyntax": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "sourceMap": true,
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "include": ["src"]
+}</code></pre>
+
+<div class="callout warn">
+  <div class="tag">Import paths need the .js extension</div>
+  <p>Under <code>NodeNext</code>, <code>import { x } from "./util"</code> is error TS2835 and <code>import { x } from "./util.js"</code> is correct — even though the file on disk is <code>util.ts</code>. <code>tsc</code> never rewrites specifiers; Node resolves the <em>emitted</em> <code>dist/util.js</code>, so the source has to name it. TS 5.7 added <code>rewriteRelativeImportExtensions</code>, which lets you write <code>./util.ts</code> and rewrites it to <code>.js</code> on emit — the one exception to "specifiers are never rewritten". Bundler resolution needs neither.</p>
+</div>
+
+<div class="callout good">
+  <div class="tag">Start here</div>
+  <p>For new projects, turn on <code>strict: true</code>, <code>noUncheckedIndexedAccess: true</code>, and <code>verbatimModuleSyntax: true</code>. These three catch the overwhelming majority of bugs <code>strict</code> alone misses. <code>@total-typescript/tsconfig</code> is a popular preset built on the same idea.</p>
+</div>
+</section>
+
+<section class="block" data-block="diagram" id="2e-08">
+<div class="tag">Mechanism</div>
+<script type="application/json">{
+  "direction": "right",
+  "nodes": [
+    { "id": "src",     "label": "src/index.ts\nimport \"./util.js\"", "kind": "box" },
+    { "id": "tsc",     "label": "tsc: .js → .ts\nchecks src/util.ts", "kind": "box" },
+    { "id": "dist",    "label": "dist/index.js\nspecifier unchanged", "kind": "box" },
+    { "id": "node",    "label": "node resolves\ndist/util.js", "kind": "box" },
+    { "id": "bsrc",    "label": "src/index.ts\nimport \"./util\"", "kind": "box" },
+    { "id": "bundler", "label": "bundler tries\n.ts .tsx /index.ts", "kind": "box" },
+    { "id": "bundle",  "label": "one bundle,\nno specifier left", "kind": "box" }
+  ],
+  "edges": [
+    { "from": "src",  "to": "tsc",  "label": "NodeNext" },
+    { "from": "tsc",  "to": "dist", "label": "emit" },
+    { "from": "dist", "to": "node", "label": "runtime" },
+    { "from": "bsrc", "to": "bundler", "label": "bundler" },
+    { "from": "bundler", "to": "bundle", "label": "emit" }
+  ]
+}</script>
+<p class="caption">Top lane: with <code>NodeNext</code> the string you write is the string Node will see, so it must already be the <em>output</em> filename. Bottom lane: a bundler consumes the specifier itself, so <code>.ts</code>, extensionless and directory imports all work — and nothing is left for the runtime to resolve.</p>
+</section>
+
+<section class="block" data-block="concept" id="2e-03">
+<h2>Key flags explained</h2>
+<ul>
+  <li><code>strict</code> — turns on all strict-mode flags (<code>strictNullChecks</code>, <code>noImplicitAny</code>, <code>strictFunctionTypes</code>, <code>useUnknownInCatchVariables</code>, …). Non-negotiable.</li>
+  <li><code>outDir</code> / <code>rootDir</code> — where <code>tsc</code> writes and where source lives. Without them, <code>.js</code> files land next to <code>.ts</code> files.</li>
+  <li><code>noUncheckedIndexedAccess</code> — <code>arr[0]</code> and <code>record[key]</code> are typed <code>T | undefined</code>. Catches "forgot the empty array" bugs. See 2f for what this means in practice.</li>
+  <li><code>exactOptionalPropertyTypes</code> — distinguishes <code>{ x?: string }</code> (key may be absent) from <code>{ x: string | undefined }</code> (key present, value may be <code>undefined</code>). Without it, <code>{ x: undefined }</code> satisfies <code>{ x?: string }</code>. Next block shows why that is a runtime difference.</li>
+  <li><code>verbatimModuleSyntax</code> — an <code>import</code> without <code>type</code> is kept in the output exactly as written; type-only imports must say <code>import type</code>. Removes the guessing that single-file transpilers (esbuild, SWC, sucrase) can't do.</li>
+  <li><code>isolatedModules</code> — errors on constructs that can't be transpiled one file at a time (<code>const enum</code> across files, re-exporting a type without <code>export type</code>). Required for Vite, SWC, esbuild.</li>
+  <li><code>moduleResolution: "bundler"</code> — the modern default for anything a bundler builds; <code>"NodeNext"</code> for anything <code>node</code> runs directly.</li>
+  <li><code>skipLibCheck</code> — don't type-check <code>node_modules/**/*.d.ts</code>. Faster, and avoids errors in two libraries' conflicting globals that you can't fix anyway.</li>
+</ul>
+</section>
+
+<section class="block" data-block="concept" id="2e-09">
+<h2><code>paths</code> aliases are compile-time only</h2>
+<p><code>paths</code> tells the <em>checker</em> how to resolve <code>@/*</code>. It does not teach Node, and <code>tsc</code> does not rewrite the specifier on emit — <code>dist/index.js</code> still says <code>import "@/db.js"</code>, which Node treats as a package named <code>@</code>.</p>
+<pre><code class="language-bash">$ node dist/index.js
+Error [ERR_MODULE_NOT_FOUND]: Cannot find package '@/db.js' imported from dist/index.js</code></pre>
+<p>Bundlers (Vite, webpack, Next.js) read <code>paths</code> and resolve it themselves. For a plain Node service use the platform feature instead: <code>package.json</code> <code>"imports"</code> (subpath imports, <code>#</code>-prefixed), which both <code>NodeNext</code> resolution and Node itself understand.</p>
+<pre><code class="language-json">{
+  "name": "api",
+  "type": "module",
+  "imports": {
+    "#db": "./dist/db.js",
+    "#lib/*": "./dist/lib/*.js"
+  }
+}</code></pre>
+<pre><code class="language-typescript">import { db } from "#db";          // resolves in tsc and in node — no bundler, no tsconfig-paths</code></pre>
+</section>
+
+<section class="block" data-block="concept" id="2e-10">
+<h2>What <code>exactOptionalPropertyTypes</code> protects at runtime</h2>
+<p>A missing key and a key holding <code>undefined</code> are different objects to <code>in</code>, <code>Object.keys</code>, <code>JSON.stringify</code>, and — the one that bites — object spread. <code>{ ...defaults, ...overrides }</code> copies an <em>explicit</em> <code>undefined</code> over the default. Without the flag, TS lets <code>{ retries: undefined }</code> flow into a <code>{ retries?: number }</code> parameter, so the merge silently loses the default.</p>
+<pre><code class="language-typescript">type Options = { retries?: number };
+const defaults = { retries: 3 };
+
+function run(opts: Options) {
+  const cfg = { ...defaults, ...opts };     // cfg.retries: number — says TS
+  return cfg.retries;
+}
+
+run({ retries: undefined });
+// exactOptionalPropertyTypes off:  compiles, returns undefined at runtime
+// exactOptionalPropertyTypes on:   error TS2375 — 'undefined' is not assignable to 'number'</code></pre>
+</section>
+
+<section class="block" data-block="playground" id="2e-11" data-lang="js">
+<div class="tag">Try it</div>
+<p>Plain JS — this is the behaviour the flag is guarding. Try: replace the spread with <code>Object.assign({}, defaults, explicit)</code> (same result); then filter <code>explicit</code> with <code>Object.fromEntries(Object.entries(o).filter(([, v]) =&gt; v !== undefined))</code> before spreading; then swap the spread order.</p>
+<pre><code class="language-javascript">const absent   = {};
+const explicit = { retries: undefined };
+
+for (const o of [absent, explicit]) {
+  console.log("in:", "retries" in o, "| keys:", Object.keys(o).length, "| json:", JSON.stringify(o));
+}
+
+const defaults = { retries: 3 };
+console.log({ ...defaults, ...absent }.retries);
+console.log({ ...defaults, ...explicit }.retries);</code></pre>
+<output>in: false | keys: 0 | json: {}
+in: true | keys: 1 | json: {}
+3
+undefined</output>
+</section>
+
+<section class="block" data-block="exercise" id="2e-12" data-kind="predict" data-lang="js">
+<div class="tag">Exercise</div>
+<p>A CLI builds an overrides object whether or not the user passed <code>--retries</code>. What does this print? One value per line.</p>
+<pre><code class="language-javascript">const defaults = { retries: 3, timeout: 1000 };
+const fromCli  = { retries: undefined };
+
+const merged = { ...defaults, ...fromCli };
+console.log(merged.retries);
+console.log("retries" in merged);
+console.log(Object.keys(merged).length);
+console.log(JSON.stringify(fromCli));
+console.log(merged.retries ?? defaults.retries);</code></pre>
+<script type="application/json">{
+  "expected": "undefined\ntrue\n2\n{}\n3",
+  "hints": [
+    "Spread copies every own enumerable key, including ones whose value is <code>undefined</code>.",
+    "<code>JSON.stringify</code> drops <code>undefined</code> values; <code>in</code> and <code>Object.keys</code> don't.",
+    "<code>??</code> treats <code>undefined</code> (and <code>null</code>) as missing — it's the runtime repair for the merge."
+  ],
+  "explain": "<code>fromCli</code> has a real key <code>retries</code> with value <code>undefined</code>, so the spread overwrites the default (<code>undefined</code>), the key exists (<code>true</code>, <code>2</code> keys), but JSON omits it (<code>{}</code>). <code>??</code> falls back to <code>3</code>. <code>exactOptionalPropertyTypes</code> makes <code>fromCli</code> unassignable to <code>{ retries?: number }</code>, which is how the bug would have been caught at compile time."
+}</script>
+</section>
+
+<section class="block" data-block="exercise" id="2e-13" data-kind="fix" data-lang="js">
+<div class="tag">Exercise</div>
+<p><code>mergeConfig</code> lets an explicit <code>undefined</code> in <code>overrides</code> clobber a default — the bug <code>exactOptionalPropertyTypes</code> exists to flag. Fix it so <code>undefined</code> is treated as "absent": it neither overrides a default nor appears as a key in the result. Defined falsy values (<code>0</code>, <code>""</code>, <code>false</code>) must still override. Tests check all three cases.</p>
+<pre><code class="language-javascript">// --- fix this
+function mergeConfig(defaults, overrides) {
+  return { ...defaults, ...overrides };
+}
+
+console.log(mergeConfig({ retries: 3, timeout: 1000 }, { retries: undefined, timeout: 50 }));</code></pre>
+<script type="application/json">{
+  "tests": "test(\"defined overrides win\", () => assert.equal(mergeConfig({ retries: 3, timeout: 1000 }, { timeout: 50 }), { retries: 3, timeout: 50 }));\ntest(\"explicit undefined keeps the default\", () => assert.equal(mergeConfig({ retries: 3 }, { retries: undefined }).retries, 3));\ntest(\"falsy but defined still overrides\", () => { assert.equal(mergeConfig({ retries: 3 }, { retries: 0 }).retries, 0); assert.equal(mergeConfig({ name: \"x\" }, { name: \"\" }).name, \"\"); });\ntest(\"undefined keys are not added\", () => assert.equal(Object.keys(mergeConfig({ a: 1 }, { b: undefined })), [\"a\"]));",
+  "hints": [
+    "Spread can't skip keys. Iterate <code>Object.entries(overrides)</code> and copy selectively.",
+    "The test is <code>v !== undefined</code> — not <code>if (v)</code>, which would drop <code>0</code> and <code>\"\"</code>.",
+    "Start from <code>const out = { ...defaults }</code>, then assign only the entries that pass the check."
+  ],
+  "solution": "// --- fixed\nfunction mergeConfig(defaults, overrides) {\n  const out = { ...defaults };\n  for (const [k, v] of Object.entries(overrides)) {\n    if (v !== undefined) out[k] = v;\n  }\n  return out;\n}\n\nconsole.log(mergeConfig({ retries: 3, timeout: 1000 }, { retries: undefined, timeout: 50 }));",
+  "explain": "Spread copies the key <code>retries: undefined</code> verbatim, so the default is replaced. Filtering on <code>!== undefined</code> (not truthiness) keeps <code>0</code> and <code>\"\"</code> as legitimate overrides. With <code>exactOptionalPropertyTypes</code> the caller couldn't have built <code>{ retries: undefined }</code> for an <code>?:</code> field in the first place — the flag and the runtime guard protect the same invariant from two sides."
+}</script>
+</section>
+
+<section class="block" data-block="exercise" id="2e-14" data-kind="complete" data-lang="js">
+<div class="tag">Exercise</div>
+<p>Implement <code>resolveImport(importer, specifier, mode)</code> — a model of the two resolution modes from the diagram above. <code>files</code> is the set of source files on disk; <code>join</code> and <code>dirname</code> are provided. Contract:</p>
+<ul>
+  <li><code>mode === "nodenext"</code>: the specifier <em>must</em> end in <code>.js</code>, otherwise throw an <code>Error</code> whose message contains the word <code>extension</code>. Map <code>.js</code> → try <code>.ts</code>, then <code>.tsx</code>.</li>
+  <li><code>mode === "bundler"</code>: strip a trailing <code>.js</code> if present, then try <code>.ts</code>, <code>.tsx</code>, <code>/index.ts</code>, <code>/index.tsx</code> in that order.</li>
+  <li>Return the first candidate that exists in <code>files</code>; throw if none does.</li>
+</ul>
+<pre><code class="language-javascript">// --- helpers (leave as is)
+const files = new Set(["src/index.ts", "src/util.ts", "src/components/index.tsx", "src/lib/api.ts"]);
+function dirname(p) { return p.slice(0, p.lastIndexOf("/")); }
+function join(dir, spec) {           // join("src/components", "../lib/api") → "src/lib/api"
+  const parts = dir.split("/");
+  for (const seg of spec.split("/")) {
+    if (seg === "." || seg === "") continue;
+    if (seg === "..") parts.pop(); else parts.push(seg);
+  }
+  return parts.join("/");
+}
+
+function resolveImport(importer, specifier, mode) {
+  const base = join(dirname(importer), specifier);
+  // TODO
+}
+
+console.log(resolveImport("src/index.ts", "./util.js", "nodenext"));</code></pre>
+<script type="application/json">{
+  "tests": "test(\"nodenext: .js maps to .ts\", () => assert.equal(resolveImport(\"src/index.ts\", \"./util.js\", \"nodenext\"), \"src/util.ts\"));\ntest(\"nodenext: .js maps to .tsx too\", () => assert.equal(resolveImport(\"src/index.ts\", \"./components/index.js\", \"nodenext\"), \"src/components/index.tsx\"));\ntest(\"nodenext: extensionless import is an error mentioning the extension\", () => { let err; try { resolveImport(\"src/index.ts\", \"./util\", \"nodenext\"); } catch (e) { err = e; } assert(err instanceof Error, \"should throw\"); assert(/extension/i.test(err.message), \"message should mention the extension\"); });\ntest(\"bundler: extensionless and directory imports\", () => { assert.equal(resolveImport(\"src/index.ts\", \"./util\", \"bundler\"), \"src/util.ts\"); assert.equal(resolveImport(\"src/index.ts\", \"./components\", \"bundler\"), \"src/components/index.tsx\"); });\ntest(\"bundler: ../ and .js both work\", () => { assert.equal(resolveImport(\"src/components/index.tsx\", \"../lib/api\", \"bundler\"), \"src/lib/api.ts\"); assert.equal(resolveImport(\"src/index.ts\", \"./util.js\", \"bundler\"), \"src/util.ts\"); });\ntest(\"missing file throws in both modes\", () => { assert.throws(() => resolveImport(\"src/index.ts\", \"./nope.js\", \"nodenext\")); assert.throws(() => resolveImport(\"src/index.ts\", \"./nope\", \"bundler\")); });",
+  "hints": [
+    "Build a <code>candidates</code> array per mode, then <code>candidates.find(c =&gt; files.has(c))</code>.",
+    "For nodenext: <code>if (!specifier.endsWith(\".js\")) throw new Error(\"… needs an explicit file extension\")</code>; the stem is <code>base.slice(0, -3)</code>.",
+    "For bundler: <code>const stem = base.endsWith(\".js\") ? base.slice(0, -3) : base;</code> then <code>[stem + \".ts\", stem + \".tsx\", stem + \"/index.ts\", stem + \"/index.tsx\"]</code>."
+  ],
+  "solution": "// --- helpers (leave as is)\nconst files = new Set([\"src/index.ts\", \"src/util.ts\", \"src/components/index.tsx\", \"src/lib/api.ts\"]);\nfunction dirname(p) { return p.slice(0, p.lastIndexOf(\"/\")); }\nfunction join(dir, spec) {           // join(\"src/components\", \"../lib/api\") → \"src/lib/api\"\n  const parts = dir.split(\"/\");\n  for (const seg of spec.split(\"/\")) {\n    if (seg === \".\" || seg === \"\") continue;\n    if (seg === \"..\") parts.pop(); else parts.push(seg);\n  }\n  return parts.join(\"/\");\n}\n\nfunction resolveImport(importer, specifier, mode) {\n  const base = join(dirname(importer), specifier);\n  let candidates;\n  if (mode === \"nodenext\") {\n    if (!specifier.endsWith(\".js\")) throw new Error(`\"${specifier}\" needs an explicit file extension under NodeNext`);\n    const stem = base.slice(0, -3);\n    candidates = [stem + \".ts\", stem + \".tsx\"];\n  } else {\n    const stem = base.endsWith(\".js\") ? base.slice(0, -3) : base;\n    candidates = [stem + \".ts\", stem + \".tsx\", stem + \"/index.ts\", stem + \"/index.tsx\"];\n  }\n  const hit = candidates.find(c => files.has(c));\n  if (!hit) throw new Error(`cannot resolve \"${specifier}\" from ${importer}`);\n  return hit;\n}\n\nconsole.log(resolveImport(\"src/index.ts\", \"./util.js\", \"nodenext\"));",
+  "explain": "NodeNext is strict because the string is handed to Node unchanged: it has to be a real output filename, and the only rewriting <code>tsc</code> does is the <code>.js → .ts</code> lookup <em>for checking</em>. Bundler resolution owns the specifier end to end, so it can afford the probing list (<code>.ts</code>, <code>.tsx</code>, <code>index.*</code>) — the same list webpack and Vite use."
+}</script>
+</section>
+
+<section class="block" data-block="review" id="2e-15">
+<div class="tag">Code review</div>
+<ul>
+  <li><strong><code>strict: false</code> or individual strict flags switched off</strong> in a new project. Every later migration to strict is a multi-week PR; start strict and add <code>noUncheckedIndexedAccess</code> on day one.</li>
+  <li><strong><code>paths</code> in a <code>tsc</code>-built Node service.</strong> Type-checks, crashes at <code>node dist/index.js</code> with <code>ERR_MODULE_NOT_FOUND</code>. Use <code>package.json</code> <code>"imports"</code> (<code>#db</code>) or a bundler; <code>tsconfig-paths</code> is a workaround, not a fix.</li>
+  <li><strong><code>moduleResolution: "node"</code> (node10) in 2026.</strong> It ignores <code>package.json</code> <code>exports</code>, so you get stale or wrong types from dual-published packages. Pick <code>bundler</code> or <code>NodeNext</code>; nothing else.</li>
+  <li><strong>Mismatched <code>module</code> / <code>moduleResolution</code></strong> (e.g. <code>module: "CommonJS"</code> with <code>bundler</code>). TS 5.x reports it as an error; older configs copied from blog posts still carry it.</li>
+  <li><strong>No <code>verbatimModuleSyntax</code> with an esbuild/SWC/Vite pipeline.</strong> A type-only import without <code>import type</code> survives as a runtime import of a file that exports nothing → <code>SyntaxError: does not provide an export named</code>. The flag turns that into a compile error.</li>
+  <li><strong><code>target</code> below what the runtime supports.</strong> <code>target: "ES5"</code> for Node 20 downlevels <code>async/await</code> into generator state machines and <code>class</code> into functions — slower, bigger, and stack traces stop matching the source. Match the oldest runtime you actually ship to (<code>ES2022</code> for Node 20+ and evergreen browsers).</li>
+  <li><strong>CI runs the bundler but never <code>tsc --noEmit</code>.</strong> Vite and esbuild strip types without checking them; a project can ship with hundreds of type errors. The type check is a separate CI step.</li>
+</ul>
+</section>
+
+<section class="block" data-block="exercise" id="2e-16" data-kind="mcq">
+<div class="tag">Check</div>
+<p>A Node 20 service is built with <code>tsc</code> (<code>module: "NodeNext"</code>). <code>src/index.ts</code> contains <code>import { db } from "@/db.js"</code> and <code>tsconfig</code> has <code>"paths": { "@/*": ["./src/*"] }</code>. <code>tsc</code> exits 0. What happens at <code>node dist/index.js</code>?</p>
+<script type="application/json">{
+  "options": [
+    "It runs — <code>tsc</code> rewrote the alias to <code>./db.js</code> in <code>dist/index.js</code>.",
+    "It runs — Node reads <code>tsconfig.json</code> and applies <code>paths</code> at load time.",
+    "<code>ERR_MODULE_NOT_FOUND</code>: <code>dist/index.js</code> still says <code>\"@/db.js\"</code>, which Node resolves as a package named <code>@</code>. <code>paths</code> only affects the checker.",
+    "It runs only if <code>esModuleInterop</code> is on, because the alias is treated as a CommonJS package."
+  ],
+  "answer": 2,
+  "explain": "<code>tsc</code> never rewrites import specifiers (the single exception is <code>rewriteRelativeImportExtensions</code> for <code>.ts → .js</code>, and that is for relative paths only). Node has no idea <code>tsconfig.json</code> exists. The platform-native fix is <code>package.json</code> <code>\"imports\": { \"#db\": \"./dist/db.js\" }</code>, which both the checker (under <code>NodeNext</code>) and Node honour."
+}</script>
+</section>
+
+<section class="block" data-block="exercise" id="2e-17" data-kind="mcq">
+<div class="tag">Check</div>
+<p>You add <code>"exactOptionalPropertyTypes": true</code> and <code>"noUncheckedIndexedAccess": true</code> to a working Vite project and run <code>tsc --noEmit</code>. 140 new errors. What changed about the shipped bundle, before you fix any of them?</p>
+<script type="application/json">{
+  "options": [
+    "Nothing. Strictness flags only change which errors are reported; the bundler's output is byte-for-byte the same.",
+    "The bundle now includes runtime checks for <code>undefined</code> at every index access.",
+    "Vite refuses to build until <code>tsc</code> passes, so there is no bundle.",
+    "The emitted JS is smaller because TS can now elide unreachable <code>undefined</code> branches."
+  ],
+  "answer": 0,
+  "explain": "Strictness is check-only (see the diagram in 2e-06): TypeScript never inserts runtime code, and Vite/esbuild strip types without reading the errors at all. That is also the warning in the review block — type-checking must be its own CI step, or the 140 errors ship. Options B and D describe what a runtime validator (2h) or a different language would do."
+}</script>
+</section>
+
+<section class="block" data-block="recall" id="2e-18">
+<div class="tag">Recall</div>
+<dl>
+  <dt>Which group of tsconfig options never changes the emitted JavaScript, and which group changes both checking and emit?</dt>
+  <dd>Strictness (<code>strict</code>, <code>noUncheckedIndexedAccess</code>, <code>exactOptionalPropertyTypes</code>, …) is check-only. Module options (<code>module</code>, <code>moduleResolution</code>, <code>verbatimModuleSyntax</code>) affect both what resolves and what <code>import</code> lines are emitted.</dd>
+
+  <dt>Under <code>module: "NodeNext"</code>, what must a relative import of <code>src/util.ts</code> look like, and why?</dt>
+  <dd><code>import { x } from "./util.js"</code> — <code>tsc</code> never rewrites specifiers, and Node will resolve the <em>emitted</em> <code>dist/util.js</code>. Extensionless imports are error TS2835. (TS 5.7's <code>rewriteRelativeImportExtensions</code> allows <code>./util.ts</code> and rewrites it.)</dd>
+
+  <dt>Why does <code>paths: { "@/*": ["./src/*"] }</code> type-check and then crash a <code>tsc</code>-built Node service at runtime? What's the fix?</dt>
+  <dd><code>paths</code> is checker-only; <code>dist/index.js</code> still imports <code>"@/db.js"</code> and Node reports <code>ERR_MODULE_NOT_FOUND</code>. Use <code>package.json</code> <code>"imports"</code> (<code>#db</code> subpath imports) or a bundler.</dd>
+
+  <dt>What distinction does <code>exactOptionalPropertyTypes</code> enforce, and which runtime operation makes it matter?</dt>
+  <dd><code>{ x?: T }</code> (key may be absent) vs <code>{ x: T | undefined }</code> (key present). Object spread copies an explicit <code>undefined</code> over a default, so <code>{ ...defaults, ...{ x: undefined } }.x</code> is <code>undefined</code>.</dd>
+
+  <dt>What does this print?
+<pre><code class="language-javascript">const merged = { ...{ retries: 3 }, ...{ retries: undefined } };
+console.log(merged.retries, "retries" in merged, JSON.stringify(merged));</code></pre></dt>
+  <dd><code>undefined true {}</code> — the key exists with value <code>undefined</code>; <code>JSON.stringify</code> omits it.</dd>
+
+  <dt>What do <code>verbatimModuleSyntax</code> and <code>isolatedModules</code> protect against, and which toolchains need them?</dt>
+  <dd>Single-file transpilers (esbuild, SWC, Vite, sucrase) can't see other files, so they can't tell whether an import is type-only. <code>verbatimModuleSyntax</code> forces <code>import type</code>; <code>isolatedModules</code> rejects cross-file <code>const enum</code> and un-annotated type re-exports.</dd>
+
+  <dt>Which <code>moduleResolution</code> values are acceptable in a TS 5.x project, and what's wrong with <code>"node"</code>?</dt>
+  <dd><code>"bundler"</code> (bundler-built) or <code>"NodeNext"</code> (run by Node directly). <code>"node"</code> (node10) ignores <code>package.json</code> <code>exports</code>, so dual-published packages resolve to the wrong or missing types.</dd>
+
+  <dt>Why does a Vite project need <code>tsc --noEmit</code> as a separate CI step?</dt>
+  <dd>Vite/esbuild strip types without checking them; the build succeeds with any number of type errors. Only <code>tsc</code> (or <code>vue-tsc</code>) reports them.</dd>
+</dl>
+</section>
+</article>
+<script type="module" src="/assets/runtime/boot.js"></script>
+</body>
+</html>

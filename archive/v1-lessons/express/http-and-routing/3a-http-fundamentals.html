@@ -1,0 +1,507 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>3a. HTTP fundamentals · JS Curriculum</title>
+<link rel="icon" href="/assets/favicon.svg">
+<link rel="stylesheet" href="/assets/vendor/prism.css">
+<link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body data-lesson="3a" data-level="interactive">
+<article class="lesson">
+
+<header>
+  <h1>HTTP Fundamentals</h1>
+</header>
+
+<section class="block" data-block="concept" id="3a-01">
+<p>Express (3b) is a thin layer over Node's HTTP parser; everything it hands you — <code>req.method</code>, <code>req.headers</code>, a body that arrives as a stream, <code>res.status()</code> — is a field of the protocol. The rest of Part 3 assumes you can read a raw request, pick the right status code without looking it up, and say what <code>Cache-Control</code> a response needs. Next.js caching (5d) and the <code>cors</code>/<code>cookie</code> decisions in 3e are the same protocol seen from the other side.</p>
+</section>
+
+<section class="block" data-block="concept" id="3a-04">
+<h2>Request / response anatomy — one GET over the wire</h2>
+<p>A request is three parts: a <strong>request line</strong> (method, path, version), <strong>headers</strong> (one per line, case-insensitive names), a blank line, then an optional <strong>body</strong>. A response mirrors it: <strong>status line</strong>, headers, blank line, body. That is the whole format; everything else is convention about which headers mean what.</p>
+<pre><code class="language-http"># 1. Client sends (TCP stream, then TLS, then HTTP/1.1)
+GET /users/42 HTTP/1.1
+Host: api.example.com
+Authorization: Bearer eyJhbGci...
+Accept: application/json
+
+# 2. Server responds
+HTTP/1.1 200 OK
+Content-Type: application/json
+Cache-Control: private, max-age=60
+X-Request-Id: 3f2a1b
+
+{"id":42,"email":"alice@example.com"}</code></pre>
+<p>Between 1 and 2: DNS resolves the host, TCP handshake (then TLS — 1.3 needs one round-trip, 0-RTT on resumption), Node's parser turns bytes into <code>req</code>, the request walks your middleware stack, reaches the route handler, the service hits the DB, the response is serialised. When something breaks, debug left to right along that path: DNS → connection → TLS → status line → headers → body.</p>
+</section>
+
+<section class="block" data-block="diagram" id="3a-12">
+<div class="tag">Mechanism</div>
+<script type="application/json">{
+  "direction": "right",
+  "nodes": [
+    { "id": "rl", "label": "GET /users/42 HTTP/1.1\nrequest line", "kind": "box", "row": 0 },
+    { "id": "sl", "label": "HTTP/1.1 200 OK\nstatus line", "kind": "box", "row": 0 },
+    { "id": "rh", "label": "Host, Authorization,\nAccept", "kind": "box", "row": 1 },
+    { "id": "sh", "label": "Content-Type,\nCache-Control, …", "kind": "box", "row": 1 },
+    { "id": "rb", "label": "blank line\n(no body on GET)", "kind": "note", "row": 2 },
+    { "id": "sb", "label": "blank line\n{\"id\":42,…}", "kind": "box", "row": 2 }
+  ],
+  "edges": [
+    { "from": "rl", "to": "rh", "label": "headers" },
+    { "from": "rh", "to": "rb", "label": "body" },
+    { "from": "sl", "to": "sh", "label": "headers" },
+    { "from": "sh", "to": "sb", "label": "body" }
+  ]
+}</script>
+<p class="caption">Request (top) and response (bottom) have the same three-part shape: first line, headers, blank line, body. Headers come before the body on both sides — which is why <code>res.set()</code> after <code>res.json()</code> throws (3b).</p>
+</section>
+
+<section class="block" data-block="stepper" id="3a-11" data-kind="timeline">
+<div class="tag">Step through</div>
+<script type="application/json">{
+  "steps": [
+    { "label": "DNS lookup", "note": "<code>api.example.com</code> becomes an IP. Cached by the OS and the browser; a stale entry is the classic \"works on my machine\" after a DNS change.",
+      "state": { "lanes": [
+        { "name": "Client",  "items": [{ "label": "DNS lookup", "state": "active" }, { "label": "write request", "state": "idle" }, { "label": "read response", "state": "idle" }, { "label": "use JSON", "state": "idle" }] },
+        { "name": "Network", "items": [{ "label": "TCP handshake", "state": "idle" }, { "label": "TLS handshake", "state": "idle" }, { "label": "request bytes", "state": "idle" }, { "label": "response bytes", "state": "idle" }] },
+        { "name": "Server",  "items": [{ "label": "parse HTTP", "state": "idle" }, { "label": "middleware", "state": "idle" }, { "label": "handler + DB", "state": "idle" }, { "label": "serialize", "state": "idle" }] }
+      ] } },
+    { "label": "TCP handshake", "note": "Three packets, one round-trip, before a single HTTP byte moves. HTTP/2 keeps one connection open and multiplexes requests over it precisely to pay this once.",
+      "state": { "lanes": [
+        { "name": "Client",  "items": [{ "label": "DNS lookup", "state": "done" }, { "label": "write request", "state": "idle" }, { "label": "read response", "state": "idle" }, { "label": "use JSON", "state": "idle" }] },
+        { "name": "Network", "items": [{ "label": "TCP handshake", "state": "active" }, { "label": "TLS handshake", "state": "idle" }, { "label": "request bytes", "state": "idle" }, { "label": "response bytes", "state": "idle" }] },
+        { "name": "Server",  "items": [{ "label": "parse HTTP", "state": "idle" }, { "label": "middleware", "state": "idle" }, { "label": "handler + DB", "state": "idle" }, { "label": "serialize", "state": "idle" }] }
+      ] } },
+    { "label": "TLS handshake", "note": "Another round-trip (TLS 1.3; 0-RTT on resumption). This is where the cost of HTTPS lives — per connection, not per byte. Usually terminated by nginx/Caddy/the load balancer, so Node sees plain HTTP.",
+      "state": { "lanes": [
+        { "name": "Client",  "items": [{ "label": "DNS lookup", "state": "done" }, { "label": "write request", "state": "idle" }, { "label": "read response", "state": "idle" }, { "label": "use JSON", "state": "idle" }] },
+        { "name": "Network", "items": [{ "label": "TCP handshake", "state": "done" }, { "label": "TLS handshake", "state": "active" }, { "label": "request bytes", "state": "idle" }, { "label": "response bytes", "state": "idle" }] },
+        { "name": "Server",  "items": [{ "label": "parse HTTP", "state": "idle" }, { "label": "middleware", "state": "idle" }, { "label": "handler + DB", "state": "idle" }, { "label": "serialize", "state": "idle" }] }
+      ] } },
+    { "label": "Client writes request", "note": "Request line, headers, blank line, body — in that order, as text. <code>Host</code> is mandatory in HTTP/1.1 (one IP serves many names); <code>Authorization</code> and <code>Accept</code> are what the server will branch on.",
+      "state": { "lanes": [
+        { "name": "Client",  "items": [{ "label": "DNS lookup", "state": "done" }, { "label": "write request", "state": "active" }, { "label": "read response", "state": "idle" }, { "label": "use JSON", "state": "idle" }] },
+        { "name": "Network", "items": [{ "label": "TCP handshake", "state": "done" }, { "label": "TLS handshake", "state": "done" }, { "label": "request bytes", "state": "idle" }, { "label": "response bytes", "state": "idle" }] },
+        { "name": "Server",  "items": [{ "label": "parse HTTP", "state": "idle" }, { "label": "middleware", "state": "idle" }, { "label": "handler + DB", "state": "idle" }, { "label": "serialize", "state": "idle" }] }
+      ] } },
+    { "label": "Bytes in flight", "note": "The encrypted bytes cross the network. A reverse proxy in front of Node may buffer the whole request here (and add <code>X-Forwarded-For</code>) before Node sees anything.",
+      "state": { "lanes": [
+        { "name": "Client",  "items": [{ "label": "DNS lookup", "state": "done" }, { "label": "write request", "state": "done" }, { "label": "read response", "state": "idle" }, { "label": "use JSON", "state": "idle" }] },
+        { "name": "Network", "items": [{ "label": "TCP handshake", "state": "done" }, { "label": "TLS handshake", "state": "done" }, { "label": "request bytes", "state": "active" }, { "label": "response bytes", "state": "idle" }] },
+        { "name": "Server",  "items": [{ "label": "parse HTTP", "state": "idle" }, { "label": "middleware", "state": "idle" }, { "label": "handler + DB", "state": "idle" }, { "label": "serialize", "state": "idle" }] }
+      ] } },
+    { "label": "Node parses HTTP", "note": "Node's parser (llhttp) builds <code>req</code>: method, URL, headers (names lowercased). The <strong>body is not read yet</strong> — <code>req</code> is a readable stream. That is why Express needs <code>express.json()</code> (3b) to turn it into <code>req.body</code>.",
+      "state": { "lanes": [
+        { "name": "Client",  "items": [{ "label": "DNS lookup", "state": "done" }, { "label": "write request", "state": "done" }, { "label": "read response", "state": "idle" }, { "label": "use JSON", "state": "idle" }] },
+        { "name": "Network", "items": [{ "label": "TCP handshake", "state": "done" }, { "label": "TLS handshake", "state": "done" }, { "label": "request bytes", "state": "done" }, { "label": "response bytes", "state": "idle" }] },
+        { "name": "Server",  "items": [{ "label": "parse HTTP", "state": "active" }, { "label": "middleware", "state": "idle" }, { "label": "handler + DB", "state": "idle" }, { "label": "serialize", "state": "idle" }] }
+      ] } },
+    { "label": "Middleware stack", "note": "Express runs its stack in registration order: request id, body parser, auth. Any layer can end the request early with a response — a 401 never reaches the handler.",
+      "state": { "lanes": [
+        { "name": "Client",  "items": [{ "label": "DNS lookup", "state": "done" }, { "label": "write request", "state": "done" }, { "label": "read response", "state": "idle" }, { "label": "use JSON", "state": "idle" }] },
+        { "name": "Network", "items": [{ "label": "TCP handshake", "state": "done" }, { "label": "TLS handshake", "state": "done" }, { "label": "request bytes", "state": "done" }, { "label": "response bytes", "state": "idle" }] },
+        { "name": "Server",  "items": [{ "label": "parse HTTP", "state": "done" }, { "label": "middleware", "state": "active" }, { "label": "handler + DB", "state": "idle" }, { "label": "serialize", "state": "idle" }] }
+      ] } },
+    { "label": "Handler + DB", "note": "The route handler awaits the database. The Node thread is free while it waits (1f); this request's state lives in the closure, not on a thread.",
+      "state": { "lanes": [
+        { "name": "Client",  "items": [{ "label": "DNS lookup", "state": "done" }, { "label": "write request", "state": "done" }, { "label": "read response", "state": "idle" }, { "label": "use JSON", "state": "idle" }] },
+        { "name": "Network", "items": [{ "label": "TCP handshake", "state": "done" }, { "label": "TLS handshake", "state": "done" }, { "label": "request bytes", "state": "done" }, { "label": "response bytes", "state": "idle" }] },
+        { "name": "Server",  "items": [{ "label": "parse HTTP", "state": "done" }, { "label": "middleware", "state": "done" }, { "label": "handler + DB", "state": "active" }, { "label": "serialize", "state": "idle" }] }
+      ] } },
+    { "label": "Serialise response", "note": "<code>res.json(user)</code> sets <code>Content-Type: application/json</code>, computes <code>Content-Length</code>, writes the status line and headers, then the body. Headers go first — after this point they cannot change.",
+      "state": { "lanes": [
+        { "name": "Client",  "items": [{ "label": "DNS lookup", "state": "done" }, { "label": "write request", "state": "done" }, { "label": "read response", "state": "idle" }, { "label": "use JSON", "state": "idle" }] },
+        { "name": "Network", "items": [{ "label": "TCP handshake", "state": "done" }, { "label": "TLS handshake", "state": "done" }, { "label": "request bytes", "state": "done" }, { "label": "response bytes", "state": "idle" }] },
+        { "name": "Server",  "items": [{ "label": "parse HTTP", "state": "done" }, { "label": "middleware", "state": "done" }, { "label": "handler + DB", "state": "done" }, { "label": "serialize", "state": "active" }] }
+      ] } },
+    { "label": "Response bytes", "note": "Back across the same connection. With keep-alive (default in HTTP/1.1) the connection stays open for the next request; the handshakes above are not repeated.",
+      "state": { "lanes": [
+        { "name": "Client",  "items": [{ "label": "DNS lookup", "state": "done" }, { "label": "write request", "state": "done" }, { "label": "read response", "state": "idle" }, { "label": "use JSON", "state": "idle" }] },
+        { "name": "Network", "items": [{ "label": "TCP handshake", "state": "done" }, { "label": "TLS handshake", "state": "done" }, { "label": "request bytes", "state": "done" }, { "label": "response bytes", "state": "active" }] },
+        { "name": "Server",  "items": [{ "label": "parse HTTP", "state": "done" }, { "label": "middleware", "state": "done" }, { "label": "handler + DB", "state": "done" }, { "label": "serialize", "state": "done" }] }
+      ] } },
+    { "label": "Client reads response", "note": "The client reads the status line first and branches on it (<code>res.ok</code> is 200–299), then headers, then the body. <code>Cache-Control: private, max-age=60</code> tells the browser cache it may reuse this for 60 s, and tells a CDN not to store it.",
+      "state": { "lanes": [
+        { "name": "Client",  "items": [{ "label": "DNS lookup", "state": "done" }, { "label": "write request", "state": "done" }, { "label": "read response", "state": "active" }, { "label": "use JSON", "state": "idle" }] },
+        { "name": "Network", "items": [{ "label": "TCP handshake", "state": "done" }, { "label": "TLS handshake", "state": "done" }, { "label": "request bytes", "state": "done" }, { "label": "response bytes", "state": "done" }] },
+        { "name": "Server",  "items": [{ "label": "parse HTTP", "state": "done" }, { "label": "middleware", "state": "done" }, { "label": "handler + DB", "state": "done" }, { "label": "serialize", "state": "done" }] }
+      ] } },
+    { "label": "Done", "note": "<code>await res.json()</code> parses the body. Total cost of this one GET on a cold connection: three round-trips of handshakes plus one for the request itself — the reason connection reuse and HTTP/2 matter more than shaving bytes.",
+      "state": { "lanes": [
+        { "name": "Client",  "items": [{ "label": "DNS lookup", "state": "done" }, { "label": "write request", "state": "done" }, { "label": "read response", "state": "done" }, { "label": "use JSON", "state": "done" }] },
+        { "name": "Network", "items": [{ "label": "TCP handshake", "state": "done" }, { "label": "TLS handshake", "state": "done" }, { "label": "request bytes", "state": "done" }, { "label": "response bytes", "state": "done" }] },
+        { "name": "Server",  "items": [{ "label": "parse HTTP", "state": "done" }, { "label": "middleware", "state": "done" }, { "label": "handler + DB", "state": "done" }, { "label": "serialize", "state": "done" }] }
+      ] } }
+  ]
+}</script>
+</section>
+
+<section class="block" data-block="bridge" id="3a-13">
+<div class="tag">Python bridge</div>
+<p>WSGI hands your app an <code>environ</code> dict and a <code>start_response(status, headers)</code> callable; Node hands you <code>req</code> and <code>res</code> <em>streams</em>. <code>environ["wsgi.input"].read()</code> ≈ consuming the <code>req</code> stream — which is why Express has body-parser middleware (<code>express.json()</code>, 3b) where Flask gives you <code>request.get_json()</code> on demand. <code>start_response("201 Created", [("Content-Type", "application/json")])</code> ≈ <code>res.writeHead(201, {…})</code>; Express's <code>res.status(201).type("json").send(…)</code> ≈ Starlette's <code>Response(content, status_code=201, media_type=…)</code>. FastAPI's <code>status_code=201</code> on the decorator and <code>raise HTTPException(404)</code> have no decorator-level equivalent — in Express the handler sets the status every time (<code>res.status(404)</code>), or throws an error that error middleware maps (3b). Cookies: <code>response.set_cookie(k, v, httponly=True, samesite="lax")</code> ≈ <code>res.cookie(k, v, { httpOnly: true, sameSite: "lax" })</code>.</p>
+</section>
+
+<section class="block" data-block="concept" id="3a-02">
+<h2>Methods — semantics matter</h2>
+<table>
+  <tr><th>Method</th><th>Idempotent?</th><th>Body?</th><th>Use for</th></tr>
+  <tr><td>GET</td><td>Yes (and safe)</td><td>No</td><td>Read</td></tr>
+  <tr><td>POST</td><td>No</td><td>Yes</td><td>Create / action</td></tr>
+  <tr><td>PUT</td><td>Yes</td><td>Yes</td><td>Replace</td></tr>
+  <tr><td>PATCH</td><td>No (usually)</td><td>Yes</td><td>Partial update</td></tr>
+  <tr><td>DELETE</td><td>Yes</td><td>Maybe</td><td>Remove</td></tr>
+</table>
+<p><strong>Idempotent</strong> means repeating the request leaves the server in the same state — not that the response is the same (a second <code>DELETE</code> returns 404; still idempotent). <strong>Safe</strong> (GET, HEAD, OPTIONS) means no state change at all. Proxies, browsers and retry libraries act on these promises: a client that times out will retry an idempotent request automatically and will <em>not</em> retry a POST — so a POST that times out after the write succeeded is a duplicate waiting to happen. The fix is an <strong><code>Idempotency-Key</code></strong> header the server remembers.</p>
+</section>
+
+<section class="block" data-block="concept" id="3a-03">
+<h2>Status codes — families, then the ones that matter</h2>
+<p>The first digit is the contract: <strong>2xx</strong> it worked, <strong>3xx</strong> look elsewhere, <strong>4xx</strong> the client's fault (don't retry unchanged), <strong>5xx</strong> the server's fault (retry with backoff). Clients, proxies and monitoring key off the family; the exact number is for humans and specific behaviours.</p>
+<ul>
+  <li><strong>200</strong> OK, <strong>201</strong> Created (+ <code>Location</code> header of the new resource), <strong>204</strong> No Content (success, empty body — the DELETE response)</li>
+  <li><strong>301/308</strong> Permanent redirect, <strong>302/307</strong> Temporary. 307/308 keep the method and body; 301/302 let browsers turn a POST into a GET.</li>
+  <li><strong>400</strong> Bad Request (malformed, validation), <strong>401</strong> Unauthorized (not authenticated), <strong>403</strong> Forbidden (authenticated but not allowed), <strong>404</strong> Not Found, <strong>409</strong> Conflict (duplicate, version mismatch), <strong>422</strong> Unprocessable (well-formed, semantically wrong), <strong>429</strong> Too Many Requests (+ <code>Retry-After</code>)</li>
+  <li><strong>500</strong> Internal, <strong>502</strong> Bad Gateway (upstream returned garbage), <strong>503</strong> Unavailable (overloaded, shutting down), <strong>504</strong> Gateway Timeout (upstream too slow)</li>
+</ul>
+
+<div class="callout warn">
+  <div class="tag">401 vs 403</div>
+  <p>Common confusion. <strong>401</strong> = "I don't know who you are — log in." <strong>403</strong> = "I know who you are, but you can't do this." Send the right one: an API client refreshes its token on 401 and gives up on 403; retrying a 403 with a fresh token is wasted work, and a 401 for a permissions problem sends the user into a login loop.</p>
+</div>
+
+<div class="callout warn">
+  <div class="tag">Check order leaks data</div>
+  <p>Checking "does it exist" before "are you logged in" lets anonymous clients enumerate ids: 404 vs 401 tells them which records exist. Authenticate first, then authorise, then look up — or return 404 for both "no such row" and "not yours".</p>
+</div>
+</section>
+
+<section class="block" data-block="diagram" id="3a-14">
+<div class="tag">Mechanism</div>
+<script type="application/json">{
+  "direction": "down",
+  "nodes": [
+    { "id": "req", "label": "handler decides", "kind": "box" },
+    { "id": "s2", "label": "2xx\nit worked", "kind": "pill" },
+    { "id": "s3", "label": "3xx\nlook elsewhere", "kind": "pill" },
+    { "id": "s4", "label": "4xx\nclient's fault", "kind": "pill" },
+    { "id": "s5", "label": "5xx\nserver's fault", "kind": "pill" },
+    { "id": "e2", "label": "200 · 201 · 204", "kind": "note" },
+    { "id": "e3", "label": "301/308 · 302/307", "kind": "note" },
+    { "id": "e4", "label": "400 401 403 404\n409 422 429", "kind": "note" },
+    { "id": "e5", "label": "500 · 502 · 503 · 504", "kind": "note" }
+  ],
+  "edges": [
+    { "from": "req", "to": "s2", "label": "done" },
+    { "from": "req", "to": "s3", "label": "moved" },
+    { "from": "req", "to": "s4", "label": "bad input / no auth" },
+    { "from": "req", "to": "s5", "label": "crashed / upstream" },
+    { "from": "s2", "to": "e2", "label": "don't retry" },
+    { "from": "s3", "to": "e3", "label": "follow" },
+    { "from": "s4", "to": "e4", "label": "fix, then retry" },
+    { "from": "s5", "to": "e5", "label": "retry w/ backoff" }
+  ]
+}</script>
+<p class="caption">The family is the contract clients act on: 4xx says "the request is wrong, retrying as-is won't help", 5xx says "we are wrong, try again later". Sending 500 for a validation error makes clients retry a request that can never succeed.</p>
+</section>
+
+<section class="block" data-block="playground" id="3a-15" data-lang="js">
+<div class="tag">Try it</div>
+<p>A minimal API that uses the status codes above (runs against the in-page Express shim; <code>request()</code> drives one request through <code>app</code>). Try: (1) move the <code>401</code> check below the lookup and watch request 1 become a 200 — the leak from the gotcha; (2) change <code>sendStatus(204)</code> to <code>json({ deleted: true })</code> and print <code>r.body</code>; (3) set <code>Cache-Control</code> to <code>no-store</code> and see the header come back.</p>
+<pre><code class="language-javascript">const users = { 42: { id: 42, email: "alice@example.com" } };
+const app = express();
+
+app.get("/users/:id", (req, res) =&gt; {
+  if (!req.get("authorization")) return res.status(401).json({ error: "unauthenticated" });
+  const user = users[req.params.id];
+  if (!user) return res.status(404).json({ error: "not_found" });
+  res.set("Cache-Control", "private, max-age=60").json(user);
+});
+
+app.delete("/users/:id", (req, res) =&gt; {
+  if (req.get("authorization") !== "Bearer admin") return res.status(403).json({ error: "forbidden" });
+  delete users[req.params.id];
+  res.sendStatus(204);
+});
+
+const asUser = { authorization: "Bearer user" };
+let r = await request(app, { path: "/users/42" });
+console.log(r.status, r.body);
+r = await request(app, { path: "/users/42", headers: asUser });
+console.log(r.status, r.headers["cache-control"], r.body.email);
+r = await request(app, { path: "/users/7", headers: asUser });
+console.log(r.status, r.body);
+r = await request(app, { method: "DELETE", path: "/users/42", headers: asUser });
+console.log(r.status, r.body);
+r = await request(app, { method: "DELETE", path: "/users/42", headers: { authorization: "Bearer admin" } });
+console.log(r.status);
+r = await request(app, { path: "/users/42", headers: asUser });
+console.log(r.status);</code></pre>
+<output>401 { error: "unauthenticated" }
+200 private, max-age=60 alice@example.com
+404 { error: "not_found" }
+403 { error: "forbidden" }
+204
+404</output>
+</section>
+
+<section class="block" data-block="exercise" id="3a-16" data-kind="predict" data-lang="js">
+<div class="tag">Exercise</div>
+<p>Five requests, five status codes. The handler checks existence <em>before</em> authentication; the last path has a typo. What does this print, one status per line?</p>
+<pre><code class="language-javascript">const app = express();
+const items = { 1: { id: 1, owner: "alice" } };
+
+app.get("/items/:id", (req, res) =&gt; {
+  const item = items[req.params.id];
+  if (!item) return res.status(404).json({ error: "not_found" });
+  const user = req.get("x-user");
+  if (!user) return res.status(401).json({ error: "unauthenticated" });
+  if (item.owner !== user) return res.status(403).json({ error: "forbidden" });
+  res.json(item);
+});
+
+const calls = [
+  ["/items/1", {}],
+  ["/items/2", {}],
+  ["/items/1", { "x-user": "bob" }],
+  ["/items/1", { "x-user": "alice" }],
+  ["/item/1",  { "x-user": "alice" }],
+];
+for (const [path, headers] of calls) {
+  const r = await request(app, { path, headers });
+  console.log(r.status);
+}</code></pre>
+<script type="application/json">{
+  "expected": "401\n404\n403\n200\n404",
+  "hints": [
+    "Walk the <code>if</code>s top to bottom for each call: existence, then identity, then ownership.",
+    "Request 2 never reaches the auth check — and that is the leak: an anonymous client learns that item 2 doesn't exist and item 1 does.",
+    "<code>/item/1</code> matches no route, so Express's fallback answers: 404."
+  ],
+  "explain": "Requests 1 and 2 are both anonymous, yet get different codes (401 vs 404) — the handler has told an unauthenticated caller which ids exist. Reorder to auth → authz → lookup, or collapse \"not yours\" and \"not found\" into one 404 (3a-03). The final 404 is not from the handler at all: no route matched <code>/item/1</code>, so the router's default 404 ran."
+}</script>
+</section>
+
+<section class="block" data-block="exercise" id="3a-17" data-kind="fix" data-lang="js">
+<div class="tag">Exercise</div>
+<p>Every response from this API is the wrong shape for its client. Fix the status codes only (the bodies are fine): a missing user is <strong>404</strong>; a request without <code>Authorization</code> is <strong>401</strong>; a body without <code>email</code> is <strong>400</strong>; a successful create is <strong>201</strong> with a <code>Location</code> header pointing at <code>/users/&lt;id&gt;</code>. Tests send each of the four requests and check <code>status</code> (and <code>headers.location</code> for the create).</p>
+<pre><code class="language-javascript">const db = { users: new Map([[1, { id: 1, email: "alice@example.com" }]]), nextId: 2 };
+const app = express();
+app.use(express.json());
+
+app.get("/users/:id", (req, res) =&gt; {
+  const user = db.users.get(Number(req.params.id));
+  if (!user) return res.json({ error: "not_found" });
+  res.json(user);
+});
+
+app.post("/users", (req, res) =&gt; {
+  if (!req.get("authorization")) return res.status(403).json({ error: "login required" });
+  if (!req.body?.email) return res.status(500).json({ error: "email required" });
+  const user = { id: db.nextId++, email: req.body.email };
+  db.users.set(user.id, user);
+  res.json(user);
+});</code></pre>
+<script type="application/json">{
+  "tests": "test(\"missing user is 404, not a 200 with an error body\", async () => {\n  const r = await request(app, { path: \"/users/99\" });\n  assert.equal(r.status, 404);\n  assert.equal(r.body, { error: \"not_found\" });\n});\ntest(\"existing user is 200\", async () => {\n  const r = await request(app, { path: \"/users/1\" });\n  assert.equal(r.status, 200);\n  assert.equal(r.body.email, \"alice@example.com\");\n});\ntest(\"no Authorization → 401 (not 403)\", async () => {\n  const r = await request(app, { method: \"POST\", path: \"/users\", body: { email: \"b@x.io\" } });\n  assert.equal(r.status, 401);\n});\ntest(\"missing email → 400 (client's fault, not 500)\", async () => {\n  const r = await request(app, { method: \"POST\", path: \"/users\", body: {}, headers: { authorization: \"Bearer t\" } });\n  assert.equal(r.status, 400);\n});\ntest(\"create → 201 + Location\", async () => {\n  const r = await request(app, { method: \"POST\", path: \"/users\", body: { email: \"b@x.io\" }, headers: { authorization: \"Bearer t\" } });\n  assert.equal(r.status, 201);\n  assert.equal(r.headers.location, \"/users/\" + r.body.id);\n  assert.equal(r.body.email, \"b@x.io\");\n});",
+  "hints": [
+    "<code>res.json()</code> alone sends 200 — chain <code>res.status(code)</code> in front of it.",
+    "401 is \"who are you?\", 403 is \"you can't\"; 400 is \"your request is wrong\"; 5xx is reserved for things the server did wrong.",
+    "For the create: <code>res.status(201).set(\"Location\", `/users/${user.id}`).json(user)</code>. Header names are case-insensitive — the test reads <code>headers.location</code>."
+  ],
+  "solution": "const db = { users: new Map([[1, { id: 1, email: \"alice@example.com\" }]]), nextId: 2 };\nconst app = express();\napp.use(express.json());\n\napp.get(\"/users/:id\", (req, res) => {\n  const user = db.users.get(Number(req.params.id));\n  if (!user) return res.status(404).json({ error: \"not_found\" });\n  res.json(user);\n});\n\napp.post(\"/users\", (req, res) => {\n  if (!req.get(\"authorization\")) return res.status(401).json({ error: \"login required\" });\n  if (!req.body?.email) return res.status(400).json({ error: \"email required\" });\n  const user = { id: db.nextId++, email: req.body.email };\n  db.users.set(user.id, user);\n  res.status(201).set(\"Location\", `/users/${user.id}`).json(user);\n});",
+  "explain": "A 200 with <code>{ error }</code> is invisible to every generic client: <code>fetch</code>'s <code>res.ok</code> is true, the CDN may cache it, the monitoring dashboard shows green. A 500 for a bad body tells clients to retry something that can never succeed, and pages the on-call for a typo. 201 + <code>Location</code> is the contract that lets a client follow up on what it just created."
+}</script>
+</section>
+
+<section class="block" data-block="concept" id="3a-05">
+<h2>Headers and cookies</h2>
+<ul>
+  <li><code>Content-Type</code>: <code>application/json</code>, <code>multipart/form-data</code> (uploads), <code>application/x-www-form-urlencoded</code> (HTML forms), <code>text/html</code>. The body parser you need in 3b is chosen by this header.</li>
+  <li><code>Authorization</code>: <code>Bearer &lt;token&gt;</code> for JWT / API keys. Never cached by shared caches, never sent cross-origin without <code>credentials</code> (CORS below).</li>
+  <li><code>Cookie</code> / <code>Set-Cookie</code>: sessions. Flags: <code>HttpOnly</code> (no JS access — anti-XSS), <code>Secure</code> (HTTPS only), <code>SameSite=Lax|Strict</code> (CSRF mitigation; <code>Lax</code> is the browser default and still sends the cookie on top-level navigations). 3e builds on these.</li>
+  <li><code>Accept</code> / <code>Accept-Encoding</code>: what the client can take back. <code>Vary</code> tells caches which request headers changed the response — forget <code>Vary: Origin</code> and a CDN serves one origin's CORS headers to another.</li>
+  <li><code>Cache-Control</code>: directive cheat-sheet below.</li>
+</ul>
+<p>Header names are case-insensitive; Node lowercases them on the way in (<code>req.headers.authorization</code>, <code>req.get("Authorization")</code> both work). Values are strings — <code>req.get("content-length")</code> is <code>"42"</code>, not <code>42</code>.</p>
+</section>
+
+<section class="block" data-block="concept" id="3a-06">
+<h2>Cache-Control — the directives that actually matter</h2>
+<table>
+  <tr><th>Directive</th><th>Meaning</th></tr>
+  <tr><td><code>no-store</code></td><td>Never cache. Sensitive data (banking, health). Forces a full round-trip every time.</td></tr>
+  <tr><td><code>no-cache</code></td><td>Cache it, but <em>always revalidate</em> before serving. Uses an ETag or Last-Modified check. One round-trip, but cheaper than no-store if the resource hasn't changed (304, no body).</td></tr>
+  <tr><td><code>max-age=N</code></td><td>Serve from cache for N seconds without checking. Good for static assets with content hashes in the filename (<code>max-age=31536000, immutable</code>).</td></tr>
+  <tr><td><code>s-maxage=N</code></td><td>Same as max-age but applies only to shared caches (CDNs). Lets you cache at the edge longer than at the browser.</td></tr>
+  <tr><td><code>stale-while-revalidate=N</code></td><td>Serve stale for up to N seconds <em>while</em> fetching a fresh copy in the background. Fast response + eventual freshness for non-critical data.</td></tr>
+  <tr><td><code>private</code></td><td>CDN must not cache; browser may. <strong>Mandatory on any user-specific response</strong> — without it a CDN with a cache rule can serve one user's data to another.</td></tr>
+</table>
+<p>No header at all is not "no caching": browsers apply heuristic freshness to responses with a <code>Last-Modified</code>. State it explicitly. Default for an authenticated JSON API: <code>no-store</code> or <code>private, no-cache</code>.</p>
+</section>
+
+<section class="block" data-block="exercise" id="3a-18" data-kind="mcq">
+<div class="tag">Check</div>
+<p><code>GET /me</code> returns the logged-in user's profile. The handler sets <code>Cache-Control: max-age=60</code> and a CDN with caching enabled sits in front of the API. What happens?</p>
+<script type="application/json">{
+  "options": [
+    "Nothing bad: the CDN keys its cache on the Authorization header automatically.",
+    "The CDN may store Alice's profile and serve it to Bob for up to 60 s — the response needs <code>private</code> (or <code>no-store</code>).",
+    "Browsers never cache responses to requests that carried an Authorization header, so the directive is ignored end to end.",
+    "<code>max-age</code> only applies to static assets; JSON responses are never cached."
+  ],
+  "answer": 1,
+  "explain": "<code>max-age</code> without <code>private</code> is a public cache instruction. Some CDNs refuse to cache responses to requests with <code>Authorization</code> by default (RFC 9111 §3.5), many are configured not to, and cookie-based sessions get no such protection — so the fix is to say it: <code>private, max-age=60</code>, or <code>no-store</code> for anything sensitive. Option A describes <code>Vary: Authorization</code>, which you would have to send yourself."
+}</script>
+</section>
+
+<section class="block" data-block="concept" id="3a-07">
+<h2>HTTP/2 and HTTP/3 — one paragraph each</h2>
+<p><strong>HTTP/2</strong> uses a single TCP connection and multiplexes many requests/responses over it (no per-request head-of-line blocking; one handshake). Headers are compressed (HPACK). TLS is effectively required. Node supports it natively; in practice the reverse proxy (nginx, Caddy, the load balancer) terminates HTTP/2 and talks HTTP/1.1 to Node. Your Express code does not change.</p>
+<p><strong>HTTP/3</strong> swaps TCP for QUIC (UDP-based), eliminating TCP head-of-line blocking entirely and folding the transport and TLS handshakes into one. Critical for mobile clients on lossy networks. Supported by Cloudflare, Fastly, and modern nginx/Caddy builds. Again: negotiated below you; the semantics above (methods, status codes, headers) are identical across all three versions.</p>
+</section>
+
+<section class="block" data-block="concept" id="3a-08">
+<h2>HTTP streaming — chunked transfer and SSE</h2>
+<p>Normal responses buffer the body, set <code>Content-Length</code>, then send. Streaming skips the buffer: data flows as it's produced, using <code>Transfer-Encoding: chunked</code>. Two common patterns (real Node <code>res</code> API — <code>res.write</code> and <code>req.on("close")</code> are stream methods the in-page shim does not model):</p>
+<pre><code class="language-typescript">// Chunked — arbitrary binary/text stream
+app.get("/download", (req, res) =&gt; {
+  res.setHeader("Content-Type", "text/plain");
+  res.write("chunk one\n");
+  setTimeout(() =&gt; {
+    res.write("chunk two\n");
+    res.end();           // flushes and closes
+  }, 500);
+});
+
+// Server-Sent Events (SSE) — browser-native event stream
+// Client uses: const es = new EventSource("/events");
+app.get("/events", (req, res) =&gt; {
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.flushHeaders();   // send the status + headers now, before any event
+
+  const send = (data: object) =&gt; res.write(`data: ${JSON.stringify(data)}\n\n`);
+
+  send({ type: "connected" });
+  const iv = setInterval(() =&gt; send({ type: "heartbeat", ts: Date.now() }), 15_000);
+  req.on("close", () =&gt; clearInterval(iv));  // clean up when client disconnects
+});</code></pre>
+<p>SSE is one-directional (server → client), reconnects automatically, and is plain HTTP — it goes through every proxy and CDN that WebSockets don't. Use it for live feeds, progress bars, and AI token streaming. For bidirectional, use WebSockets. Once <code>res.write</code> has run, the status and headers are on the wire: an error mid-stream cannot become a 500 any more, only a truncated body — stream errors must be reported in-band.</p>
+</section>
+
+<section class="block" data-block="concept" id="3a-09">
+<h2>CORS in two paragraphs</h2>
+<p>By default, browsers block cross-origin JS from <em>reading</em> another origin's responses (same-origin policy; the request itself is usually sent). CORS is the server's opt-in: it returns <code>Access-Control-Allow-Origin</code> (and friends) to say which origins may read. For "unsafe" methods (anything but GET/HEAD/POST-with-form-types) or custom headers (<code>Authorization</code>, <code>Content-Type: application/json</code>), the browser first sends a <strong>preflight</strong> <code>OPTIONS</code> request and expects <code>Access-Control-Allow-Methods</code> / <code>-Headers</code> back; <code>Access-Control-Max-Age</code> says how long to remember the answer. Cookies and <code>Authorization</code> cross origins only with <code>Access-Control-Allow-Credentials: true</code>, and then the allowed origin must be explicit — <code>*</code> is rejected by the browser.</p>
+<p>Most CORS pain is configuring the server to return the right headers. Use the <code>cors</code> middleware and configure explicit origins — never <code>*</code> on an authenticated API. CORS protects browsers' users, not your server: <code>curl</code> and other servers send no <code>Origin</code> and ignore the headers entirely.</p>
+
+<pre><code class="language-typescript">import cors from "cors";
+
+const ALLOWED_ORIGINS = [
+  "https://app.example.com",
+  "https://admin.example.com",
+  ...(process.env.NODE_ENV === "development" ? ["http://localhost:3000"] : []),
+];
+
+app.use(cors({
+  origin: (origin, cb) =&gt; {
+    // allow server-to-server calls (no origin header) and listed origins
+    if (!origin || ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
+    cb(new Error(`CORS: origin ${origin} not allowed`));
+  },
+  credentials: true,          // required when client sends cookies/Authorization
+  allowedHeaders: ["Content-Type", "Authorization"],
+  maxAge: 86_400,             // preflight cached for 24h
+}));</code></pre>
+</section>
+
+<section class="block" data-block="exercise" id="3a-19" data-kind="complete" data-lang="js">
+<div class="tag">Exercise</div>
+<p>Write the <code>cors</code> middleware by hand. Contract: if there is no <code>Origin</code> header, or the origin is not in <code>ALLOWED</code>, call <code>next()</code> and add nothing. For an allowed origin set <code>Access-Control-Allow-Origin</code> to <em>that origin</em> (never <code>*</code>), <code>Vary: Origin</code>, and <code>Access-Control-Allow-Credentials: true</code>. If the method is <code>OPTIONS</code> (a preflight), additionally set <code>Access-Control-Allow-Methods</code> (must include <code>DELETE</code>), <code>Access-Control-Allow-Headers: Content-Type, Authorization</code>, <code>Access-Control-Max-Age: 86400</code>, and end the request with <strong>204</strong> — the route handler must not run. Tests read the lowercased header names from <code>r.headers</code>.</p>
+<pre><code class="language-javascript">const ALLOWED = ["https://app.example.com", "https://admin.example.com"];
+
+function cors(req, res, next) {
+  // TODO
+  next();
+}
+
+const app = express();
+app.use(cors);
+app.get("/me", (req, res) =&gt; res.json({ id: 1 }));</code></pre>
+<script type="application/json">{
+  "tests": "test(\"allowed origin is echoed back, with Vary and credentials\", async () => {\n  const r = await request(app, { path: \"/me\", headers: { origin: \"https://app.example.com\" } });\n  assert.equal(r.status, 200);\n  assert.equal(r.headers[\"access-control-allow-origin\"], \"https://app.example.com\");\n  assert.equal(r.headers[\"vary\"], \"Origin\");\n  assert.equal(r.headers[\"access-control-allow-credentials\"], \"true\");\n});\ntest(\"unknown origin: served, but no CORS headers\", async () => {\n  const r = await request(app, { path: \"/me\", headers: { origin: \"https://evil.example\" } });\n  assert.equal(r.status, 200);\n  assert.equal(r.headers[\"access-control-allow-origin\"], undefined);\n});\ntest(\"no Origin (curl, server-to-server): untouched\", async () => {\n  const r = await request(app, { path: \"/me\" });\n  assert.equal(r.status, 200);\n  assert.equal(r.body, { id: 1 });\n  assert.equal(r.headers[\"access-control-allow-origin\"], undefined);\n});\ntest(\"preflight is answered by the middleware with 204\", async () => {\n  const r = await request(app, { method: \"OPTIONS\", path: \"/me\", headers: { origin: \"https://admin.example.com\", \"access-control-request-method\": \"DELETE\" } });\n  assert.equal(r.status, 204);\n  assert.equal(r.headers[\"access-control-allow-origin\"], \"https://admin.example.com\");\n  assert(/DELETE/.test(r.headers[\"access-control-allow-methods\"] || \"\"), \"allow-methods must include DELETE\");\n  assert.equal(r.headers[\"access-control-allow-headers\"], \"Content-Type, Authorization\");\n  assert.equal(r.headers[\"access-control-max-age\"], \"86400\");\n});",
+  "hints": [
+    "<code>const origin = req.get(\"origin\")</code>; bail out early with <code>return next()</code> when it is missing or not allowed.",
+    "<code>res.set(name, value)</code> for each header; the value for Allow-Origin is the request's own origin string.",
+    "Preflight: <code>if (req.method === \"OPTIONS\") { …more headers…; return res.sendStatus(204); }</code> — returning ends the chain, so <code>/me</code> never runs."
+  ],
+  "solution": "const ALLOWED = [\"https://app.example.com\", \"https://admin.example.com\"];\n\nfunction cors(req, res, next) {\n  const origin = req.get(\"origin\");\n  if (!origin || !ALLOWED.includes(origin)) return next();\n  res.set(\"Access-Control-Allow-Origin\", origin);\n  res.set(\"Vary\", \"Origin\");\n  res.set(\"Access-Control-Allow-Credentials\", \"true\");\n  if (req.method === \"OPTIONS\") {\n    res.set(\"Access-Control-Allow-Methods\", \"GET,POST,PUT,PATCH,DELETE\");\n    res.set(\"Access-Control-Allow-Headers\", \"Content-Type, Authorization\");\n    res.set(\"Access-Control-Max-Age\", \"86400\");\n    return res.sendStatus(204);\n  }\n  next();\n}\n\nconst app = express();\napp.use(cors);\napp.get(\"/me\", (req, res) => res.json({ id: 1 }));",
+  "explain": "Echoing the specific origin (plus <code>Vary: Origin</code> so caches keep the variants apart) is what lets <code>credentials: true</code> work — the browser rejects <code>*</code> with credentials. The preflight is answered by middleware, before any route, which is why <code>app.use(cors(...))</code> must be mounted ahead of the routers. An unknown origin is still served: CORS only controls what the <em>browser</em> lets the page read."
+}</script>
+</section>
+
+<section class="block" data-block="review" id="3a-20">
+<div class="tag">Code review</div>
+<ul>
+  <li><strong>200 with <code>{ error }</code> in the body.</strong> <code>res.ok</code> is true, caches store it, dashboards stay green. Use the family that matches the failure; the body carries detail, the status carries meaning.</li>
+  <li><strong>500 for client mistakes.</strong> A validation failure returned as 5xx pages on-call and tells clients to retry. 400/422 for bad input, 409 for conflicts, 404 for missing.</li>
+  <li><strong>No <code>Cache-Control</code> on authenticated responses.</strong> Heuristic caching and CDN rules fill the gap. Default to <code>no-store</code> or <code>private, no-cache</code>; only public, user-independent responses get <code>s-maxage</code>.</li>
+  <li><strong>Existence checked before authentication.</strong> 404-vs-401 enumerates ids. Auth → authz → lookup, or 404 for both.</li>
+  <li><strong><code>Access-Control-Allow-Origin: *</code> on an API that uses cookies or <code>Authorization</code>.</strong> Browsers refuse credentials with <code>*</code>, so someone "fixes" it by reflecting any origin — which is the actual vulnerability. Allowlist, and send <code>Vary: Origin</code>.</li>
+  <li><strong>Non-idempotent POST with client retries.</strong> Timeouts duplicate orders and payments. Accept an <code>Idempotency-Key</code> and replay the stored response.</li>
+  <li><strong>SSE behind a buffering proxy.</strong> nginx buffers and times out idle connections by default: <code>proxy_buffering off; proxy_read_timeout 3600s;</code> and send heartbeats.</li>
+</ul>
+</section>
+
+<section class="block" data-block="exercise" id="3a-21" data-kind="mcq">
+<div class="tag">Check</div>
+<p><code>POST /orders</code> succeeds on the server, but the client's connection times out before the 201 arrives. The client retries. Which design makes that retry safe?</p>
+<script type="application/json">{
+  "options": [
+    "Switch the endpoint to <code>PUT /orders</code> — PUT is idempotent, so retries are safe by definition.",
+    "The client sends an <code>Idempotency-Key</code> header; the server stores key → response and replays the stored response on a repeat.",
+    "Return <code>202 Accepted</code> immediately so the client never waits long enough to time out.",
+    "Have the client <code>GET /orders</code> first and only POST if the order isn't listed."
+  ],
+  "answer": 1,
+  "explain": "Idempotency is a property of the implementation, not the verb: renaming to PUT without a client-supplied identifier changes nothing (a PUT to <code>/orders/&lt;client-generated-id&gt;</code> would). 202 shortens the wait but a dropped response still triggers a retry. The GET-then-POST check has a race window and still duplicates. The key makes the <em>server</em> remember the first outcome."
+}</script>
+</section>
+
+<section class="block" data-block="recall" id="3a-10">
+<div class="tag">Recall</div>
+<dl>
+  <dt>A CDN sits in front of your API. You want the CDN to cache a public listing for 5 minutes but the browser to revalidate every time. Which Cache-Control header achieves that?</dt>
+  <dd><p><code>Cache-Control: no-cache, s-maxage=300</code>. <code>s-maxage</code> controls the shared (CDN) cache; <code>no-cache</code> tells browsers to always revalidate.</p></dd>
+  <dt>Your SSE endpoint works locally but disconnects after 60 seconds in production (behind nginx). What nginx directive is almost certainly the cause?</dt>
+  <dd><p><code>proxy_read_timeout</code> defaults to 60s; idle SSE connections get killed. Set <code>proxy_read_timeout 3600s;</code>, <code>proxy_buffering off;</code> so chunks reach the client immediately, and send heartbeats.</p></dd>
+  <dt>401 or 403: the user is logged in but tries to delete another user's post.</dt>
+  <dd><p>403 Forbidden — identity is known, permission is missing. 401 means "not authenticated"; clients react to it by re-authenticating, which would not help here.</p></dd>
+  <dt><code>no-cache</code> vs <code>no-store</code> — which one still saves a copy?</dt>
+  <dd><p><code>no-cache</code> stores the response but revalidates (ETag / Last-Modified → 304) before every reuse. <code>no-store</code> never writes it to any cache. Use <code>no-store</code> for sensitive data.</p></dd>
+  <dt>Which methods are idempotent, and what does that promise to a retrying client?</dt>
+  <dd><p>GET, HEAD, PUT, DELETE (and OPTIONS). Repeating the request leaves the server state unchanged — so timeouts can be retried blindly. POST and PATCH make no such promise; use an <code>Idempotency-Key</code> if they must be retried.</p></dd>
+  <dt>A handler checks "does the row exist → 404" before "is there a token → 401". What is the production problem?</dt>
+  <dd><p>Anonymous clients can enumerate ids: 404 vs 401 reveals which rows exist. Authenticate first, authorise second, look up last — or return 404 for both "missing" and "not yours".</p></dd>
+  <dt>What does the browser send before a cross-origin <code>DELETE</code> with an <code>Authorization</code> header, and which response headers must answer it?</dt>
+  <dd><p>A preflight <code>OPTIONS</code> request. The server answers with <code>Access-Control-Allow-Origin</code> (the specific origin, plus <code>Vary: Origin</code>), <code>Access-Control-Allow-Methods</code> including DELETE, <code>Access-Control-Allow-Headers</code> including Authorization, <code>Access-Control-Allow-Credentials: true</code>, optionally <code>Access-Control-Max-Age</code> — typically a 204 with no body.</p></dd>
+  <dt>What does this print? <pre><code class="language-javascript">app.get("/items/:id", (req, res) =&gt; {
+  if (!items[req.params.id]) return res.status(404).json({});
+  if (!req.get("x-user")) return res.status(401).json({});
+  res.json({});
+});
+console.log((await request(app, { path: "/items/2" })).status);   // items[2] does not exist
+console.log((await request(app, { path: "/items/1" })).status);   // items[1] exists</code></pre></dt>
+  <dd><p><code>404</code> then <code>401</code>. Both requests are anonymous, but the existence check runs first, so the two codes differ — leaking which ids exist.</p></dd>
+  <dt>Which cookie flag stops JavaScript from reading the cookie, and which one limits cross-site sending?</dt>
+  <dd><p><code>HttpOnly</code> hides it from <code>document.cookie</code> (limits XSS damage); <code>SameSite=Lax|Strict</code> controls whether it rides along on cross-site requests (CSRF mitigation). <code>Secure</code> restricts it to HTTPS.</p></dd>
+</dl>
+</section>
+</article>
+<script type="module" src="/assets/runtime/boot.js"></script>
+</body>
+</html>

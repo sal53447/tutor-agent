@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>3j. When Express isn't the answer · JS Curriculum</title>
+<link rel="icon" href="/assets/favicon.svg">
+<link rel="stylesheet" href="/assets/vendor/prism.css">
+<link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body data-lesson="3j" data-level="migrated">
+<article class="lesson">
+
+<header>
+  <h1>When Express Isn't the Answer</h1>
+</header>
+
+<section class="block" data-block="concept" id="3j-01">
+<p>Express is the incumbent but not always the best tool. Know the alternatives.</p>
+
+<table>
+  <tr><th>Tool</th><th>Pick when</th></tr>
+  <tr><td><strong>Express</strong></td><td>You need a battle-tested, unopinionated framework with the biggest middleware ecosystem.</td></tr>
+  <tr><td><strong>Fastify</strong></td><td>Throughput matters. ~2x faster than Express. Built-in schema validation. Excellent plugin system.</td></tr>
+  <tr><td><strong>Koa</strong></td><td>You want Express without the legacy baggage. Async-first (no callback-based <code>next(err)</code>). Smaller, leaner. Less ecosystem than Express but cleaner internals.</td></tr>
+  <tr><td><strong>Hono</strong></td><td>You target the edge (Cloudflare, Vercel Edge). Tiny, Web-Standards-based, ultra-fast cold starts.</td></tr>
+  <tr><td><strong>Elysia</strong></td><td>Bun runtime. End-to-end type inference from schema to handler with zero codegen. Worth watching; Bun ecosystem.</td></tr>
+  <tr><td><strong>NestJS</strong></td><td>Large team, want opinionated structure, DI, decorators, Angular-like architecture.</td></tr>
+  <tr><td><strong>tRPC</strong></td><td>You own both ends (Next.js + Node) and want end-to-end type safety without OpenAPI ceremony. Procedures are defined once on the server; the client gets auto-inferred TypeScript types with no code generation step — calling an API feels like calling a local function.</td></tr>
+  <tr><td><strong>Next.js API routes / Server Actions</strong></td><td>You're already on Next.js. Often you don't need a separate Express service at all.</td></tr>
+</table>
+
+<div class="callout py">
+  <div class="tag">Python bridge</div>
+  <p>If you're coming from FastAPI, <strong>Fastify</strong> is the closest analogue: schema-first, fast, plugin system maps well to FastAPI's dependency injection. Hono ≈ Starlette (minimal, standards-based, deployable anywhere). NestJS ≈ Django (opinionated, batteries-included, decorator-driven). tRPC has no direct Python equivalent — the closest conceptual analogue is a Python monorepo where FastAPI Pydantic models are also imported by the frontend, but tRPC automates this entirely.</p>
+</div>
+
+<div class="callout good">
+  <div class="tag">Rule of thumb 2026</div>
+  <p>Full-stack Next.js app? Use route handlers + server actions; no separate backend. Dedicated API service? Fastify if performance matters, Express if team familiarity does, Hono if you deploy to edge. NestJS only if the team explicitly wants that architectural style.</p>
+</div>
+</section>
+</article>
+<script type="module" src="/assets/runtime/boot.js"></script>
+</body>
+</html>

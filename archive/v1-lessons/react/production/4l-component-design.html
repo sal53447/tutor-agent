@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>4l. Component design patterns · JS Curriculum</title>
+<link rel="icon" href="/assets/favicon.svg">
+<link rel="stylesheet" href="/assets/vendor/prism.css">
+<link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body data-lesson="4l" data-level="migrated">
+<article class="lesson">
+
+<header>
+  <h1>Component Design Patterns</h1>
+</header>
+
+<section class="block" data-block="concept" id="4l-01">
+<h2>Compound components</h2>
+<p>A parent and children that share implicit state via context. User composes them freely.</p>
+<pre><code class="language-jsx">&lt;Tabs defaultValue="a"&gt;
+  &lt;Tabs.List&gt;
+    &lt;Tabs.Trigger value="a"&gt;A&lt;/Tabs.Trigger&gt;
+    &lt;Tabs.Trigger value="b"&gt;B&lt;/Tabs.Trigger&gt;
+  &lt;/Tabs.List&gt;
+  &lt;Tabs.Content value="a"&gt;A content&lt;/Tabs.Content&gt;
+  &lt;Tabs.Content value="b"&gt;B content&lt;/Tabs.Content&gt;
+&lt;/Tabs&gt;</code></pre>
+</section>
+
+<section class="block" data-block="concept" id="4l-02">
+<h2>Headless UI (behavior, no styles)</h2>
+<p><strong>Radix UI</strong>, <strong>React Aria</strong>, <strong>Headless UI</strong>, <strong>shadcn/ui</strong>. They give you accessible primitives (dropdowns, dialogs, menus) without imposing a visual design. You style them yourself, usually with Tailwind. This is the dominant modern pattern — don't roll your own dialog unless you want to fight focus traps, keyboard nav, and ARIA forever.</p>
+</section>
+
+<section class="block" data-block="concept" id="4l-03">
+<h2>Polymorphic components — prefer <code>asChild</code> over <code>as</code> prop</h2>
+<p>The <code>as</code> prop is hard to type correctly in TypeScript (the component needs to accept all props of the target element). The modern dominant pattern from Radix UI is <code>asChild</code>: the component merges its behavior/styles onto its single child element rather than rendering its own root element.</p>
+<pre><code class="language-jsx">// asChild pattern (Radix Slot)
+import { Slot } from "@radix-ui/react-slot";
+
+function Button({ asChild = false, className, children, ...props }) {
+  const Comp = asChild ? Slot : "button";
+  return &lt;Comp className={cn("btn", className)} {...props}&gt;{children}&lt;/Comp&gt;;
+}
+
+// Usage — Button renders as a Next.js Link, keeping Button's styles + Link's routing
+&lt;Button asChild&gt;
+  &lt;Link href="/dashboard"&gt;Go to dashboard&lt;/Link&gt;
+&lt;/Button&gt;</code></pre>
+<p><code>Slot</code> merges event handlers, refs, and className from the parent onto the child. No TypeScript gymnastics needed — the child's own type describes valid props.</p>
+</section>
+
+<section class="block" data-block="concept" id="4l-04">
+<h2>Suspense and ErrorBoundary as composition primitives</h2>
+<p>These aren't just error-handling tools — they're the standard way to declare loading and error states at the component tree level, decoupled from the async data logic inside.</p>
+<pre><code class="language-jsx">import { Suspense } from "react";
+import { ErrorBoundary } from "react-error-boundary";  // npm package
+
+function UserSection({ id }) {
+  return (
+    &lt;ErrorBoundary fallback={&lt;p&gt;Failed to load user.&lt;/p&gt;}&gt;
+      &lt;Suspense fallback={&lt;Skeleton /&gt;}&gt;
+        &lt;UserCard id={id} /&gt;  {/* suspends while fetching; throws on error */}
+      &lt;/Suspense&gt;
+    &lt;/ErrorBoundary&gt;
+  );
+}</code></pre>
+<div class="callout good">
+  <div class="tag">Next.js file-based versions</div>
+  <p>In Next.js App Router, <code>loading.tsx</code> is a file-based <code>&lt;Suspense&gt;</code> boundary for a route segment. <code>error.tsx</code> is a file-based <code>&lt;ErrorBoundary&gt;</code>. They're the same primitive — Next.js just wires them up automatically from the filesystem. Understanding Suspense + ErrorBoundary directly makes the Next.js conventions obvious.</p>
+</div>
+</section>
+
+<section class="block" data-block="recall" id="4l-05">
+<dl>
+  <dt><ol>
+    <li>Why does defining a component inside another component cause state loss on every re-render of the parent?</li>
+    <li>What problem does <code>asChild</code> solve that the <code>as</code> prop doesn't?</li>
+    <li>What's the difference between a Suspense boundary and an ErrorBoundary? Can they be nested?</li>
+  </ol></dt>
+  <dd><p>1. Every render creates a new component type (new function reference) — React sees a different component at that position, unmounts the old one (clearing state), and mounts the fresh one. 2. <code>asChild</code> avoids TypeScript typing complexity — the child's own type system handles prop validation, and <code>Slot</code> handles merging. The <code>as</code> prop requires the wrapper to re-export the full prop union of every possible target element. 3. Suspense catches pending async operations (shows fallback); ErrorBoundary catches thrown errors (shows error fallback). Yes, nest them — ErrorBoundary outside, Suspense inside, so errors don't just show an empty loading state forever.</p></dd>
+</dl>
+</section>
+</article>
+<script type="module" src="/assets/runtime/boot.js"></script>
+</body>
+</html>

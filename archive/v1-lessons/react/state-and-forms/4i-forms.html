@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>4i. Forms · JS Curriculum</title>
+<link rel="icon" href="/assets/favicon.svg">
+<link rel="stylesheet" href="/assets/vendor/prism.css">
+<link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body data-lesson="4i" data-level="migrated">
+<article class="lesson">
+
+<header>
+  <h1>Forms — react-hook-form + Zod</h1>
+</header>
+
+<section class="block" data-block="concept" id="4i-01">
+<p>Controlled vs uncontrolled: in <em>controlled</em> inputs, React state is the source of truth. In <em>uncontrolled</em>, the DOM is. Modern approach: <code>react-hook-form</code> is uncontrolled (faster, less re-rendering), with Zod for validation.</p>
+
+<pre><code class="language-jsx">import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { z } from "zod";
+
+const Schema = z.object({
+  email: z.string().email(),
+  password: z.string().min(8),
+});
+
+function LoginForm() {
+  const { register, handleSubmit, formState: { errors, isSubmitting } } = useForm({
+    resolver: zodResolver(Schema),
+  });
+
+  const onSubmit = async (data) =&gt; { await login(data); };
+
+  return (
+    &lt;form onSubmit={handleSubmit(onSubmit)}&gt;
+      &lt;input {...register("email")} /&gt;
+      {errors.email &amp;&amp; &lt;span&gt;{errors.email.message}&lt;/span&gt;}
+      &lt;input type="password" {...register("password")} /&gt;
+      {errors.password &amp;&amp; &lt;span&gt;{errors.password.message}&lt;/span&gt;}
+      &lt;button disabled={isSubmitting}&gt;Log in&lt;/button&gt;
+    &lt;/form&gt;
+  );
+}</code></pre>
+
+<div class="callout good">
+  <div class="tag">Same schema, client and server</div>
+  <p>Share the Zod schema between the React form and your Express / server action. Validation logic lives in one file; types are derived for both. Divergence is impossible.</p>
+</div>
+</section>
+
+<section class="block" data-block="concept" id="4i-02">
+<h2>React 19 native form Actions — the Next.js App Router pattern</h2>
+<p>React 19 adds first-class support for form submissions via <strong>Actions</strong>. Instead of wiring up <code>onSubmit</code> handlers manually, you pass an async function directly to <code>&lt;form action=&gt;</code>. Two new hooks wire up state and pending feedback.</p>
+
+<ul>
+  <li><code>useActionState(action, initialState)</code> — returns <code>[state, formAction, isPending]</code>. <code>state</code> is whatever your action returns; <code>isPending</code> is true while the action is running.</li>
+  <li><code>useFormStatus()</code> — must be called inside a component that is a child of the <code>&lt;form&gt;</code>. Returns <code>{ pending }</code>. Lets a submit button know when any form above it is busy, without prop drilling.</li>
+</ul>
+
+<pre><code class="language-tsx">"use client";
+import { useActionState } from "react";
+import { useFormStatus } from "react-dom";
+
+// Extracted submit button — reads pending from the form above it
+function SubmitButton() {
+  const { pending } = useFormStatus();
+  return &lt;button type="submit" disabled={pending}&gt;{pending ? "Saving…" : "Save"}&lt;/button&gt;;
+}
+
+type FormState = { error: string | null; success: boolean };
+const initialState: FormState = { error: null, success: false };
+
+async function updateProfile(_prev: FormState, formData: FormData): Promise&lt;FormState&gt; {
+  const name = formData.get("name") as string;
+  if (!name) return { error: "Name is required", success: false };
+  await saveProfile({ name });   // server action or API call
+  return { error: null, success: true };
+}
+
+export function ProfileForm() {
+  const [state, formAction, isPending] = useActionState(updateProfile, initialState);
+
+  return (
+    &lt;form action={formAction}&gt;
+      &lt;input name="name" defaultValue="" /&gt;
+      {state.error &amp;&amp; &lt;p className="text-red-500"&gt;{state.error}&lt;/p&gt;}
+      {state.success &amp;&amp; &lt;p&gt;Saved!&lt;/p&gt;}
+      &lt;SubmitButton /&gt;
+    &lt;/form&gt;
+  );
+}</code></pre>
+
+<div class="callout good">
+  <div class="tag">This is the dominant pattern in Next.js App Router</div>
+  <p>Next.js Server Actions are async functions marked with <code>"use server"</code> that run on the server. You pass one directly as the <code>action</code> prop. <code>useActionState</code> manages the round-trip state. No API route needed for simple mutations. This replaces the <code>onSubmit → fetch → setState</code> dance for most form use-cases.</p>
+</div>
+
+<div class="callout warn">
+  <div class="tag">react-hook-form vs Actions — pick based on use-case</div>
+  <p><strong>react-hook-form + Zod</strong>: complex client-side forms with many fields, real-time validation, field arrays, multi-step. <strong>Native Actions</strong>: simple mutations tied to Next.js Server Actions where progressive enhancement matters. They're complementary — <code>react-hook-form</code> can wrap an Action as its submit handler.</p>
+</div>
+</section>
+</article>
+<script type="module" src="/assets/runtime/boot.js"></script>
+</body>
+</html>

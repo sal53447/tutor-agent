@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>1k. Testing — philosophy and tools · JS Curriculum</title>
+<link rel="icon" href="/assets/favicon.svg">
+<link rel="stylesheet" href="/assets/vendor/prism.css">
+<link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body data-lesson="1k" data-level="migrated">
+<article class="lesson">
+
+<header>
+  <h1>Testing — Philosophy and Tools</h1>
+</header>
+
+<section class="block" data-block="concept" id="1k-01">
+<h2>Tools</h2>
+<ul>
+  <li><strong>Vitest</strong> — modern, fast, Vite-native. Default choice for new projects.</li>
+  <li><strong>Jest</strong> — the incumbent. Still everywhere. Slower, more config.</li>
+  <li><strong>Node's built-in test runner</strong> (<code>node --test</code>) — decent for small libraries, no ecosystem yet.</li>
+  <li><strong>Playwright</strong> — the E2E standard.</li>
+  <li><strong>React Testing Library</strong> — component testing for React (we cover in 4m).</li>
+</ul>
+
+<pre><code class="language-javascript">import { describe, it, expect, vi } from "vitest";
+import { add } from "./math";
+
+describe("add", () =&gt; {
+  it("sums two numbers", () =&gt; {
+    expect(add(1, 2)).toBe(3);
+  });
+
+  it("calls a callback", () =&gt; {
+    const cb = vi.fn();
+    doWork(cb);
+    expect(cb).toHaveBeenCalledWith("done");
+  });
+});</code></pre>
+</section>
+
+<section class="block" data-block="concept" id="1k-02">
+<h2>Async tests</h2>
+<p>Make the test function <code>async</code> and <code>await</code> the result. Missing the <code>await</code> is a common trap — the test body resolves before the assertion runs, the promise is never checked, and the test passes green even when the code is broken.</p>
+
+<pre><code class="language-javascript">import { describe, it, expect } from "vitest";
+import { fetchUser } from "./api";
+
+describe("fetchUser", () =&gt; {
+  it("returns a user object", async () =&gt; {
+    const user = await fetchUser(1);   // MUST await
+    expect(user.id).toBe(1);
+  });
+
+  // Trap — missing await silently passes:
+  it("(broken) always passes", () =&gt; {
+    fetchUser(999);                    // no await — test exits before promise settles
+    // expect below is never reached; Vitest sees no assertion failure
+    expect(false).toBe(true);         // unreachable!
+  });
+
+  // Testing that a promise rejects:
+  it("rejects on invalid id", async () =&gt; {
+    await expect(fetchUser(-1)).rejects.toThrow("Invalid id");
+  });
+});</code></pre>
+
+<div class="callout warn">
+  <div class="tag">Missing await trap</div>
+  <p>Enable Vitest's <code>expect.assertions(n)</code> or ESLint's <code>@typescript-eslint/no-floating-promises</code> rule in test files to catch un-awaited promises. Otherwise async test bugs are invisible.</p>
+</div>
+</section>
+
+<section class="block" data-block="concept" id="1k-03">
+<h2>Setup and teardown — <code>beforeEach</code> / <code>afterEach</code></h2>
+<pre><code class="language-javascript">import { beforeEach, afterEach, describe, it, expect, vi } from "vitest";
+
+describe("UserService", () =&gt; {
+  let db;
+
+  beforeEach(async () =&gt; {
+    db = await createTestDb();     // fresh DB before each test
+  });
+
+  afterEach(async () =&gt; {
+    await db.close();              // clean up after each test
+    vi.restoreAllMocks();          // reset any spies/stubs
+  });
+
+  it("saves a user", async () =&gt; {
+    await db.users.create({ name: "Alice" });
+    expect(await db.users.count()).toBe(1);
+  });
+});</code></pre>
+
+<p><code>beforeAll</code> / <code>afterAll</code> run once per <code>describe</code> block — use for expensive setup (starting a test server). <code>beforeEach</code> / <code>afterEach</code> run per test — use for state that must be isolated.</p>
+</section>
+
+<section class="block" data-block="concept" id="1k-04">
+<h2><code>vi.fn()</code> vs <code>vi.spyOn()</code></h2>
+<pre><code class="language-javascript">// vi.fn() — create a standalone mock function from scratch
+const mockFetch = vi.fn().mockResolvedValue({ ok: true });
+doWork(mockFetch);
+expect(mockFetch).toHaveBeenCalledOnce();
+
+// vi.spyOn() — wrap an existing method on an object, preserving the original
+const spy = vi.spyOn(console, "error").mockImplementation(() =&gt; {});
+triggerError();
+expect(spy).toHaveBeenCalledWith(expect.stringContaining("oops"));
+spy.mockRestore(); // restores original console.error</code></pre>
+
+<p>Rule of thumb: <code>vi.fn()</code> when you're injecting a dependency; <code>vi.spyOn()</code> when you need to observe or suppress a real method on an existing object without replacing the whole thing.</p>
+</section>
+
+<section class="block" data-block="concept" id="1k-05">
+<h2>The philosophy — in one sentence</h2>
+<p>Test <em>behavior</em>, not <em>implementation</em>. A test that checks "when the user clicks submit, the onSubmit prop is called with the form values" survives refactors. A test that checks "the component has a <code>handleClick</code> method" breaks every time you rename something.</p>
+
+<div class="callout py">
+  <div class="tag">Python bridge</div>
+  <p>Vitest ≈ pytest. <code>describe/it/expect</code> ≈ <code>class Test: def test_*</code> + <code>assert</code>. <code>vi.fn()</code> ≈ <code>unittest.mock.MagicMock</code>. The philosophy is also the same — favor integration-ish tests for user-observable behavior.</p>
+</div>
+
+<div class="callout review">
+  <div class="tag">Code review — anti-patterns</div>
+  <ul>
+    <li>Tests that re-implement the code they test. If both would have the same bug, the test is useless.</li>
+    <li>Mocking your own code. Usually a sign the boundary is in the wrong place.</li>
+    <li>Snapshot tests on everything. Great for highly structured output (AST dumps, generated code). Abused as "lazy assertions" elsewhere.</li>
+    <li>Flaky tests ignored or retried. Fix them or delete them — a flaky test is worse than no test.</li>
+  </ul>
+</div>
+</section>
+
+<section class="block" data-block="recall" id="1k-06">
+<dl>
+  <dt>1. This test always passes. Why? How do you fix it?</dt>
+  <dd><pre><code class="language-javascript">it("rejects on bad input", () =&gt; {
+  expect(validateAsync("bad")).rejects.toThrow();
+});</code></pre>
+  <p>The test function is synchronous — it returns before the promise settles. Vitest sees no thrown error and marks it passed. Fix: make the test <code>async</code> and add <code>await</code>: <code>await expect(validateAsync("bad")).rejects.toThrow();</code></p></dd>
+  <dt>2. When should you use <code>vi.spyOn</code> rather than <code>vi.fn()</code>?</dt>
+  <dd><p>Use <code>vi.spyOn</code> when the thing you want to observe already exists as a method on an object (e.g., <code>console.warn</code>, <code>Date.now</code>, a class method). It wraps the real implementation so you can assert on calls and optionally restore it. Use <code>vi.fn()</code> when you're providing a fresh mock to inject as a dependency.</p></dd>
+  <dt>3. You have a <code>beforeEach</code> that seeds a database and an <code>afterEach</code> that clears it. A test fails mid-run. Does <code>afterEach</code> still run?</dt>
+  <dd><p>Yes. Vitest (and Jest) always run <code>afterEach</code> regardless of whether the test passed or failed — that's the whole point of teardown. Same semantics as <code>finally</code>.</p></dd>
+</dl>
+</section>
+</article>
+<script type="module" src="/assets/runtime/boot.js"></script>
+</body>
+</html>

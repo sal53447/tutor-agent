@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>4c. State primitives · JS Curriculum</title>
+<link rel="icon" href="/assets/favicon.svg">
+<link rel="stylesheet" href="/assets/vendor/prism.css">
+<link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body data-lesson="4c" data-level="interactive">
+<article class="lesson">
+
+<header>
+  <h1>State Primitives — useState, useReducer</h1>
+</header>
+
+<section class="block" data-block="concept" id="4c-01">
+<p><code>useState</code> and <code>useReducer</code> are the only two ways a component <em>owns</em> state; forms (4i), server state (4g) and stores (4h) are built on them or deliberately move state out of them. The model to carry forward: state is a <strong>snapshot per render</strong>, a setter <strong>schedules</strong> the next render rather than changing anything now, and React decides whether to re-render by <strong>reference equality</strong>. Every stale-closure and "it doesn't update" bug in React is one of those three rules being ignored.</p>
+</section>
+
+<section class="block" data-block="concept" id="4c-07">
+<h2><code>useState</code> — a slot, a setter, a scheduled render</h2>
+<pre><code class="language-jsx">const [count, setCount] = useState(0);
+
+// The setter takes a value OR an updater function. The updater reads the
+// latest *queued* state — use it whenever next depends on previous.
+setCount(count + 1);
+setCount(c =&gt; c + 1);
+
+// Lazy init — the function runs once, on mount. Use for expensive defaults.
+const [items, setItems] = useState(() =&gt; loadFromStorage());</code></pre>
+<p>Calling a setter does not change <code>count</code> in the running function — <code>count</code> is a <code>const</code> captured by <em>this</em> render. The setter enqueues an update and schedules a re-render; the next call of the component function reads the new value. All setter calls inside one event handler (and, since React 18, inside timers, promises and native listeners too) are <strong>batched</strong> into a single re-render.</p>
+<pre><code class="language-jsx">function plus3Stale() {
+  setCount(count + 1);   // queue: "replace with 1"
+  setCount(count + 1);   // queue: "replace with 1" — same snapshot of count
+  setCount(count + 1);   // → count becomes 1, one re-render
+}
+function plus3() {
+  setCount(c =&gt; c + 1);  // queue: "apply fn"
+  setCount(c =&gt; c + 1);
+  setCount(c =&gt; c + 1);  // → 3, one re-render
+}</code></pre>
+<div class="callout warn">
+  <div class="tag">Bail-out</div>
+  <p>The setter is <code>Object.is</code>-gated. <code>setCount(0)</code> while <code>count</code> is already <code>0</code> is dropped — no render of this component or its children (React may occasionally call the component once more and discard the result; it never re-renders the subtree). The same gate is what makes in-place mutation invisible, next block.</p>
+</div>
+</section>
+
+<section class="block" data-block="playground" id="4c-10" data-lang="jsx">
+<div class="tag">Try it</div>
+<p>Click each button and watch the render log. Then: make <code>+3 (stale)</code> work without the updater form (hint: you can't, inside one handler); add a fourth <code>setN(c =&gt; c + 1)</code> inside a <code>setTimeout</code> and check it still batches into one render.</p>
+<pre><code class="language-jsx">// React 19 · the live preview renders under the output
+import { useState } from "react";
+import { createRoot } from "react-dom/client";
+
+function Counter() {
+  const [n, setN] = useState(0);
+  console.log("render, n =", n);
+  const plus3Stale = () =&gt; { setN(n + 1); setN(n + 1); setN(n + 1); };
+  const plus3 = () =&gt; { setN(c =&gt; c + 1); setN(c =&gt; c + 1); setN(c =&gt; c + 1); };
+  return (
+    &lt;&gt;
+      &lt;p&gt;n = {n}&lt;/p&gt;
+      &lt;button onClick={plus3Stale}&gt;+3 (stale)&lt;/button&gt;{" "}
+      &lt;button onClick={plus3}&gt;+3 (updater)&lt;/button&gt;{" "}
+      &lt;button onClick={() =&gt; setN(n)}&gt;set same (no render)&lt;/button&gt;
+    &lt;/&gt;
+  );
+}
+createRoot(document.getElementById("root")).render(&lt;Counter /&gt;);</code></pre>
+<output>render, n = 0</output>
+</section>
+
+<section class="block" data-block="exercise" id="4c-11" data-kind="predict" data-lang="js">
+<div class="tag">Exercise</div>
+<p>This is how React resolves the queue of updates for one state slot at the next render: a value <em>replaces</em>, an updater <em>applies to the result so far</em>. <code>n</code> is the snapshot the handler captured. What does this print? One value per line.</p>
+<pre><code class="language-javascript">function applyQueue(initial, queue) {
+  return queue.reduce((s, u) =&gt; (typeof u === "function" ? u(s) : u), initial);
+}
+
+const n = 0;  // the render's snapshot
+console.log(applyQueue(n, [n + 1, n + 1, n + 1]));
+console.log(applyQueue(n, [c =&gt; c + 1, c =&gt; c + 1, c =&gt; c + 1]));
+console.log(applyQueue(n, [n + 5, c =&gt; c + 1, 42, c =&gt; c * 2]));</code></pre>
+<script type="application/json">{
+  "expected": "1\n3\n84",
+  "hints": [
+    "<code>n + 1</code> is evaluated <em>when the handler runs</em>, with <code>n = 0</code> — all three queue the literal value <code>1</code>.",
+    "An updater receives the running result of the queue so far, not the render snapshot. Walk the third queue left to right: 5 → 6 → 42 → 84."
+  ],
+  "explain": "Values are computed from the closure's snapshot and replace whatever is queued; updaters are deferred and see the latest queued result. That is the whole difference between <code>setN(n + 1)</code> and <code>setN(c =&gt; c + 1)</code> — and why the updater form is the safe default whenever next depends on previous."
+}</script>
+</section>
+
+<section class="block" data-block="concept" id="4c-02">
+<h2>Immutability invariant</h2>
+<p>React detects changes by reference equality (<code>Object.is</code>). If you mutate state in place, the setter receives the same reference it already holds — the update is dropped before any render. Always produce a new object / array.</p>
+
+<pre><code class="language-jsx">// BAD
+user.name = "new";
+setUser(user);                // same ref → bail-out, no re-render
+
+// GOOD
+setUser({ ...user, name: "new" });
+
+// Arrays:
+setItems([...items, newItem]);                               // append
+setItems(items.filter(x =&gt; x.id !== removedId));            // remove
+setItems(items.map(x =&gt; x.id === id ? { ...x, ...p } : x));  // update one
+setItems(items.toSorted(byName));                            // sort (ES2023; .sort() mutates)</code></pre>
+<div class="callout warn">
+  <div class="tag">The intermittent version</div>
+  <p><code>items.push(x); setItems([...items])</code> re-renders, so it looks fixed — but the previous render's snapshot was mutated too. Anything still holding it (a memoized child, a pending <code>startTransition</code>, StrictMode's second render) now sees data from the future. Mutation bugs surface as "works until it doesn't".</p>
+</div>
+</section>
+
+<section class="block" data-block="diagram" id="4c-09">
+<div class="tag">Mechanism</div>
+<script type="application/json">{
+  "direction": "down",
+  "nodes": [
+    { "id": "mut",    "label": "obj.x = 1; setX(obj)\n→ same reference", "kind": "note", "row": 0 },
+    { "id": "set",    "label": "setX(next)", "kind": "box", "row": 0 },
+    { "id": "q",      "label": "Object.is(prev, next)?", "kind": "note", "row": 1 },
+    { "id": "same",   "label": "same → bail out", "kind": "pill", "row": 2 },
+    { "id": "diff",   "label": "different → render", "kind": "pill", "row": 2 },
+    { "id": "commit", "label": "commit DOM\n(effects after)", "kind": "box", "row": 3 }
+  ],
+  "edges": [
+    { "from": "mut",  "to": "set",    "dashed": true },
+    { "from": "set",  "to": "q",      "label": "queued, batched" },
+    { "from": "q",    "to": "same",   "label": "true" },
+    { "from": "q",    "to": "diff",   "label": "false" },
+    { "from": "diff", "to": "commit" }
+  ]
+}</script>
+<p class="caption">React never looks inside the object. A mutated object is <code>Object.is</code>-identical to the one in the slot, so the update dies at the gate.</p>
+</section>
+
+<section class="block" data-block="exercise" id="4c-12" data-kind="fix" data-lang="jsx">
+<div class="tag">Exercise</div>
+<p><code>add</code> and <code>toggle</code> mutate the array and then call the setter, so the list never updates. Fix both so they derive new arrays/objects. The tests click <code>#add</code> and the first <code>&lt;li&gt;</code>, then check the DOM — and check that the <code>initial</code> array was never touched.</p>
+<pre><code class="language-jsx">// React 19 · the live preview renders under the output
+import { useState } from "react";
+import { createRoot } from "react-dom/client";
+
+// --- leave as is: the tests assert this is never mutated
+const initial = [{ id: 1, text: "ship it", done: false }];
+
+function Todos() {
+  const [todos, setTodos] = useState(initial);
+  function add() {
+    todos.push({ id: todos.length + 1, text: "todo " + (todos.length + 1), done: false });
+    setTodos(todos);
+  }
+  function toggle(id) {
+    const t = todos.find(t =&gt; t.id === id);
+    t.done = !t.done;
+    setTodos(todos);
+  }
+  return (
+    &lt;&gt;
+      &lt;button id="add" onClick={add}&gt;add&lt;/button&gt;
+      &lt;ul&gt;
+        {todos.map(t =&gt; (
+          &lt;li key={t.id} onClick={() =&gt; toggle(t.id)}&gt;{t.text}{t.done ? " ✓" : ""}&lt;/li&gt;
+        ))}
+      &lt;/ul&gt;
+    &lt;/&gt;
+  );
+}
+createRoot(document.getElementById("root")).render(&lt;Todos /&gt;);</code></pre>
+<script type="application/json">{
+  "tests": "const wait = () => new Promise(r => setTimeout(r, 30));\ntest(\"add appends a visible item\", async () => { await wait(); document.getElementById(\"add\").click(); await wait(); assert.equal(document.querySelectorAll(\"li\").length, 2, \"li count after one add\"); });\ntest(\"toggle marks the first item done\", async () => { document.querySelector(\"li\").click(); await wait(); assert(document.querySelector(\"li\").textContent.includes(\"✓\"), \"first li should show ✓\"); });\ntest(\"the initial array was never mutated\", () => { assert.equal(initial.length, 1, \"initial.length\"); assert.equal(initial[0].done, false, \"initial[0].done\"); });",
+  "hints": [
+    "<code>push</code> and <code>t.done = …</code> change the array React already holds; <code>setTodos(todos)</code> then hands back the same reference and is dropped.",
+    "Append with spread: <code>[...todos, newItem]</code>. Update one element with <code>map</code>, returning a new object for the changed one: <code>{ ...t, done: !t.done }</code>.",
+    "Use the updater form so a double click can't read a stale snapshot: <code>setTodos(ts =&gt; [...ts, …])</code>."
+  ],
+  "solution": "// React 19 · the live preview renders under the output\nimport { useState } from \"react\";\nimport { createRoot } from \"react-dom/client\";\n\n// --- leave as is: the tests assert this is never mutated\nconst initial = [{ id: 1, text: \"ship it\", done: false }];\n\nfunction Todos() {\n  const [todos, setTodos] = useState(initial);\n  function add() {\n    setTodos(ts => [...ts, { id: ts.length + 1, text: \"todo \" + (ts.length + 1), done: false }]);\n  }\n  function toggle(id) {\n    setTodos(ts => ts.map(t => (t.id === id ? { ...t, done: !t.done } : t)));\n  }\n  return (\n    <>\n      <button id=\"add\" onClick={add}>add</button>\n      <ul>\n        {todos.map(t => (\n          <li key={t.id} onClick={() => toggle(t.id)}>{t.text}{t.done ? \" ✓\" : \"\"}</li>\n        ))}\n      </ul>\n    </>\n  );\n}\ncreateRoot(document.getElementById(\"root\")).render(<Todos />);",
+  "explain": "Each handler now returns a fresh array (and a fresh object for the changed todo), so <code>Object.is(prev, next)</code> is false and React renders. The third test is the one <code>[...todos]</code>-after-push would fail: the old snapshot must stay intact, because other renders may still be reading it."
+}</script>
+</section>
+
+<section class="block" data-block="concept" id="4c-03">
+<h2>When <code>useReducer</code> beats <code>useState</code></h2>
+<p>When state has multiple related fields that update together ("complex transitions"), or when the next state depends on previous + an event. A reducer makes transitions explicit, keeps them in one place, and is testable without React — it's a pure function <code>(state, action) → state</code>.</p>
+
+<pre><code class="language-jsx">const [state, dispatch] = useReducer(reducer, initialState);
+
+function reducer(state, action) {
+  switch (action.type) {
+    case "add":   return { ...state, items: [...state.items, action.item] };
+    case "clear": return { ...state, items: [] };
+    default:      throw new Error("unknown action: " + action.type);
+  }
+}
+
+&lt;button onClick={() =&gt; dispatch({ type: "add", item })}&gt;add&lt;/button&gt;</code></pre>
+<p><code>dispatch</code> does <em>not</em> call the reducer synchronously in your handler — it enqueues the action. React runs the reducer while preparing the next render (it may run it eagerly once to check for a bail-out, and twice in StrictMode), so the reducer must be pure: no fetch, no <code>Date.now()</code>, no mutation. Step through one click:</p>
+</section>
+
+<section class="block" data-block="stepper" id="4c-13" data-kind="timeline">
+<div class="tag">Step through</div>
+<script type="application/json">{
+  "code": "function reducer(state, action) {\n  switch (action.type) {\n    case \"add\":   return { ...state, items: [...state.items, action.item] };\n    case \"clear\": return { ...state, items: [] };\n    default:      throw new Error(\"unknown action: \" + action.type);\n  }\n}\nfunction Cart() {\n  const [state, dispatch] = useReducer(reducer, { items: [] });\n  return <button onClick={() => dispatch({ type: \"add\", item: \"x\" })}>add</button>;\n}",
+  "steps": [
+    { "label": "Idle, items: []", "line": 9, "note": "<code>Cart</code> has rendered once. <code>state</code> is <code>{ items: [] }</code>; the reducer has not run since the initial state was stored.",
+      "state": { "lanes": [
+        { "name": "Event",  "items": [{ "label": "click", "state": "idle" }, { "label": "dispatch(action)", "state": "idle" }] },
+        { "name": "React",  "items": [{ "label": "enqueue action", "state": "idle" }, { "label": "schedule render", "state": "idle" }] },
+        { "name": "Render", "items": [{ "label": "reducer(prev, a)", "state": "idle" }, { "label": "Object.is?", "state": "idle" }, { "label": "Cart() runs", "state": "idle" }] },
+        { "name": "Commit", "items": [{ "label": "patch DOM", "state": "idle" }, { "label": "paint", "state": "idle" }] } ] } },
+    { "label": "Click", "line": 10, "note": "The browser fires the event; React's root listener routes it to this <code>onClick</code>.",
+      "state": { "lanes": [
+        { "name": "Event",  "items": [{ "label": "click", "state": "active" }, { "label": "dispatch(action)", "state": "idle" }] },
+        { "name": "React",  "items": [{ "label": "enqueue action", "state": "idle" }, { "label": "schedule render", "state": "idle" }] },
+        { "name": "Render", "items": [{ "label": "reducer(prev, a)", "state": "idle" }, { "label": "Object.is?", "state": "idle" }, { "label": "Cart() runs", "state": "idle" }] },
+        { "name": "Commit", "items": [{ "label": "patch DOM", "state": "idle" }, { "label": "paint", "state": "idle" }] } ] } },
+    { "label": "dispatch returns at once", "line": 10, "note": "<code>dispatch</code> hands the action to React and returns. <code>state</code> inside this handler is still the old snapshot — reading it after <code>dispatch</code> shows no change.",
+      "state": { "lanes": [
+        { "name": "Event",  "items": [{ "label": "click", "state": "done" }, { "label": "dispatch(action)", "state": "active" }] },
+        { "name": "React",  "items": [{ "label": "enqueue action", "state": "idle" }, { "label": "schedule render", "state": "idle" }] },
+        { "name": "Render", "items": [{ "label": "reducer(prev, a)", "state": "idle" }, { "label": "Object.is?", "state": "idle" }, { "label": "Cart() runs", "state": "idle" }] },
+        { "name": "Commit", "items": [{ "label": "patch DOM", "state": "idle" }, { "label": "paint", "state": "idle" }] } ] } },
+    { "label": "Action enqueued", "note": "The action joins this hook's update queue. Several <code>dispatch</code> calls in the same handler all land here and will be reduced in order during one render.",
+      "state": { "lanes": [
+        { "name": "Event",  "items": [{ "label": "click", "state": "done" }, { "label": "dispatch(action)", "state": "done" }] },
+        { "name": "React",  "items": [{ "label": "enqueue action", "state": "active" }, { "label": "schedule render", "state": "idle" }] },
+        { "name": "Render", "items": [{ "label": "reducer(prev, a)", "state": "idle" }, { "label": "Object.is?", "state": "idle" }, { "label": "Cart() runs", "state": "idle" }] },
+        { "name": "Commit", "items": [{ "label": "patch DOM", "state": "idle" }, { "label": "paint", "state": "idle" }] } ] } },
+    { "label": "Render scheduled", "note": "The handler finishes. React schedules one render for every update batched from this event — this is why nothing visible happens <em>during</em> the handler.",
+      "state": { "lanes": [
+        { "name": "Event",  "items": [{ "label": "click", "state": "done" }, { "label": "dispatch(action)", "state": "done" }] },
+        { "name": "React",  "items": [{ "label": "enqueue action", "state": "done" }, { "label": "schedule render", "state": "active" }] },
+        { "name": "Render", "items": [{ "label": "reducer(prev, a)", "state": "idle" }, { "label": "Object.is?", "state": "idle" }, { "label": "Cart() runs", "state": "idle" }] },
+        { "name": "Commit", "items": [{ "label": "patch DOM", "state": "idle" }, { "label": "paint", "state": "idle" }] } ] } },
+    { "label": "Reducer runs", "line": 3, "note": "Now — during render, not in the handler — React calls <code>reducer({ items: [] }, { type: \"add\", item: \"x\" })</code> and gets <code>{ items: [\"x\"] }</code>. Purity matters here: React may call it again and keep only one result.",
+      "state": { "lanes": [
+        { "name": "Event",  "items": [{ "label": "click", "state": "done" }, { "label": "dispatch(action)", "state": "done" }] },
+        { "name": "React",  "items": [{ "label": "enqueue action", "state": "done" }, { "label": "schedule render", "state": "done" }] },
+        { "name": "Render", "items": [{ "label": "reducer(prev, a)", "state": "active" }, { "label": "Object.is?", "state": "idle" }, { "label": "Cart() runs", "state": "idle" }] },
+        { "name": "Commit", "items": [{ "label": "patch DOM", "state": "idle" }, { "label": "paint", "state": "idle" }] } ] } },
+    { "label": "Reference check", "note": "New object → different → continue. Had the reducer returned <code>state</code> itself (or mutated it and returned it), React would stop here and nothing would update.",
+      "state": { "lanes": [
+        { "name": "Event",  "items": [{ "label": "click", "state": "done" }, { "label": "dispatch(action)", "state": "done" }] },
+        { "name": "React",  "items": [{ "label": "enqueue action", "state": "done" }, { "label": "schedule render", "state": "done" }] },
+        { "name": "Render", "items": [{ "label": "reducer(prev, a)", "state": "done" }, { "label": "Object.is?", "state": "active" }, { "label": "Cart() runs", "state": "idle" }] },
+        { "name": "Commit", "items": [{ "label": "patch DOM", "state": "idle" }, { "label": "paint", "state": "idle" }] } ] } },
+    { "label": "Cart() re-runs", "line": 9, "note": "The component function is called again; <code>useReducer</code> returns the new snapshot <code>{ items: [\"x\"] }</code>. It returns fresh JSX — nothing has touched the DOM yet.",
+      "state": { "lanes": [
+        { "name": "Event",  "items": [{ "label": "click", "state": "done" }, { "label": "dispatch(action)", "state": "done" }] },
+        { "name": "React",  "items": [{ "label": "enqueue action", "state": "done" }, { "label": "schedule render", "state": "done" }] },
+        { "name": "Render", "items": [{ "label": "reducer(prev, a)", "state": "done" }, { "label": "Object.is?", "state": "done" }, { "label": "Cart() runs", "state": "active" }] },
+        { "name": "Commit", "items": [{ "label": "patch DOM", "state": "idle" }, { "label": "paint", "state": "idle" }] } ] } },
+    { "label": "Commit", "note": "React diffs the new JSX against the last commit and patches only what changed — one <code>&lt;li&gt;</code> inserted, the button untouched.",
+      "state": { "lanes": [
+        { "name": "Event",  "items": [{ "label": "click", "state": "done" }, { "label": "dispatch(action)", "state": "done" }] },
+        { "name": "React",  "items": [{ "label": "enqueue action", "state": "done" }, { "label": "schedule render", "state": "done" }] },
+        { "name": "Render", "items": [{ "label": "reducer(prev, a)", "state": "done" }, { "label": "Object.is?", "state": "done" }, { "label": "Cart() runs", "state": "done" }] },
+        { "name": "Commit", "items": [{ "label": "patch DOM", "state": "active" }, { "label": "paint", "state": "idle" }] } ] } },
+    { "label": "Painted", "note": "The browser paints. <code>useEffect</code> callbacks (4d) run after this point; <code>useLayoutEffect</code> ran before it.",
+      "state": { "lanes": [
+        { "name": "Event",  "items": [{ "label": "click", "state": "done" }, { "label": "dispatch(action)", "state": "done" }] },
+        { "name": "React",  "items": [{ "label": "enqueue action", "state": "done" }, { "label": "schedule render", "state": "done" }] },
+        { "name": "Render", "items": [{ "label": "reducer(prev, a)", "state": "done" }, { "label": "Object.is?", "state": "done" }, { "label": "Cart() runs", "state": "done" }] },
+        { "name": "Commit", "items": [{ "label": "patch DOM", "state": "done" }, { "label": "paint", "state": "done" }] } ] } }
+  ]
+}</script>
+</section>
+
+<section class="block" data-block="playground" id="4c-18" data-lang="jsx">
+<div class="tag">Try it</div>
+<p>The reducer logs every call. Click <code>add</code> twice quickly, then <code>add ×2</code> (two dispatches in one handler — one render, two reducer calls). Then make the <code>"add"</code> case mutate <code>state.items.push(...)</code> and return <code>state</code>: the log still shows the reducer running, the list never changes.</p>
+<pre><code class="language-jsx">// React 19 · the live preview renders under the output
+import { useReducer } from "react";
+import { createRoot } from "react-dom/client";
+
+function reducer(state, action) {
+  console.log("reducer:", action.type, "→ items so far:", state.items.length);
+  switch (action.type) {
+    case "add":   return { ...state, items: [...state.items, action.item] };
+    case "clear": return { ...state, items: [] };
+    default:      throw new Error("unknown action: " + action.type);
+  }
+}
+
+function Cart() {
+  const [state, dispatch] = useReducer(reducer, { items: [] });
+  console.log("render, items =", state.items.length);
+  const add = () =&gt; dispatch({ type: "add", item: "item " + (state.items.length + 1) });
+  return (
+    &lt;&gt;
+      &lt;button onClick={add}&gt;add&lt;/button&gt;{" "}
+      &lt;button onClick={() =&gt; { add(); add(); }}&gt;add ×2&lt;/button&gt;{" "}
+      &lt;button onClick={() =&gt; dispatch({ type: "clear" })}&gt;clear&lt;/button&gt;
+      &lt;ul&gt;{state.items.map((it, i) =&gt; &lt;li key={i}&gt;{it}&lt;/li&gt;)}&lt;/ul&gt;
+    &lt;/&gt;
+  );
+}
+createRoot(document.getElementById("root")).render(&lt;Cart /&gt;);</code></pre>
+<output>render, items = 0</output>
+</section>
+
+<section class="block" data-block="exercise" id="4c-14" data-kind="complete" data-lang="js">
+<div class="tag">Exercise</div>
+<p>Implement <code>cartReducer</code>. State is <code>{ items: [{ id, price, qty }] }</code>. Actions: <code>{ type: "add", item: { id, price } }</code> — if the id is already in the cart increment its <code>qty</code>, otherwise append with <code>qty: 1</code>; <code>{ type: "remove", id }</code> — drop that item; <code>{ type: "clear" }</code>. Unknown types throw. The tests run actions through the reducer with <code>reduce</code> — no React — and one of them hands you a deep-frozen state, so any mutation throws.</p>
+<pre><code class="language-javascript">const initial = { items: [] };
+
+function cartReducer(state, action) {
+  switch (action.type) {
+    // TODO "add":    action.item is { id, price }. Existing id → qty + 1, else append with qty 1.
+    // TODO "remove": drop the item whose id === action.id.
+    // TODO "clear":  no items.
+    default:
+      throw new Error("unknown action: " + action.type);
+  }
+}
+
+// A reducer is a fold over events — this is the whole test harness.
+const run = (actions, s = initial) =&gt; actions.reduce(cartReducer, s);</code></pre>
+<script type="application/json">{
+  "tests": "const freeze = o => { Object.freeze(o); Object.values(o).forEach(v => v && typeof v === \"object\" && freeze(v)); return o; };\nconst A = (id, price) => ({ type: \"add\", item: { id, price } });\ntest(\"add appends with qty 1\", () => assert.equal(run([A(\"a\", 5)]), { items: [{ id: \"a\", price: 5, qty: 1 }] }));\ntest(\"add of an existing id increments qty\", () => assert.equal(run([A(\"a\", 5), A(\"a\", 5)]).items, [{ id: \"a\", price: 5, qty: 2 }]));\ntest(\"remove drops by id\", () => assert.equal(run([A(\"a\", 5), A(\"b\", 1), { type: \"remove\", id: \"a\" }]).items.map(i => i.id), [\"b\"]));\ntest(\"clear empties the cart\", () => assert.equal(run([A(\"a\", 5), { type: \"clear\" }]), { items: [] }));\ntest(\"never mutates: frozen input, new output\", () => { const s = freeze({ items: [{ id: \"a\", price: 5, qty: 1 }] }); const n = cartReducer(s, A(\"a\", 5)); assert(n !== s, \"must return a new object\"); assert.equal(s.items[0].qty, 1, \"input qty unchanged\"); assert.equal(n.items[0].qty, 2, \"output qty\"); });\ntest(\"unknown action throws\", () => assert.throws(() => cartReducer(initial, { type: \"nope\" })));",
+  "hints": [
+    "Each case returns a <em>new</em> state object: <code>return { ...state, items: &lt;new array&gt; }</code>.",
+    "For <code>add</code>, check <code>state.items.some(i =&gt; i.id === action.item.id)</code>; if true, <code>map</code> and return <code>{ ...i, qty: i.qty + 1 }</code> for the match, otherwise spread-append <code>{ ...action.item, qty: 1 }</code>.",
+    "<code>remove</code> is <code>filter</code>; <code>clear</code> is <code>{ ...state, items: [] }</code>. Never <code>push</code>, never <code>i.qty++</code>."
+  ],
+  "solution": "const initial = { items: [] };\n\nfunction cartReducer(state, action) {\n  switch (action.type) {\n    case \"add\": {\n      const { id, price } = action.item;\n      const exists = state.items.some(i => i.id === id);\n      return {\n        ...state,\n        items: exists\n          ? state.items.map(i => (i.id === id ? { ...i, qty: i.qty + 1 } : i))\n          : [...state.items, { id, price, qty: 1 }],\n      };\n    }\n    case \"remove\":\n      return { ...state, items: state.items.filter(i => i.id !== action.id) };\n    case \"clear\":\n      return { ...state, items: [] };\n    default:\n      throw new Error(\"unknown action: \" + action.type);\n  }\n}\n\n// A reducer is a fold over events — this is the whole test harness.\nconst run = (actions, s = initial) => actions.reduce(cartReducer, s);",
+  "explain": "Every branch derives a new object from the old one, so <code>Object.is</code> sees a change and the frozen input is never written to. The same function drops into <code>useReducer</code> unchanged — which is the point: transitions live in one pure function you can unit-test with <code>reduce</code>."
+}</script>
+</section>
+
+<section class="block" data-block="concept" id="4c-04">
+<h2>useReducer — lazy initializer (third argument)</h2>
+<p>Like <code>useState</code>'s function form, you can pass an <code>init</code> function as the third argument. React calls <code>init(initialArg)</code> once on mount. Use this when the initial state is expensive to compute or comes from a transformation of some argument — and to keep the reducer testable with a plain <code>initial</code> value.</p>
+<pre><code class="language-jsx">function init(count) {
+  return { items: [], count };   // runs once, not on every render
+}
+
+const [state, dispatch] = useReducer(reducer, 0, init);
+// state → { items: [], count: 0 }
+
+// To re-initialise when a prop changes, don't reach for an effect — remount with key:
+&lt;Cart key={userId} /&gt;</code></pre>
+</section>
+
+<section class="block" data-block="concept" id="4c-05">
+<h2>useRef as a non-rendering instance variable</h2>
+<p>When you need to track something across renders without triggering a re-render (interval IDs, previous values, abort controllers), reach for <code>useRef</code>. Covered in detail in 4e, but worth knowing it exists before you instinctively put interval IDs into state — every <code>setIntervalId</code> is a wasted render.</p>
+
+<div class="callout good">
+  <div class="tag">Forward pointers</div>
+  <p>State that must escape one component → <a href="/content/react/state-and-forms/4h-client-state.html">4h — Client state management</a> (Zustand, Context). Lift it only when two siblings genuinely need the same piece. Submission state of a form (pending, last error) → <code>useActionState</code> in 4i, not a hand-rolled <code>isSubmitting</code>. Derived values (<code>total</code> from <code>items</code>) → compute during render; they are not state.</p>
+</div>
+</section>
+
+<section class="block" data-block="bridge" id="4c-15">
+<div class="tag">Python bridge</div>
+<p><code>{ ...state, items: [...] }</code> is <code>{**state, "items": [...]}</code>, and the discipline is the one you'd keep with <code>@dataclass(frozen=True)</code> + <code>dataclasses.replace()</code>: never mutate, always derive. A reducer is literally <code>functools.reduce(reducer, actions, initial)</code> — a pure fold over events, which is why 4c-14 tests it with no React at all. The part with no Python counterpart is the <em>snapshot</em>: inside a handler, <code>count</code> is a captured local, not <code>self.count</code>. There is no <code>self.count += 1</code>; you post an update and the <em>next call</em> of the function sees it.</p>
+</section>
+
+<section class="block" data-block="review" id="4c-16">
+<div class="tag">Code review</div>
+<ul>
+  <li><strong>Mutate-then-set.</strong> <code>arr.push(x); setArr(arr)</code> is dropped at the <code>Object.is</code> gate; <code>setArr([...arr])</code> after a push "works" but corrupts the previous snapshot. The React Compiler's ESLint rule flags mutation of hook-returned values; until it's on, grep for <code>.push(</code>, <code>.sort(</code>, <code>.splice(</code> and <code>=</code> on state in handlers.</li>
+  <li><strong><code>setX(x + 1)</code> in anything asynchronous or repeated</strong> — intervals, promise callbacks, two calls in one handler. The closure holds a stale snapshot. Updater form: <code>setX(c =&gt; c + 1)</code>.</li>
+  <li><strong>Derived state in state.</strong> <code>const [total, setTotal]</code> kept in sync by an effect is one render behind and a second source of truth. Compute it during render; <code>useMemo</code> only if it's measurably expensive.</li>
+  <li><strong><code>useState(expensive())</code>.</strong> The argument is evaluated on every render and discarded after the first. Pass the function: <code>useState(expensive)</code> / <code>useReducer(r, arg, init)</code>.</li>
+  <li><strong>Impure reducers.</strong> A <code>fetch</code>, <code>Date.now()</code> or <code>Math.random()</code> inside a reducer runs at an unpredictable time and possibly twice (StrictMode, eager bail-out check). Do the effect in the handler, dispatch the <em>result</em>.</li>
+  <li><strong>Eight <code>useState</code> calls that change together.</strong> Impossible transitions become representable (<code>isLoading &amp;&amp; error</code>). One <code>useReducer</code> with explicit actions, or one object with a discriminated <code>status</code> field.</li>
+  <li><strong>State for things that never render</strong> — interval ids, the previous value, a WebSocket. That's a ref (4e); each setter call is a pointless render.</li>
+</ul>
+</section>
+
+<section class="block" data-block="exercise" id="4c-17" data-kind="mcq">
+<div class="tag">Check</div>
+<p>A component declares <code>const [cart, setCart] = useState(JSON.parse(localStorage.getItem("cart") ?? "[]"))</code>. What happens in production?</p>
+<script type="application/json">{
+  "options": [
+    "Nothing wrong — React evaluates the initial value once and caches it.",
+    "<code>JSON.parse</code> runs on <em>every</em> render of the component and the result is thrown away after the first; the fix is <code>useState(() =&gt; JSON.parse(…))</code>.",
+    "The state re-initialises from localStorage on every render, so user edits are overwritten.",
+    "It throws: hook arguments can't come from browser APIs."
+  ],
+  "answer": 1,
+  "explain": "<code>useState(value)</code> is an ordinary function call — its argument is computed each render, then ignored on every render but the first. State is <em>not</em> reset (option 2 is the fear, not the behaviour), but a parse of a large cart on every keystroke is real CPU. Lazy init runs the function once, on mount."
+}</script>
+</section>
+
+<section class="block" data-block="recall" id="4c-06">
+<div class="tag">Recall</div>
+<dl>
+  <dt>Why does <code>user.name = "new"; setUser(user)</code> not trigger a re-render?</dt>
+  <dd>The setter receives the same object reference it already holds; React's <code>Object.is</code> check passes, so the update is dropped before any render.</dd>
+
+  <dt>A form with 8 fields that submit together — <code>useState</code> or <code>useReducer</code>?</dt>
+  <dd><code>useReducer</code>: transitions between field states are explicit, impossible combinations can't be represented by accident, and the reducer is unit-testable with <code>reduce</code>.</dd>
+
+  <dt>What's the difference between <code>useState(heavyFn())</code> and <code>useState(heavyFn)</code>?</dt>
+  <dd>The first calls <code>heavyFn</code> on every render and discards the result after the first; the second is lazy init — called once, on mount.</dd>
+
+  <dt>Inside one click handler with <code>n === 0</code>: <code>setN(n + 1); setN(n + 1); setN(n + 1);</code> — what is <code>n</code> after the re-render? And with <code>setN(c =&gt; c + 1)</code> three times?</dt>
+  <dd><code>1</code> — each call queues the literal value 1 computed from the same snapshot. With updaters, <code>3</code>: each applies to the latest queued result. Either way, one re-render (batching).</dd>
+
+  <dt>What does this print?
+<pre><code class="language-javascript">const apply = (s0, q) =&gt; q.reduce((s, u) =&gt; typeof u === "function" ? u(s) : u, s0);
+const n = 0;
+console.log(apply(n, [n + 5, c =&gt; c + 1, 42, c =&gt; c * 2]));</code></pre></dt>
+  <dd><code>84</code>: a value replaces (5, then 42), an updater applies to the running result (6, then 84). This is how React resolves one state slot's update queue at the next render.</dd>
+
+  <dt>When does <code>useReducer</code>'s reducer run — inside <code>dispatch</code>, or later?</dt>
+  <dd>Later, while React prepares the next render (possibly eagerly once to check for a bail-out, and twice in StrictMode). <code>dispatch</code> only enqueues the action, so the reducer must be pure.</dd>
+
+  <dt>What single check decides whether a setter call re-renders the component?</dt>
+  <dd><code>Object.is(prev, next)</code> on the state value. Equal → bail out, no render of the component or its children.</dd>
+
+  <dt>In <code>useReducer(reducer, arg, init)</code>, when does <code>init</code> run and with what?</dt>
+  <dd>Once, on mount, as <code>init(arg)</code>; its return value is the initial state. To re-initialise on a prop change, remount with <code>key</code>, not an effect.</dd>
+</dl>
+</section>
+</article>
+<script type="module" src="/assets/runtime/boot.js"></script>
+</body>
+</html>

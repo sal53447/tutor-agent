@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>4k. React performance · JS Curriculum</title>
+<link rel="icon" href="/assets/favicon.svg">
+<link rel="stylesheet" href="/assets/vendor/prism.css">
+<link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body data-lesson="4k" data-level="migrated">
+<article class="lesson">
+
+<header>
+  <h1>Performance — Profiling, Memoization, Virtualization</h1>
+</header>
+
+<section class="block" data-block="concept" id="4k-01">
+<h2>The rule: measure, don't guess</h2>
+<p>Most React apps are fast enough. Premature memoization slows the build and the dev experience without helping users. Open React DevTools Profiler, record an interaction, look for components rendering far more than expected. The flame chart in the Profiler shows each component as a bar — width is render time, grey bars were skipped (memoized). Look for unexpectedly wide bars or components that fire on every interaction when they shouldn't.</p>
+</section>
+
+<section class="block" data-block="concept" id="4k-02">
+<h2>The actual levers</h2>
+<ul>
+  <li><strong><code>React.memo</code></strong> — skips re-render if props are referentially equal. Pair with <code>useMemo</code>/<code>useCallback</code> on the parent.</li>
+  <li><strong>Virtualization</strong> — render only visible list items. <code>TanStack Virtual</code>. Essential above ~1000 rows.</li>
+  <li><strong>Code splitting</strong> — <code>React.lazy</code> + <code>Suspense</code>, or route-based splits in Next. Ship less JS.</li>
+  <li><strong><code>useTransition</code></strong> / <strong><code>useDeferredValue</code></strong> — let React deprioritize expensive updates so input stays responsive.</li>
+</ul>
+</section>
+
+<section class="block" data-block="concept" id="4k-03">
+<h2>React Compiler — automatic memoization in React 19</h2>
+<p>The React Compiler (stable in React 19) analyzes your component code at build time and automatically inserts <code>useMemo</code>, <code>useCallback</code>, and <code>memo</code> wrapping where they're safe and beneficial. In a compiler-enabled codebase, manually writing these three APIs for performance is largely unnecessary — you write natural code and the compiler handles referential stability.</p>
+<p>The compiler does <em>not</em> change runtime semantics. It only optimizes what's already valid React code. Impure components (direct state mutation, side effects during render) will not be optimized and may be flagged.</p>
+<pre><code class="language-bash">npm install babel-plugin-react-compiler
+# or: Next.js 15+ enables it via next.config experimental.reactCompiler: true</code></pre>
+<div class="callout good">
+  <div class="tag">In practice</div>
+  <p>On new projects with the compiler enabled: write clean code, skip manual <code>useMemo</code>/<code>useCallback</code>/<code>memo</code> unless you have a specific non-performance reason (e.g., stable callback identity for a third-party library). On projects without it: the old rules still apply.</p>
+</div>
+</section>
+
+<section class="block" data-block="concept" id="4k-04">
+<h2>Suspense as a performance boundary</h2>
+<p><code>&lt;Suspense&gt;</code> is not just error handling — it's a progressive loading primitive. Wrap subtrees in Suspense to stream their content independently. In Next.js, a slow database query in a Server Component suspends only its Suspense boundary; the rest of the page renders immediately. This is the mechanism behind Next.js <code>loading.tsx</code>.</p>
+<pre><code class="language-jsx">// Fast parts render immediately; slow DB query streams in later
+export default function Page() {
+  return (
+    &lt;&gt;
+      &lt;Header /&gt;                        {/* renders instantly */}
+      &lt;Suspense fallback={&lt;Skeleton /&gt;}&gt;
+        &lt;SlowDataComponent /&gt;           {/* streams in when ready */}
+      &lt;/Suspense&gt;
+    &lt;/&gt;
+  );
+}</code></pre>
+
+<div class="callout warn">
+  <div class="tag">The "wrap everything in useMemo" cargo cult</div>
+  <p>Memoizing a <code>const doubled = useMemo(() =&gt; n * 2, [n])</code> is slower than not — you paid for a dependency compare and memory allocation to save a multiplication. Only memoize when (a) the computation is actually expensive, or (b) you need referential stability for a downstream <code>memo</code>, effect deps, or hook input. With the React Compiler enabled, this concern largely disappears.</p>
+</div>
+
+<div class="callout py">
+  <div class="tag">Python bridge</div>
+  <p>Python has no direct equivalent to React's render model, but the performance intuition maps to Django's <code>select_related</code>/<code>prefetch_related</code>: you profile first, identify the N+1 query, then fix it. Don't add <code>select_related</code> everywhere preemptively — same principle as not wrapping everything in <code>useMemo</code>.</p>
+</div>
+</section>
+</article>
+<script type="module" src="/assets/runtime/boot.js"></script>
+</body>
+</html>

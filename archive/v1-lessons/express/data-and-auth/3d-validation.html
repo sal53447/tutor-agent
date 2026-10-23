@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>3d. Validation &amp; serialization · JS Curriculum</title>
+<link rel="icon" href="/assets/favicon.svg">
+<link rel="stylesheet" href="/assets/vendor/prism.css">
+<link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body data-lesson="3d" data-level="interactive">
+<article class="lesson">
+
+<header>
+  <h1>Validation &amp; Serialization</h1>
+</header>
+
+<section class="block" data-block="concept" id="3d-05">
+<p>TypeScript types vanish at compile time; the JSON a client sends is <code>unknown</code> until something checks it. This lesson puts a schema at the two edges of every handler — parse the request on the way in, serialize the row on the way out — so the code between them works on typed, clean data. 3e (auth) and 3f (databases) assume this boundary exists: <code>req.body</code> in a handler is already validated, and a DB row never reaches <code>res.json</code> unfiltered.</p>
+</section>
+
+<section class="block" data-block="concept" id="3d-01">
+<h2>Validate at the boundary: schema → typed data</h2>
+<p><strong>Never trust client input.</strong> The TS compiler doesn't run at runtime; a malicious or buggy client can send anything. <strong>Zod</strong> (or Valibot, or ArkType) validates at runtime and produces typed, sanitized data. One schema is the single source of truth: <code>z.infer</code> derives the static type from it, so the validator and the type can't drift.</p>
+
+<pre><code class="language-typescript">import { z } from "zod";                         // Zod 4
+import type { Request, Response, NextFunction } from "express";
+
+const CreateUser = z.object({
+  email:    z.email(),                           // Zod 4: top-level formats (z.string().email() is deprecated)
+  password: z.string().min(8).max(200),
+  age:      z.coerce.number().int().positive().optional(),
+});
+
+type CreateUserInput = z.infer&lt;typeof CreateUser&gt;;
+// { email: string; password: string; age?: number }
+
+function validate&lt;T extends z.ZodType&gt;(schema: T) {
+  return (req: Request, res: Response, next: NextFunction) =&gt; {
+    const r = schema.safeParse(req.body);
+    if (!r.success) return res.status(400).json({ issues: r.error.issues });
+    req.body = r.data;                           // typed, coerced, unknown keys stripped
+    next();
+  };
+}
+
+app.post("/users", validate(CreateUser), controllers.createUser);</code></pre>
+
+<p><code>safeParse</code> returns a discriminated union (<code>{ success: true, data } | { success: false, error }</code>) and never throws — the right shape for a boundary. <code>parse</code> throws a <code>ZodError</code>; use it where a failure is a programming error, not a client error. By default <code>z.object</code> <em>strips</em> keys that aren't in the schema (<code>z.strictObject</code> rejects them, <code>z.looseObject</code> keeps them).</p>
+</section>
+
+<section class="block" data-block="diagram" id="3d-06">
+<div class="tag">Mechanism</div>
+<script type="application/json">{
+  "direction": "right",
+  "nodes": [
+    { "id": "validate", "label": "validate(schema)\nsafeParse(body)", "kind": "box" },
+    { "id": "handler",  "label": "handler\ntyped req.body",      "kind": "box" },
+    { "id": "bad",      "label": "400\n{ issues }",              "kind": "pill" },
+    { "id": "db",       "label": "db row\n+ passwordHash",       "kind": "cyl" },
+    { "id": "out",      "label": "Response.parse()\nstrips extras", "kind": "box" }
+  ],
+  "edges": [
+    { "from": "validate", "to": "handler",  "label": "r.data" },
+    { "from": "validate", "to": "bad",      "label": "fail", "dashed": true },
+    { "from": "handler",  "to": "db",       "label": "insert" },
+    { "from": "db",       "to": "out",      "label": "row" }
+  ]
+}</script>
+<p class="caption">Two schemas bracket the handler: after <code>express.json()</code>, the request schema turns the unknown body into a typed value or a 400 before any business code runs; the response schema decides what leaves, so new DB columns are invisible by default.</p>
+</section>
+
+<section class="block" data-block="bridge" id="3d-07">
+<div class="tag">Python bridge</div>
+<p>Zod is Pydantic for TypeScript. A schema is both the validator and the type, the way a <code>BaseModel</code> subclass is: <code>z.infer&lt;typeof CreateUser&gt;</code> ≈ using the model class as an annotation. <code>CreateUser.parse(x)</code> ≈ <code>CreateUser.model_validate(x)</code> (raises on failure); <code>safeParse</code> has no Pydantic twin — it's the <code>try: … except ValidationError as e: e.errors()</code> block folded into a return value. <code>validate(CreateUser)</code> as middleware is what FastAPI does for you when a parameter is typed as a model (422 instead of 400); a response schema is <code>response_model=</code>. One difference that bites: Pydantic is <em>lax</em> by default (<code>"36"</code> becomes <code>36</code>), Zod is strict — coercion is opt-in with <code>z.coerce.number()</code>, which is why query strings need it explicitly.</p>
+</section>
+
+<section class="block" data-block="playground" id="3d-08" data-lang="js">
+<div class="tag">Try it</div>
+<p>Zod isn't available in-page, so <code>s</code> is a 25-line stand-in with the same shape (<code>safeParse</code> → <code>{ success, data | issues }</code>). Run it, then: remove <code>coerce: true</code> from <code>age</code> and resend <code>"36"</code>; send <code>age: 36.5</code>; move <code>app.use(express.json())</code> below the route and send the body as a JSON <em>string</em>.</p>
+<pre><code class="language-javascript">// --- tiny stand-in for zod (leave as is). A check returns { value } or { error }.
+const s = {
+  string: (o = {}) =&gt; (v) =&gt;
+    typeof v !== "string" ? { error: "expected string" } :
+    o.min &amp;&amp; v.length &lt; o.min ? { error: `at least ${o.min} chars` } :
+    o.email &amp;&amp; !/^\S+@\S+\.\S+$/.test(v) ? { error: "invalid email" } : { value: v },
+  number: (o = {}) =&gt; (v) =&gt; {
+    const n = o.coerce ? Number(v) : v;
+    return typeof n !== "number" || Number.isNaN(n) ? { error: "expected number" } :
+      o.int &amp;&amp; !Number.isInteger(n) ? { error: "expected integer" } :
+      o.min != null &amp;&amp; n &lt; o.min ? { error: `at least ${o.min}` } :
+      o.max != null &amp;&amp; n &gt; o.max ? { error: `at most ${o.max}` } : { value: n };
+  },
+  optional: (check, fallback) =&gt; (v) =&gt; v === undefined ? { value: fallback } : check(v),
+  object: (shape) =&gt; ({
+    safeParse(input = {}) {
+      const data = {}, issues = [];
+      for (const [key, check] of Object.entries(shape)) {
+        const r = check(input[key]);
+        if (r.error) issues.push({ path: [key], message: r.error });
+        else if (r.value !== undefined) data[key] = r.value;
+      }
+      return issues.length ? { success: false, issues } : { success: true, data };  // unknown keys are dropped
+    },
+    parse(input) {
+      const r = this.safeParse(input);
+      if (!r.success) throw Object.assign(new Error("validation failed"), { issues: r.issues });
+      return r.data;
+    },
+  }),
+};
+
+const CreateUser = s.object({
+  email:    s.string({ email: true }),
+  password: s.string({ min: 8 }),
+  age:      s.optional(s.number({ int: true, coerce: true })),
+});
+
+function validate(schema) {
+  return (req, res, next) =&gt; {
+    const r = schema.safeParse(req.body);
+    if (!r.success) return res.status(400).json({ issues: r.issues });
+    req.body = r.data;                  // validated, coerced, unknown keys dropped
+    next();
+  };
+}
+
+const app = express();
+app.use(express.json());
+// (in-page shim: one function per app.post call — real Express takes them as extra arguments)
+app.post("/users", validate(CreateUser));
+app.post("/users", (req, res) =&gt; res.status(201).json(req.body));
+
+const ok = await request(app, { method: "POST", path: "/users",
+  body: { email: "ada@x.io", password: "correct-horse", age: "36", role: "admin" } });
+console.log(ok.status, ok.body);
+
+const bad = await request(app, { method: "POST", path: "/users",
+  body: { email: "nope", password: "short" } });
+console.log(bad.status, bad.body.issues.map(i =&gt; i.path[0] + ": " + i.message));</code></pre>
+<output>201 { email: "ada@x.io", password: "correct-horse", age: 36 }
+400 ["email: invalid email", "password: at least 8 chars"]</output>
+</section>
+
+<section class="block" data-block="exercise" id="3d-09" data-kind="predict" data-lang="js">
+<div class="tag">Exercise</div>
+<p>Three requests go through a body parser and a hand-rolled validator. What does this print? One line per <code>console.log</code>; objects are printed with <code>JSON.stringify</code>, so copy that format.</p>
+<pre><code class="language-javascript">const app = express();
+app.use(express.json());
+let handlerRuns = 0;
+
+function requireFields(...fields) {
+  return (req, res, next) =&gt; {
+    const missing = fields.filter(f =&gt; !(f in req.body));
+    if (missing.length) return res.status(400).json({ missing });
+    next();
+  };
+}
+
+app.post("/users", requireFields("email", "password"));   // shim: one function per call
+app.post("/users", (req, res) =&gt; {
+  handlerRuns++;
+  res.status(201).json({ email: req.body.email });
+});
+
+const a = await request(app, { method: "POST", path: "/users", body: { email: "a@x.io" } });
+console.log(a.status, JSON.stringify(a.body));
+const b = await request(app, { method: "POST", path: "/users",
+  body: JSON.stringify({ email: "b@x.io", password: "hunter22", role: "admin" }) });
+console.log(b.status, JSON.stringify(b.body));
+const c = await request(app, { method: "POST", path: "/users", body: "{not json" });
+console.log(c.status);
+console.log(handlerRuns);</code></pre>
+<script type="application/json">{
+  "expected": "400 {\"missing\":[\"password\"]}\n201 {\"email\":\"b@x.io\"}\n400\n1",
+  "hints": [
+    "A middleware that responds ends the request; the handler after it never runs, so <code>handlerRuns</code> only counts bodies that passed.",
+    "<code>express.json()</code> parses a string body; an unparseable one is a <em>client</em> error, so it forwards an error with <code>status = 400</code> to the error handler — before the validator sees anything.",
+    "Request <code>b</code> is valid. The handler only echoes <code>email</code>; the extra <code>role</code> key was never looked at, so it doesn't appear."
+  ],
+  "explain": "<code>a</code> fails the field check → 400 and the handler is skipped. <code>b</code> is a JSON string; <code>express.json()</code> turns it into an object, both fields exist, handler runs once and returns only what it chose to. <code>c</code> is not JSON at all: the parser calls <code>next(err)</code> with a 400 error, which the default error handler renders — the validator and handler never run. Hence one handler run in total."
+}</script>
+</section>
+
+<section class="block" data-block="concept" id="3d-02">
+<h2>Validating params and query strings</h2>
+<p>Everything in <code>req.params</code> and <code>req.query</code> arrives as a <strong>string</strong>. A schema with <code>z.coerce</code> is where <code>"20"</code> becomes <code>20</code> and <code>"abc"</code> becomes a 400 — not somewhere deep in a repository call.</p>
+<pre><code class="language-typescript">// req.params — usually a numeric or UUID id
+const UserIdParam = z.object({ id: z.uuid() });
+
+// req.query — coerce explicitly; apply defaults here, not in the handler
+const ListUsersQuery = z.object({
+  page:   z.coerce.number().int().positive().default(1),
+  limit:  z.coerce.number().int().min(1).max(100).default(20),
+  search: z.string().max(100).optional(),
+});
+
+type Source = "body" | "params" | "query";
+
+function validateSource&lt;T extends z.ZodType&gt;(schema: T, source: Source) {
+  return (req: Request, res: Response, next: NextFunction) =&gt; {
+    const r = schema.safeParse(req[source]);
+    if (!r.success) return res.status(400).json({ issues: r.error.issues });
+    res.locals[source] = r.data;                 // see the Express 5 note below
+    next();
+  };
+}
+
+usersRouter.get("/:id", validateSource(UserIdParam, "params"), requireAuth, ctrl.getUser);
+usersRouter.get("/",    validateSource(ListUsersQuery, "query"), ctrl.listUsers);
+
+// in ctrl.listUsers:
+const { page, limit } = res.locals.query as z.infer&lt;typeof ListUsersQuery&gt;;</code></pre>
+
+<div class="callout warn">
+  <div class="tag">Express 5: <code>req.query</code> is a getter</div>
+  <p>In Express 5 <code>req.query</code> is re-parsed from the URL on every access and can't be assigned to — <code>req.query = r.data</code> is silently ignored or throws, depending on strict mode. Put parsed values on <code>res.locals</code> (or a <code>req.validated</code> property you declare via module augmentation). <code>req.body</code> is a plain property and can be replaced.</p>
+</div>
+</section>
+
+<section class="block" data-block="exercise" id="3d-11" data-kind="complete" data-lang="js">
+<div class="tag">Exercise</div>
+<p>Implement <code>validateSource(schema, source)</code>. It must <code>safeParse</code> <code>req[source]</code>, respond <code>400 { issues }</code> on failure, and on success store the parsed data in <code>res.locals[source]</code> — the handler reads <code>res.locals.query</code>. Tests check: defaults (<code>page=1, limit=20</code> → 20 items), coercion (<code>?page=3&amp;limit=5</code> → numbers, ids 11–15), <code>limit=500</code> → 400 with <code>issues[0].path</code> of <code>["limit"]</code>, <code>page=abc</code> → 400.</p>
+<pre><code class="language-javascript">// --- tiny stand-in for zod (leave as is). A check returns { value } or { error }.
+const s = {
+  string: (o = {}) =&gt; (v) =&gt;
+    typeof v !== "string" ? { error: "expected string" } :
+    o.min &amp;&amp; v.length &lt; o.min ? { error: `at least ${o.min} chars` } :
+    o.email &amp;&amp; !/^\S+@\S+\.\S+$/.test(v) ? { error: "invalid email" } : { value: v },
+  number: (o = {}) =&gt; (v) =&gt; {
+    const n = o.coerce ? Number(v) : v;
+    return typeof n !== "number" || Number.isNaN(n) ? { error: "expected number" } :
+      o.int &amp;&amp; !Number.isInteger(n) ? { error: "expected integer" } :
+      o.min != null &amp;&amp; n &lt; o.min ? { error: `at least ${o.min}` } :
+      o.max != null &amp;&amp; n &gt; o.max ? { error: `at most ${o.max}` } : { value: n };
+  },
+  optional: (check, fallback) =&gt; (v) =&gt; v === undefined ? { value: fallback } : check(v),
+  object: (shape) =&gt; ({
+    safeParse(input = {}) {
+      const data = {}, issues = [];
+      for (const [key, check] of Object.entries(shape)) {
+        const r = check(input[key]);
+        if (r.error) issues.push({ path: [key], message: r.error });
+        else if (r.value !== undefined) data[key] = r.value;
+      }
+      return issues.length ? { success: false, issues } : { success: true, data };  // unknown keys are dropped
+    },
+    parse(input) {
+      const r = this.safeParse(input);
+      if (!r.success) throw Object.assign(new Error("validation failed"), { issues: r.issues });
+      return r.data;
+    },
+  }),
+};
+
+// --- fake table (leave as is)
+const db = Array.from({ length: 50 }, (_, i) =&gt; ({ id: i + 1, email: `u${i + 1}@x.io` }));
+
+const ListUsersQuery = s.object({
+  page:  s.optional(s.number({ int: true, min: 1, coerce: true }), 1),
+  limit: s.optional(s.number({ int: true, min: 1, max: 100, coerce: true }), 20),
+});
+
+function validateSource(schema, source) {
+  return (req, res, next) =&gt; {
+    // TODO: safeParse req[source]; on failure respond 400 { issues };
+    // on success store the parsed data in res.locals[source] (req.query is read-only in Express 5)
+    next();
+  };
+}
+
+const app = express();
+app.get("/users", validateSource(ListUsersQuery, "query"));   // shim: one function per call
+app.get("/users", (req, res) =&gt; {
+  const { page, limit } = res.locals.query;
+  res.json({ page, limit, items: db.slice((page - 1) * limit, page * limit) });
+});</code></pre>
+<script type="application/json">{
+  "tests": "test(\"defaults apply: page 1, limit 20\", async () => {\n  const r = await request(app, { method: \"GET\", path: \"/users\" });\n  assert.equal(r.status, 200);\n  assert.equal([r.body.page, r.body.limit, r.body.items.length], [1, 20, 20]);\n});\ntest(\"query strings are coerced to numbers\", async () => {\n  const r = await request(app, { method: \"GET\", path: \"/users?page=3&limit=5\" });\n  assert.equal(r.status, 200);\n  assert.equal(typeof r.body.page, \"number\", \"page should be a number, not a string\");\n  assert.equal(r.body.items.map(u => u.id), [11, 12, 13, 14, 15]);\n});\ntest(\"limit above max → 400 with issues\", async () => {\n  const r = await request(app, { method: \"GET\", path: \"/users?limit=500\" });\n  assert.equal(r.status, 400);\n  assert.equal(r.body.issues[0].path, [\"limit\"]);\n});\ntest(\"non-numeric page → 400\", async () => {\n  const r = await request(app, { method: \"GET\", path: \"/users?page=abc\" });\n  assert.equal(r.status, 400);\n});",
+  "hints": [
+    "It's the body validator from 3d-01 with <code>req.body</code> replaced by <code>req[source]</code> — three lines.",
+    "<code>const r = schema.safeParse(req[source]); if (!r.success) return res.status(400).json({ issues: r.issues });</code>",
+    "Then <code>res.locals[source] = r.data; next();</code>. Defaults and coercion are the schema's job, not yours."
+  ],
+  "solution": "// --- tiny stand-in for zod (leave as is). A check returns { value } or { error }.\nconst s = {\n  string: (o = {}) => (v) =>\n    typeof v !== \"string\" ? { error: \"expected string\" } :\n    o.min && v.length < o.min ? { error: `at least ${o.min} chars` } :\n    o.email && !/^\\S+@\\S+\\.\\S+$/.test(v) ? { error: \"invalid email\" } : { value: v },\n  number: (o = {}) => (v) => {\n    const n = o.coerce ? Number(v) : v;\n    return typeof n !== \"number\" || Number.isNaN(n) ? { error: \"expected number\" } :\n      o.int && !Number.isInteger(n) ? { error: \"expected integer\" } :\n      o.min != null && n < o.min ? { error: `at least ${o.min}` } :\n      o.max != null && n > o.max ? { error: `at most ${o.max}` } : { value: n };\n  },\n  optional: (check, fallback) => (v) => v === undefined ? { value: fallback } : check(v),\n  object: (shape) => ({\n    safeParse(input = {}) {\n      const data = {}, issues = [];\n      for (const [key, check] of Object.entries(shape)) {\n        const r = check(input[key]);\n        if (r.error) issues.push({ path: [key], message: r.error });\n        else if (r.value !== undefined) data[key] = r.value;\n      }\n      return issues.length ? { success: false, issues } : { success: true, data };  // unknown keys are dropped\n    },\n    parse(input) {\n      const r = this.safeParse(input);\n      if (!r.success) throw Object.assign(new Error(\"validation failed\"), { issues: r.issues });\n      return r.data;\n    },\n  }),\n};\n\n// --- fake table (leave as is)\nconst db = Array.from({ length: 50 }, (_, i) => ({ id: i + 1, email: `u${i + 1}@x.io` }));\n\nconst ListUsersQuery = s.object({\n  page:  s.optional(s.number({ int: true, min: 1, coerce: true }), 1),\n  limit: s.optional(s.number({ int: true, min: 1, max: 100, coerce: true }), 20),\n});\n\nfunction validateSource(schema, source) {\n  return (req, res, next) => {\n    const r = schema.safeParse(req[source]);\n    if (!r.success) return res.status(400).json({ issues: r.issues });\n    res.locals[source] = r.data;\n    next();\n  };\n}\n\nconst app = express();\napp.get(\"/users\", validateSource(ListUsersQuery, \"query\"));   // shim: one function per call\napp.get(\"/users\", (req, res) => {\n  const { page, limit } = res.locals.query;\n  res.json({ page, limit, items: db.slice((page - 1) * limit, page * limit) });\n});",
+  "explain": "The middleware is generic over <em>where</em> the data comes from; the schema owns coercion (<code>\"5\"</code> → <code>5</code>), bounds and defaults. Storing on <code>res.locals</code> rather than assigning <code>req.query</code> is what makes this work unchanged on Express 5, where <code>req.query</code> is a read-only getter."
+}</script>
+</section>
+
+<section class="block" data-block="concept" id="3d-03">
+<h2>Response serialization — never return raw DB rows</h2>
+<pre><code class="language-typescript">// DB model has: id, email, passwordHash, createdAt, deletedAt, stripeCustomerId, ...
+// Expose only a safe subset to the client.
+
+const UserResponse = CreateUser.pick({ email: true }).extend({
+  id:        z.uuid(),
+  createdAt: z.iso.datetime(),                   // Zod 4: z.iso.datetime(), z.iso.date()
+});
+type UserResponse = z.infer&lt;typeof UserResponse&gt;;
+
+// In the controller:
+res.json(UserResponse.parse(user));              // strips any field not in the schema
+// If the DB row ever gains a new sensitive column, it's excluded automatically.</code></pre>
+
+<p><code>parse</code> here, not <code>safeParse</code>: a row that fails its own response schema is a server bug (a migration renamed a column, a nullable field you declared required) and should surface as a 500 in your error handler, not be quietly dropped. The strip-by-default behaviour is the whole point — a manual <code>{ id: user.id, email: user.email }</code> is correct today and leaks the next time someone spreads <code>...user</code> into it.</p>
+
+<div class="callout warn">
+  <div class="tag">Bundle size</div>
+  <p>Zod 4 ships <code>zod/mini</code> (tree-shakeable, function-style API) for edge functions and client bundles; Valibot is the other size-conscious option. Same concepts — schema, inference, parse vs safeParse — different surface. On a Node server the size doesn't matter; pick by ergonomics.</p>
+</div>
+</section>
+
+<section class="block" data-block="exercise" id="3d-10" data-kind="fix" data-lang="js">
+<div class="tag">Exercise</div>
+<p>Two leaks a reviewer would block. <code>POST /users</code> reads <code>req.body</code> without validating it, and both handlers send the raw row — <code>passwordHash</code> and <code>stripeCustomerId</code> included. <code>CreateUser</code>, <code>UserResponse</code> and <code>validate()</code> are already defined; wire them in. Tests check: invalid body → 400 and nothing inserted; valid body → 201 with exactly <code>id</code> and <code>email</code>; <code>GET /users/1</code> → <code>{ id: 1, email }</code> only; unknown id → 404. (The shim runs one function per <code>app.post</code> call, so register the validator as its own <code>app.post("/users", …)</code> line before the handler.)</p>
+<pre><code class="language-javascript">// --- tiny stand-in for zod (leave as is). A check returns { value } or { error }.
+const s = {
+  string: (o = {}) =&gt; (v) =&gt;
+    typeof v !== "string" ? { error: "expected string" } :
+    o.min &amp;&amp; v.length &lt; o.min ? { error: `at least ${o.min} chars` } :
+    o.email &amp;&amp; !/^\S+@\S+\.\S+$/.test(v) ? { error: "invalid email" } : { value: v },
+  number: (o = {}) =&gt; (v) =&gt; {
+    const n = o.coerce ? Number(v) : v;
+    return typeof n !== "number" || Number.isNaN(n) ? { error: "expected number" } :
+      o.int &amp;&amp; !Number.isInteger(n) ? { error: "expected integer" } :
+      o.min != null &amp;&amp; n &lt; o.min ? { error: `at least ${o.min}` } :
+      o.max != null &amp;&amp; n &gt; o.max ? { error: `at most ${o.max}` } : { value: n };
+  },
+  optional: (check, fallback) =&gt; (v) =&gt; v === undefined ? { value: fallback } : check(v),
+  object: (shape) =&gt; ({
+    safeParse(input = {}) {
+      const data = {}, issues = [];
+      for (const [key, check] of Object.entries(shape)) {
+        const r = check(input[key]);
+        if (r.error) issues.push({ path: [key], message: r.error });
+        else if (r.value !== undefined) data[key] = r.value;
+      }
+      return issues.length ? { success: false, issues } : { success: true, data };  // unknown keys are dropped
+    },
+    parse(input) {
+      const r = this.safeParse(input);
+      if (!r.success) throw Object.assign(new Error("validation failed"), { issues: r.issues });
+      return r.data;
+    },
+  }),
+};
+
+// --- fake table (leave as is): rows carry columns the client must never see
+const db = [{ id: 1, email: "ada@x.io", passwordHash: "$2b$10$ada", stripeCustomerId: "cus_123" }];
+
+const CreateUser   = s.object({ email: s.string({ email: true }), password: s.string({ min: 8 }) });
+const UserResponse = s.object({ id: s.number({ int: true }), email: s.string({ email: true }) });
+
+function validate(schema) {
+  return (req, res, next) =&gt; {
+    const r = schema.safeParse(req.body);
+    if (!r.success) return res.status(400).json({ issues: r.issues });
+    req.body = r.data;
+    next();
+  };
+}
+
+const app = express();
+app.use(express.json());
+
+// --- fix these two handlers
+app.post("/users", (req, res) =&gt; {
+  const user = { id: db.length + 1, email: req.body.email, passwordHash: "$2b$10$" + req.body.password, stripeCustomerId: null };
+  db.push(user);
+  res.status(201).json(user);
+});
+
+app.get("/users/:id", (req, res) =&gt; {
+  const user = db.find(u =&gt; u.id === Number(req.params.id));
+  if (!user) return res.status(404).json({ error: "not found" });
+  res.json(user);
+});</code></pre>
+<script type="application/json">{
+  "tests": "test(\"invalid body → 400 with issues, nothing inserted\", async () => {\n  const before = db.length;\n  const r = await request(app, { method: \"POST\", path: \"/users\", body: { email: \"not-an-email\", password: \"x\" } });\n  assert.equal(r.status, 400);\n  assert.ok(Array.isArray(r.body.issues) && r.body.issues.length >= 1, \"expected an issues array\");\n  assert.equal(db.length, before, \"row must not be inserted\");\n});\ntest(\"valid body → 201 with only id + email\", async () => {\n  const r = await request(app, { method: \"POST\", path: \"/users\", body: { email: \"bob@x.io\", password: \"correct-horse\" } });\n  assert.equal(r.status, 201);\n  assert.equal(Object.keys(r.body).sort(), [\"email\", \"id\"]);\n  assert.equal(r.body.email, \"bob@x.io\");\n});\ntest(\"GET /users/:id never exposes passwordHash or stripeCustomerId\", async () => {\n  const r = await request(app, { method: \"GET\", path: \"/users/1\" });\n  assert.equal(r.status, 200);\n  assert.equal(r.body, { id: 1, email: \"ada@x.io\" });\n});\ntest(\"unknown id → 404\", async () => {\n  const r = await request(app, { method: \"GET\", path: \"/users/999\" });\n  assert.equal(r.status, 404);\n});",
+  "hints": [
+    "Leak 1 is the missing boundary: add <code>app.post(\"/users\", validate(CreateUser));</code> before the handler so an invalid body never reaches it.",
+    "Leak 2 is the exit: replace <code>res.json(user)</code> with <code>res.json(UserResponse.parse(user))</code> in both handlers — <code>parse</code> keeps only <code>id</code> and <code>email</code>.",
+    "Don't hand-pick fields (<code>{ id: user.id, email: user.email }</code>); the tests pass, but the next column added to the row is one <code>...user</code> away from leaking again."
+  ],
+  "solution": "// --- tiny stand-in for zod (leave as is). A check returns { value } or { error }.\nconst s = {\n  string: (o = {}) => (v) =>\n    typeof v !== \"string\" ? { error: \"expected string\" } :\n    o.min && v.length < o.min ? { error: `at least ${o.min} chars` } :\n    o.email && !/^\\S+@\\S+\\.\\S+$/.test(v) ? { error: \"invalid email\" } : { value: v },\n  number: (o = {}) => (v) => {\n    const n = o.coerce ? Number(v) : v;\n    return typeof n !== \"number\" || Number.isNaN(n) ? { error: \"expected number\" } :\n      o.int && !Number.isInteger(n) ? { error: \"expected integer\" } :\n      o.min != null && n < o.min ? { error: `at least ${o.min}` } :\n      o.max != null && n > o.max ? { error: `at most ${o.max}` } : { value: n };\n  },\n  optional: (check, fallback) => (v) => v === undefined ? { value: fallback } : check(v),\n  object: (shape) => ({\n    safeParse(input = {}) {\n      const data = {}, issues = [];\n      for (const [key, check] of Object.entries(shape)) {\n        const r = check(input[key]);\n        if (r.error) issues.push({ path: [key], message: r.error });\n        else if (r.value !== undefined) data[key] = r.value;\n      }\n      return issues.length ? { success: false, issues } : { success: true, data };  // unknown keys are dropped\n    },\n    parse(input) {\n      const r = this.safeParse(input);\n      if (!r.success) throw Object.assign(new Error(\"validation failed\"), { issues: r.issues });\n      return r.data;\n    },\n  }),\n};\n\n// --- fake table (leave as is): rows carry columns the client must never see\nconst db = [{ id: 1, email: \"ada@x.io\", passwordHash: \"$2b$10$ada\", stripeCustomerId: \"cus_123\" }];\n\nconst CreateUser   = s.object({ email: s.string({ email: true }), password: s.string({ min: 8 }) });\nconst UserResponse = s.object({ id: s.number({ int: true }), email: s.string({ email: true }) });\n\nfunction validate(schema) {\n  return (req, res, next) => {\n    const r = schema.safeParse(req.body);\n    if (!r.success) return res.status(400).json({ issues: r.issues });\n    req.body = r.data;\n    next();\n  };\n}\n\nconst app = express();\napp.use(express.json());\n\napp.post(\"/users\", validate(CreateUser));   // shim: one function per call\napp.post(\"/users\", (req, res) => {\n  const user = { id: db.length + 1, email: req.body.email, passwordHash: \"$2b$10$\" + req.body.password, stripeCustomerId: null };\n  db.push(user);\n  res.status(201).json(UserResponse.parse(user));\n});\n\napp.get(\"/users/:id\", (req, res) => {\n  const user = db.find(u => u.id === Number(req.params.id));\n  if (!user) return res.status(404).json({ error: \"not found\" });\n  res.json(UserResponse.parse(user));\n});",
+  "explain": "The request schema rejects bad input before any side effect (no row inserted on a 400). The response schema makes the <em>allow-list</em> explicit: anything not declared in <code>UserResponse</code> is stripped, so a future <code>internalScore</code> column is excluded without touching the controller."
+}</script>
+</section>
+
+<section class="block" data-block="review" id="3d-12">
+<div class="tag">Code review</div>
+<ul>
+  <li><strong><code>req.body.foo</code> read without a validator.</strong> Reject. Any handler that reads <code>req.body</code>, <code>req.query</code> or <code>req.params</code> directly is a boundary with no guard; <code>@typescript-eslint/no-unsafe-member-access</code> flags the <code>any</code> it produces.</li>
+  <li><strong><code>any</code> (or a hand-written interface) as the handler's input type.</strong> Validate, then <code>z.infer</code> the type from the schema. Two sources of truth drift the first time a field is added.</li>
+  <li><strong>Validation scattered across routes.</strong> Schemas live in one module per resource (<code>schemas/user.ts</code>) and are reused by the request validator, the response serializer and the tests.</li>
+  <li><strong>Raw DB rows in <code>res.json</code>.</strong> <code>password_hash</code>, soft-delete flags, billing ids. A response schema with <code>pick</code>/<code>extend</code> is the allow-list; <code>parse</code> strips the rest.</li>
+  <li><strong><code>req.query.limit</code> passed as a string to <code>take()</code>.</strong> Prisma rejects it (<code>PrismaClientValidationError</code> → 500), <code>pg</code> may silently cast. <code>z.coerce.number()</code> at the boundary, with <code>max</code>, or a client asks for a million rows.</li>
+  <li><strong><code>schema.parse</code> inside the handler with no <code>ZodError</code> mapping.</strong> A bad client body becomes a 500 and pages someone. Use <code>safeParse</code> in middleware, or map <code>ZodError</code> → 400 in the error handler.</li>
+  <li><strong><code>req.params.id</code> used unvalidated in a query.</strong> <code>z.uuid()</code> / <code>z.coerce.number().int()</code> at the boundary; a 400 for <code>"../../etc/passwd"</code> is cheaper than finding out what the ORM does with it.</li>
+</ul>
+</section>
+
+<section class="block" data-block="exercise" id="3d-13" data-kind="mcq">
+<div class="tag">Check</div>
+<p>A controller ends with <code>res.json(UserResponse.parse(row))</code>. A migration adds a <code>stripeCustomerId</code> column to the users table and nobody touches the controller. What happens on the next request?</p>
+<script type="application/json">{
+  "options": [
+    "<code>parse</code> throws because the row has a key the schema doesn't declare, so the endpoint returns 500 until the schema is updated.",
+    "<code>parse</code> strips <code>stripeCustomerId</code> because <code>z.object</code> drops undeclared keys by default; the response is unchanged. It would only throw if a declared field were missing or mistyped.",
+    "<code>stripeCustomerId</code> is passed through — Zod only checks the types of declared fields and leaves the rest of the object as is.",
+    "Nothing can leak either way: the TypeScript type <code>UserResponse</code> already guarantees the shape at runtime."
+  ],
+  "answer": 1,
+  "explain": "Strip is the default for <code>z.object</code>; passthrough is opt-in (<code>z.looseObject</code>) and rejection is opt-in (<code>z.strictObject</code>). Option 3 describes <code>looseObject</code>. Option 4 is the core mistake of the lesson: types are erased, only the schema runs."
+}</script>
+</section>
+
+<section class="block" data-block="recall" id="3d-04">
+<div class="tag">Recall</div>
+<dl>
+  <dt>A colleague writes <code>type CreateUserInput = { email: string; password: string }</code> in a separate file and imports it in the controller. You have a Zod <code>CreateUser</code> schema. What's the problem?</dt>
+  <dd><p>Two sources of truth. If the schema changes (e.g., adds a required <code>role</code> field), the type won't update automatically. Use <code>type CreateUserInput = z.infer&lt;typeof CreateUser&gt;</code> — one source.</p></dd>
+  <dt><code>UserResponse.parse(user)</code> is in the controller. A DB column named <code>internalScore</code> gets added to the model. Is it safe to send without changing the controller?</dt>
+  <dd><p>Yes — <code>parse()</code> strips any field not declared in the schema. The new column is silently excluded. This is the key advantage over spread/manual deletion.</p></dd>
+  <dt><code>safeParse</code> vs <code>parse</code> — which goes at the request boundary, which at the response boundary, and why?</dt>
+  <dd><code>safeParse</code> for requests: a bad body is a <em>client</em> error → 400, no throw. <code>parse</code> for responses: a row that fails its own schema is a <em>server</em> bug → let it throw into the error handler as a 500.</dd>
+  <dt>Why does <code>ListUsersQuery</code> need <code>z.coerce.number()</code> when <code>CreateUser</code> doesn't?</dt>
+  <dd>Query strings and params are always strings; Zod is strict by default (unlike Pydantic's lax mode), so <code>"20"</code> fails <code>z.number()</code> without <code>coerce</code>. A JSON body already carries real numbers.</dd>
+  <dt>In Express 5, why does <code>req.query = parsed</code> in a validator not work, and what do you do instead?</dt>
+  <dd><code>req.query</code> is a getter re-parsed from the URL; assignment is ignored or throws. Store the parsed object on <code>res.locals.query</code> (or a declared <code>req.validated</code>).</dd>
+  <dt>A body parser, then <code>requireFields("email", "password")</code>, then a handler that increments <code>handlerRuns</code>. Requests: <code>{ email }</code> only; a valid JSON string with an extra <code>role</code>; the string <code>"{not json"</code>. Statuses and final <code>handlerRuns</code>?</dt>
+  <dd><code>400</code> (missing field, handler skipped), <code>201</code> (parsed, valid), <code>400</code> (parser forwards a 400 error — validator never runs). <code>handlerRuns</code> is <code>1</code>.</dd>
+  <dt>What are the three <code>z.object</code> behaviours for undeclared keys, and which is the default?</dt>
+  <dd>Strip (default, <code>z.object</code>), reject (<code>z.strictObject</code>), keep (<code>z.looseObject</code>). The default is what makes a response schema an allow-list.</dd>
+</dl>
+</section>
+</article>
+<script type="module" src="/assets/runtime/boot.js"></script>
+</body>
+</html>

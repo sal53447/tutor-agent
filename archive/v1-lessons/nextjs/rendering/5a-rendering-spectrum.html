@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>5a. Rendering spectrum · JS Curriculum</title>
+<link rel="icon" href="/assets/favicon.svg">
+<link rel="stylesheet" href="/assets/vendor/prism.css">
+<link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body data-lesson="5a" data-level="interactive">
+<article class="lesson">
+
+<header>
+  <h1>The Rendering Spectrum</h1>
+</header>
+
+<section class="block" data-block="concept" id="5a-01">
+<p>A plain React app renders in the browser (<strong>CSR</strong>): blank HTML, then a JS bundle, then a data fetch, then pixels. Next.js exists to move that work to the server — per request (<strong>SSR</strong>), at build time (<strong>SSG</strong>), on a schedule (<strong>ISR</strong>), or progressively over one HTTP response (<strong>streaming</strong>). The App Router decides this <em>per route</em>, and 5b–5d assume you can read a route and say where and when its HTML is produced.</p>
+</section>
+
+<section class="block" data-block="concept" id="5a-05">
+<h2>The spectrum</h2>
+<table>
+  <tr><th>Mode</th><th>HTML generated</th><th>When to use</th></tr>
+  <tr><td><strong>CSR</strong> (client-side)</td><td>Browser runs JS, React builds DOM</td><td>App-like UIs behind login. Poor SEO, slow first paint, three round-trips before content.</td></tr>
+  <tr><td><strong>SSR</strong> (server-side)</td><td>Server renders HTML per request, client hydrates</td><td>Dynamic, personalized pages. Good SEO and first paint; server-bound.</td></tr>
+  <tr><td><strong>SSG</strong> (static)</td><td>HTML built once at build time</td><td>Marketing, blogs, docs. Served from CDN; cannot be per-user.</td></tr>
+  <tr><td><strong>ISR</strong> (incremental static)</td><td>SSG, regenerated in the background after <code>revalidate</code> seconds</td><td>Mostly-static content that drifts: product pages, listings.</td></tr>
+  <tr><td><strong>Streaming</strong></td><td>HTML flushed in chunks as <code>&lt;Suspense&gt;</code> boundaries resolve</td><td>Default for dynamic routes. Shell paints immediately; slow data arrives later on the same response.</td></tr>
+</table>
+<p>These are not framework "modes" you pick in a config. In the App Router every route is <em>static</em> unless something in it reads the request, and a dynamic route <em>streams</em> whenever a <code>&lt;Suspense&gt;</code> boundary (or <code>loading.tsx</code>) sits above slow data. A marketing page and a per-user dashboard live in the same app with different answers.</p>
+</section>
+
+<section class="block" data-block="bridge" id="5a-06">
+<div class="tag">Python bridge</div>
+<p>A Django view returning <code>render(request, "page.html", ctx)</code> is SSR, full stop: one HTML response, no JavaScript involved, every request re-renders. Next's SSR is that <em>plus</em> a second phase — the component JS is shipped and React <strong>hydrates</strong> the server HTML so the same components become interactive. SSG is what you get from caching a Django template render at deploy time (<code>django-distill</code>, a static export); ISR is that cache with a TTL and background refresh. Streaming is <code>StreamingHttpResponse</code>, except you never write the generator: React flushes the template at each <code>&lt;Suspense&gt;</code> boundary. Jinja template partials (<code>{% include %}</code>) map onto Server Components — rendered once on the server, output only — while anything that needs <code>onclick</code> is a Client Component, the piece Jinja never had.</p>
+</section>
+
+<section class="block" data-block="stepper" id="5a-07" data-kind="timeline">
+<div class="tag">Step through</div>
+<p>CSR — the Part 4 baseline. Three round-trips before the first meaningful paint.</p>
+<script type="application/json">{
+  "steps": [
+    { "label": "Request", "note": "The server has nothing to render. It serves a static shell: <code>&lt;div id=\"root\"&gt;&lt;/div&gt;</code> and a script tag.",
+      "state": { "lanes": [
+        { "name": "Server",  "items": [{ "label": "serve shell", "state": "active" }] },
+        { "name": "Network", "items": [{ "label": "empty HTML", "state": "idle" }, { "label": "JS bundle", "state": "idle" }, { "label": "API JSON", "state": "idle" }] },
+        { "name": "Client",  "items": [{ "label": "blank paint", "state": "idle" }, { "label": "run JS", "state": "idle" }, { "label": "fetch data", "state": "idle" }, { "label": "render", "state": "idle" }, { "label": "interactive", "state": "idle" }] }
+      ] } },
+    { "label": "Empty HTML arrives", "note": "Round-trip 1. A crawler that does not execute JS sees an empty page; so does the user.",
+      "state": { "lanes": [
+        { "name": "Server",  "items": [{ "label": "serve shell", "state": "done" }] },
+        { "name": "Network", "items": [{ "label": "empty HTML", "state": "active" }, { "label": "JS bundle", "state": "idle" }, { "label": "API JSON", "state": "idle" }] },
+        { "name": "Client",  "items": [{ "label": "blank paint", "state": "idle" }, { "label": "run JS", "state": "idle" }, { "label": "fetch data", "state": "idle" }, { "label": "render", "state": "idle" }, { "label": "interactive", "state": "idle" }] }
+      ] } },
+    { "label": "Blank paint, bundle downloading", "note": "The browser paints white and starts downloading the bundle — round-trip 2. Nothing is interactive because nothing exists yet.",
+      "state": { "lanes": [
+        { "name": "Server",  "items": [{ "label": "serve shell", "state": "done" }] },
+        { "name": "Network", "items": [{ "label": "empty HTML", "state": "done" }, { "label": "JS bundle", "state": "active" }, { "label": "API JSON", "state": "idle" }] },
+        { "name": "Client",  "items": [{ "label": "blank paint", "state": "active" }, { "label": "run JS", "state": "idle" }, { "label": "fetch data", "state": "idle" }, { "label": "render", "state": "idle" }, { "label": "interactive", "state": "idle" }] }
+      ] } },
+    { "label": "React mounts", "note": "The bundle parses and runs. React renders the first frame — a spinner — and an effect fires the data request.",
+      "state": { "lanes": [
+        { "name": "Server",  "items": [{ "label": "serve shell", "state": "done" }] },
+        { "name": "Network", "items": [{ "label": "empty HTML", "state": "done" }, { "label": "JS bundle", "state": "done" }, { "label": "API JSON", "state": "idle" }] },
+        { "name": "Client",  "items": [{ "label": "blank paint", "state": "done" }, { "label": "run JS", "state": "active" }, { "label": "fetch data", "state": "idle" }, { "label": "render", "state": "idle" }, { "label": "interactive", "state": "idle" }] }
+      ] } },
+    { "label": "Fetch data", "note": "Round-trip 3. The browser is now doing the work a server could have done before sending anything.",
+      "state": { "lanes": [
+        { "name": "Server",  "items": [{ "label": "serve shell", "state": "done" }] },
+        { "name": "Network", "items": [{ "label": "empty HTML", "state": "done" }, { "label": "JS bundle", "state": "done" }, { "label": "API JSON", "state": "active" }] },
+        { "name": "Client",  "items": [{ "label": "blank paint", "state": "done" }, { "label": "run JS", "state": "done" }, { "label": "fetch data", "state": "active" }, { "label": "render", "state": "idle" }, { "label": "interactive", "state": "idle" }] }
+      ] } },
+    { "label": "First real content", "note": "JSON arrives, state updates, React renders the page. First meaningful paint = HTML + bundle + API latency, in series.",
+      "state": { "lanes": [
+        { "name": "Server",  "items": [{ "label": "serve shell", "state": "done" }] },
+        { "name": "Network", "items": [{ "label": "empty HTML", "state": "done" }, { "label": "JS bundle", "state": "done" }, { "label": "API JSON", "state": "done" }] },
+        { "name": "Client",  "items": [{ "label": "blank paint", "state": "done" }, { "label": "run JS", "state": "done" }, { "label": "fetch data", "state": "done" }, { "label": "render", "state": "active" }, { "label": "interactive", "state": "idle" }] }
+      ] } },
+    { "label": "Interactive", "note": "Handlers were attached at mount, so the page is interactive the moment it renders — the one thing CSR gets for free.",
+      "state": { "lanes": [
+        { "name": "Server",  "items": [{ "label": "serve shell", "state": "done" }] },
+        { "name": "Network", "items": [{ "label": "empty HTML", "state": "done" }, { "label": "JS bundle", "state": "done" }, { "label": "API JSON", "state": "done" }] },
+        { "name": "Client",  "items": [{ "label": "blank paint", "state": "done" }, { "label": "run JS", "state": "done" }, { "label": "fetch data", "state": "done" }, { "label": "render", "state": "done" }, { "label": "interactive", "state": "done" }] }
+      ] } }
+  ]
+}</script>
+</section>
+
+<section class="block" data-block="stepper" id="5a-08" data-kind="timeline">
+<div class="tag">Step through</div>
+<p>SSR with hydration — a dynamic App Router route with no Suspense boundary. Content paints first; interactivity comes second.</p>
+<script type="application/json">{
+  "steps": [
+    { "label": "Request arrives", "note": "The router matches the URL to a segment tree (5b). Everything from here to \"send\" happens before a single byte leaves the server.",
+      "state": { "lanes": [
+        { "name": "Server",  "items": [{ "label": "match route", "state": "active" }, { "label": "render RSC", "state": "idle" }, { "label": "render HTML", "state": "idle" }, { "label": "send", "state": "idle" }] },
+        { "name": "Network", "items": [{ "label": "HTML", "state": "idle" }, { "label": "RSC payload", "state": "idle" }, { "label": "JS bundle", "state": "idle" }] },
+        { "name": "Client",  "items": [{ "label": "paint", "state": "idle" }, { "label": "hydrate", "state": "idle" }, { "label": "interactive", "state": "idle" }] }
+      ] } },
+    { "label": "Server Components run", "note": "Async components <code>await</code> the database directly. Their output is a tree description — the <strong>RSC payload</strong> — not HTML yet.",
+      "state": { "lanes": [
+        { "name": "Server",  "items": [{ "label": "match route", "state": "done" }, { "label": "render RSC", "state": "active" }, { "label": "render HTML", "state": "idle" }, { "label": "send", "state": "idle" }] },
+        { "name": "Network", "items": [{ "label": "HTML", "state": "idle" }, { "label": "RSC payload", "state": "idle" }, { "label": "JS bundle", "state": "idle" }] },
+        { "name": "Client",  "items": [{ "label": "paint", "state": "idle" }, { "label": "hydrate", "state": "idle" }, { "label": "interactive", "state": "idle" }] }
+      ] } },
+    { "label": "HTML generated", "note": "The tree (including Client Components, rendered once on the server) becomes an HTML string. The RSC payload is inlined into it so the client can rebuild the tree without re-fetching.",
+      "state": { "lanes": [
+        { "name": "Server",  "items": [{ "label": "match route", "state": "done" }, { "label": "render RSC", "state": "done" }, { "label": "render HTML", "state": "active" }, { "label": "send", "state": "idle" }] },
+        { "name": "Network", "items": [{ "label": "HTML", "state": "idle" }, { "label": "RSC payload", "state": "idle" }, { "label": "JS bundle", "state": "idle" }] },
+        { "name": "Client",  "items": [{ "label": "paint", "state": "idle" }, { "label": "hydrate", "state": "idle" }, { "label": "interactive", "state": "idle" }] }
+      ] } },
+    { "label": "Response sent", "note": "One response, complete HTML. Time-to-first-byte includes every <code>await</code> on the server — that is the cost streaming removes.",
+      "state": { "lanes": [
+        { "name": "Server",  "items": [{ "label": "match route", "state": "done" }, { "label": "render RSC", "state": "done" }, { "label": "render HTML", "state": "done" }, { "label": "send", "state": "active" }] },
+        { "name": "Network", "items": [{ "label": "HTML", "state": "active" }, { "label": "RSC payload", "state": "active" }, { "label": "JS bundle", "state": "idle" }] },
+        { "name": "Client",  "items": [{ "label": "paint", "state": "idle" }, { "label": "hydrate", "state": "idle" }, { "label": "interactive", "state": "idle" }] }
+      ] } },
+    { "label": "Content painted", "note": "The user (and any crawler) sees the real page before any JavaScript runs. Buttons are visible but inert.",
+      "state": { "lanes": [
+        { "name": "Server",  "items": [{ "label": "match route", "state": "done" }, { "label": "render RSC", "state": "done" }, { "label": "render HTML", "state": "done" }, { "label": "send", "state": "done" }] },
+        { "name": "Network", "items": [{ "label": "HTML", "state": "done" }, { "label": "RSC payload", "state": "done" }, { "label": "JS bundle", "state": "active" }] },
+        { "name": "Client",  "items": [{ "label": "paint", "state": "active" }, { "label": "hydrate", "state": "idle" }, { "label": "interactive", "state": "idle" }] }
+      ] } },
+    { "label": "Hydrate", "note": "Only Client Component code is in the bundle. React walks the existing DOM and attaches handlers instead of creating nodes. If server and client output differ, React 19 logs a hydration error and re-renders the mismatched subtree on the client.",
+      "state": { "lanes": [
+        { "name": "Server",  "items": [{ "label": "match route", "state": "done" }, { "label": "render RSC", "state": "done" }, { "label": "render HTML", "state": "done" }, { "label": "send", "state": "done" }] },
+        { "name": "Network", "items": [{ "label": "HTML", "state": "done" }, { "label": "RSC payload", "state": "done" }, { "label": "JS bundle", "state": "done" }] },
+        { "name": "Client",  "items": [{ "label": "paint", "state": "done" }, { "label": "hydrate", "state": "active" }, { "label": "interactive", "state": "idle" }] }
+      ] } },
+    { "label": "Interactive", "note": "The gap between \"painted\" and \"interactive\" is the hydration window. Clicks in that window are lost unless the UI is a plain form (which works without JS — 5e).",
+      "state": { "lanes": [
+        { "name": "Server",  "items": [{ "label": "match route", "state": "done" }, { "label": "render RSC", "state": "done" }, { "label": "render HTML", "state": "done" }, { "label": "send", "state": "done" }] },
+        { "name": "Network", "items": [{ "label": "HTML", "state": "done" }, { "label": "RSC payload", "state": "done" }, { "label": "JS bundle", "state": "done" }] },
+        { "name": "Client",  "items": [{ "label": "paint", "state": "done" }, { "label": "hydrate", "state": "done" }, { "label": "interactive", "state": "done" }] }
+      ] } }
+  ]
+}</script>
+</section>
+
+<section class="block" data-block="concept" id="5a-02">
+<h2>Streaming — chunked HTML around <code>&lt;Suspense&gt;</code></h2>
+<p>Classic SSR sends nothing until the whole tree has rendered, so one slow <code>await</code> holds the entire page. Streaming uses <strong>chunked transfer encoding</strong>: React flushes the <strong>shell</strong> — everything outside suspended boundaries, with fallbacks in the holes — immediately, then sends one more HTML chunk per boundary as its data resolves. Same connection, no extra round-trip, no client JS needed for the initial paint; each chunk carries a tiny inline script that swaps the fallback for the content.</p>
+
+<pre><code class="language-tsx">// app/dashboard/page.tsx
+import { Suspense } from "react";
+import { RecentOrders } from "./recent-orders"; // async Server Component — awaits the DB
+
+export default function Dashboard() {
+  return (
+    &lt;main&gt;
+      &lt;h1&gt;Dashboard&lt;/h1&gt;
+      &lt;Suspense fallback={&lt;p&gt;Loading orders…&lt;/p&gt;}&gt;
+        &lt;RecentOrders /&gt;   {/* streams in when its await resolves */}
+      &lt;/Suspense&gt;
+    &lt;/main&gt;
+  );
+}</code></pre>
+
+<p>A <code>loading.tsx</code> file (5b) is the same mechanism at segment level: Next wraps that segment's <code>page</code> in <code>&lt;Suspense fallback={&lt;Loading /&gt;}&gt;</code> for you. Boundaries are independent: two slow siblings each in their own <code>&lt;Suspense&gt;</code> arrive in <em>resolve</em> order, not tree order.</p>
+
+<div class="callout warn">
+  <div class="tag">Gotcha</div>
+  <p>An <code>await</code> that is <em>not</em> under a boundary blocks the shell. The usual offender is a layout that awaits the session: every page below it waits, and streaming buys nothing. Either wrap the slow subtree in <code>&lt;Suspense&gt;</code> or push the <code>await</code> down into the component that needs the data.</p>
+</div>
+</section>
+
+<section class="block" data-block="stepper" id="5a-09" data-kind="timeline">
+<div class="tag">Step through</div>
+<p>The <code>Dashboard</code> above: the shell leaves the server before <code>RecentOrders</code> has its data.</p>
+<script type="application/json">{
+  "steps": [
+    { "label": "Render starts", "note": "React renders the tree. <code>&lt;main&gt;</code> and <code>&lt;h1&gt;</code> need no data.",
+      "state": { "lanes": [
+        { "name": "Server",  "items": [{ "label": "render shell", "state": "active" }, { "label": "flush shell", "state": "idle" }, { "label": "await orders", "state": "idle" }, { "label": "flush chunk", "state": "idle" }] },
+        { "name": "Network", "items": [{ "label": "shell HTML", "state": "idle" }, { "label": "chunk HTML", "state": "idle" }, { "label": "JS bundle", "state": "idle" }] },
+        { "name": "Client",  "items": [{ "label": "paint shell", "state": "idle" }, { "label": "swap chunk", "state": "idle" }, { "label": "hydrate", "state": "idle" }, { "label": "interactive", "state": "idle" }] }
+      ] } },
+    { "label": "Suspense boundary hit", "note": "<code>RecentOrders</code> awaits the DB. React does not wait: it records the fallback for that hole and keeps going.",
+      "state": { "lanes": [
+        { "name": "Server",  "items": [{ "label": "render shell", "state": "done" }, { "label": "flush shell", "state": "idle" }, { "label": "await orders", "state": "active" }, { "label": "flush chunk", "state": "idle" }] },
+        { "name": "Network", "items": [{ "label": "shell HTML", "state": "idle" }, { "label": "chunk HTML", "state": "idle" }, { "label": "JS bundle", "state": "idle" }] },
+        { "name": "Client",  "items": [{ "label": "paint shell", "state": "idle" }, { "label": "swap chunk", "state": "idle" }, { "label": "hydrate", "state": "idle" }, { "label": "interactive", "state": "idle" }] }
+      ] } },
+    { "label": "Shell flushed", "note": "First bytes go out: the page with <code>&lt;p&gt;Loading orders…&lt;/p&gt;</code> in the hole. The response stays open (<code>Transfer-Encoding: chunked</code>).",
+      "state": { "lanes": [
+        { "name": "Server",  "items": [{ "label": "render shell", "state": "done" }, { "label": "flush shell", "state": "active" }, { "label": "await orders", "state": "active" }, { "label": "flush chunk", "state": "idle" }] },
+        { "name": "Network", "items": [{ "label": "shell HTML", "state": "active" }, { "label": "chunk HTML", "state": "idle" }, { "label": "JS bundle", "state": "idle" }] },
+        { "name": "Client",  "items": [{ "label": "paint shell", "state": "idle" }, { "label": "swap chunk", "state": "idle" }, { "label": "hydrate", "state": "idle" }, { "label": "interactive", "state": "idle" }] }
+      ] } },
+    { "label": "Shell painted", "note": "The user sees the heading and the fallback while the server is still waiting on the database. TTFB no longer includes the slow query.",
+      "state": { "lanes": [
+        { "name": "Server",  "items": [{ "label": "render shell", "state": "done" }, { "label": "flush shell", "state": "done" }, { "label": "await orders", "state": "active" }, { "label": "flush chunk", "state": "idle" }] },
+        { "name": "Network", "items": [{ "label": "shell HTML", "state": "done" }, { "label": "chunk HTML", "state": "idle" }, { "label": "JS bundle", "state": "active" }] },
+        { "name": "Client",  "items": [{ "label": "paint shell", "state": "active" }, { "label": "swap chunk", "state": "idle" }, { "label": "hydrate", "state": "idle" }, { "label": "interactive", "state": "idle" }] }
+      ] } },
+    { "label": "Data resolves, chunk flushed", "note": "The boundary's HTML is appended to the same response as <code>&lt;div hidden&gt;…&lt;/div&gt;</code> plus an inline script that moves it into place.",
+      "state": { "lanes": [
+        { "name": "Server",  "items": [{ "label": "render shell", "state": "done" }, { "label": "flush shell", "state": "done" }, { "label": "await orders", "state": "done" }, { "label": "flush chunk", "state": "active" }] },
+        { "name": "Network", "items": [{ "label": "shell HTML", "state": "done" }, { "label": "chunk HTML", "state": "active" }, { "label": "JS bundle", "state": "active" }] },
+        { "name": "Client",  "items": [{ "label": "paint shell", "state": "done" }, { "label": "swap chunk", "state": "idle" }, { "label": "hydrate", "state": "idle" }, { "label": "interactive", "state": "idle" }] }
+      ] } },
+    { "label": "Fallback swapped", "note": "No React needed for the swap — it is a DOM move done by the inline script. The response closes when the last boundary has flushed.",
+      "state": { "lanes": [
+        { "name": "Server",  "items": [{ "label": "render shell", "state": "done" }, { "label": "flush shell", "state": "done" }, { "label": "await orders", "state": "done" }, { "label": "flush chunk", "state": "done" }] },
+        { "name": "Network", "items": [{ "label": "shell HTML", "state": "done" }, { "label": "chunk HTML", "state": "done" }, { "label": "JS bundle", "state": "active" }] },
+        { "name": "Client",  "items": [{ "label": "paint shell", "state": "done" }, { "label": "swap chunk", "state": "active" }, { "label": "hydrate", "state": "idle" }, { "label": "interactive", "state": "idle" }] }
+      ] } },
+    { "label": "Hydrate", "note": "The bundle (Client Components only) arrives in parallel with all of this; React hydrates boundaries selectively as they land.",
+      "state": { "lanes": [
+        { "name": "Server",  "items": [{ "label": "render shell", "state": "done" }, { "label": "flush shell", "state": "done" }, { "label": "await orders", "state": "done" }, { "label": "flush chunk", "state": "done" }] },
+        { "name": "Network", "items": [{ "label": "shell HTML", "state": "done" }, { "label": "chunk HTML", "state": "done" }, { "label": "JS bundle", "state": "done" }] },
+        { "name": "Client",  "items": [{ "label": "paint shell", "state": "done" }, { "label": "swap chunk", "state": "done" }, { "label": "hydrate", "state": "active" }, { "label": "interactive", "state": "idle" }] }
+      ] } },
+    { "label": "Interactive", "note": "Compared with 5a-08: same total work, but the user saw content at step 4 instead of step 5, and the slow query never delayed the first byte.",
+      "state": { "lanes": [
+        { "name": "Server",  "items": [{ "label": "render shell", "state": "done" }, { "label": "flush shell", "state": "done" }, { "label": "await orders", "state": "done" }, { "label": "flush chunk", "state": "done" }] },
+        { "name": "Network", "items": [{ "label": "shell HTML", "state": "done" }, { "label": "chunk HTML", "state": "done" }, { "label": "JS bundle", "state": "done" }] },
+        { "name": "Client",  "items": [{ "label": "paint shell", "state": "done" }, { "label": "swap chunk", "state": "done" }, { "label": "hydrate", "state": "done" }, { "label": "interactive", "state": "done" }] }
+      ] } }
+  ]
+}</script>
+</section>
+
+<section class="block" data-block="playground" id="5a-10" data-lang="js" data-mode="worker">
+<div class="tag">Try it</div>
+<p>A 15-line model of the streaming renderer. A child with <code>suspense: true</code> is inside a boundary; anything else must be ready before the shell flushes. Try: set <code>suspense: false</code> on <code>RecentOrders</code> (the shell now waits 40 ms); give <code>Stats</code> a delay of 50 (resolve order flips); add a fourth child with no delay.</p>
+<pre><code class="language-javascript">const page = {
+  name: "Dashboard",
+  children: [
+    { name: "Header" },                                   // sync
+    { name: "RecentOrders", delay: 40, suspense: true },  // &lt;Suspense&gt; around a slow await
+    { name: "Stats",        delay: 10, suspense: true },
+  ],
+};
+const sleep = (ms) =&gt; new Promise((r) =&gt; setTimeout(r, ms));
+
+async function render(tree) {
+  const streaming = [];
+  for (const child of tree.children) {
+    if (child.suspense) streaming.push(sleep(child.delay).then(() =&gt; console.log("flush chunk:", child.name)));
+    else if (child.delay) await sleep(child.delay);     // no boundary → blocks the shell
+  }
+  console.log("flush shell (fallbacks in the holes)");
+  await Promise.all(streaming);
+  console.log("response closed");
+}
+await render(page);</code></pre>
+<output>flush shell (fallbacks in the holes)
+flush chunk: Stats
+flush chunk: RecentOrders
+response closed</output>
+</section>
+
+<section class="block" data-block="exercise" id="5a-11" data-kind="predict" data-lang="js" data-mode="worker">
+<div class="tag">Exercise</div>
+<p>Same renderer, different tree. <code>Nav</code> awaits the session with no boundary around it. What is flushed, in order? One line per <code>console.log</code>.</p>
+<pre><code class="language-javascript">const sleep = (ms) =&gt; new Promise((r) =&gt; setTimeout(r, ms));
+async function render(tree) {
+  const streaming = [];
+  for (const child of tree.children) {
+    if (child.suspense) streaming.push(sleep(child.delay).then(() =&gt; console.log("chunk:", child.name)));
+    else if (child.delay) await sleep(child.delay);
+  }
+  console.log("shell");
+  await Promise.all(streaming);
+}
+
+await render({ name: "Page", children: [
+  { name: "Nav",     delay: 20 },                   // awaits session, no Suspense
+  { name: "Feed",    delay: 45, suspense: true },
+  { name: "Sidebar", delay: 10, suspense: true },
+] });</code></pre>
+<script type="application/json">{
+  "expected": "shell\nchunk: Sidebar\nchunk: Feed",
+  "hints": [
+    "<code>Nav</code> has no boundary, so the loop <code>await</code>s it: the shell cannot flush before 20 ms.",
+    "The two boundaries start their timers after <code>Nav</code> resolves and flush in <em>resolve</em> order, not tree order."
+  ],
+  "explain": "<code>Nav</code> blocks the shell for 20 ms — that is the 'await in a layout' gotcha from 5a-02. <code>Feed</code> and <code>Sidebar</code> are independent boundaries; <code>Sidebar</code> resolves first (10 ms after the shell), <code>Feed</code> last (45 ms). Tree order never decides stream order."
+}</script>
+</section>
+
+<section class="block" data-block="exercise" id="5a-14" data-kind="fix" data-lang="js" data-mode="worker">
+<div class="tag">Exercise</div>
+<p>This renderer behaves like classic SSR: it waits for every child, then sends everything. Make it stream. Contract: <code>render(tree, out)</code> pushes <code>"shell"</code> into <code>out</code> as soon as every <em>non-suspended</em> child is ready; each suspended child pushes <code>"chunk: &lt;name&gt;"</code> when its own delay resolves; the returned promise settles when the last chunk is out. Tests check that the shell is first, that chunks arrive in resolve order, and that a suspended child never delays the shell (a non-suspended one still does).</p>
+<pre><code class="language-javascript">// --- helper (leave as is)
+const sleep = (ms) =&gt; new Promise((r) =&gt; setTimeout(r, ms));
+
+// --- fix this
+async function render(tree, out) {
+  const chunks = [];
+  for (const child of tree.children) {
+    if (child.delay) await sleep(child.delay);
+    if (child.suspense) chunks.push(`chunk: ${child.name}`);
+  }
+  out.push("shell", ...chunks);
+  return out;
+}</code></pre>
+<script type="application/json">{
+  "tests": "test(\"shell first, chunks in resolve order\", async () => { const out = []; await render({ name: \"Page\", children: [{ name: \"Header\" }, { name: \"Orders\", delay: 30, suspense: true }, { name: \"Stats\", delay: 10, suspense: true }] }, out); assert.equal(out, [\"shell\", \"chunk: Stats\", \"chunk: Orders\"]); });\ntest(\"a suspended child never delays the shell\", async () => { const out = []; const p = render({ name: \"Page\", children: [{ name: \"Orders\", delay: 30, suspense: true }] }, out); setTimeout(() => out.push(\"t=15\"), 15); await p; assert.equal(out, [\"shell\", \"t=15\", \"chunk: Orders\"]); });\ntest(\"a non-suspended async child still blocks the shell\", async () => { const out = []; const p = render({ name: \"Page\", children: [{ name: \"Session\", delay: 20 }, { name: \"Feed\", delay: 30, suspense: true }] }, out); setTimeout(() => out.push(\"t=10\"), 10); await p; assert.equal(out, [\"t=10\", \"shell\", \"chunk: Feed\"]); });\ntest(\"no suspended children → just the shell\", async () => { const out = []; await render({ name: \"Page\", children: [{ name: \"A\" }, { name: \"B\" }] }, out); assert.equal(out, [\"shell\"]); });",
+  "hints": [
+    "Do not <code>await</code> a suspended child's delay inside the loop — start it and keep its promise.",
+    "Push <code>\"shell\"</code> right after the loop; the suspended promises push their chunk in a <code>.then</code>.",
+    "Finish with <code>await Promise.all(streaming)</code> so the returned promise settles only when the response is complete."
+  ],
+  "solution": "// --- helper (leave as is)\nconst sleep = (ms) => new Promise((r) => setTimeout(r, ms));\n\nasync function render(tree, out) {\n  const streaming = [];\n  for (const child of tree.children) {\n    if (child.suspense) {\n      streaming.push(sleep(child.delay).then(() => out.push(`chunk: ${child.name}`)));\n    } else if (child.delay) {\n      await sleep(child.delay);\n    }\n  }\n  out.push(\"shell\");\n  await Promise.all(streaming);\n  return out;\n}",
+  "explain": "The one rule of streaming: a <code>&lt;Suspense&gt;</code> boundary turns an <code>await</code> from <em>blocking</em> into <em>deferred</em>. The shell goes out as soon as the un-suspended work is done; each boundary's chunk goes out when its own data resolves. Anything you <code>await</code> outside a boundary is on the shell's critical path — exactly what the third test pins down."
+}</script>
+</section>
+
+<section class="block" data-block="concept" id="5a-12">
+<h2>Static or dynamic — how Next decides per route</h2>
+<p>There is no "SSG mode" switch. At build time Next renders every route it can; a route becomes <strong>dynamic</strong> (rendered per request) only if rendering it reads the request: <code>cookies()</code>, <code>headers()</code>, <code>connection()</code>, the <code>searchParams</code> prop, or a <code>fetch</code> with <code>cache: "no-store"</code>. Everything else is <strong>static</strong> — built once, served from the CDN. A static route with <code>export const revalidate = N</code> is <strong>ISR</strong>: served stale, regenerated in the background at most every N seconds.</p>
+
+<pre><code class="language-tsx">// app/blog/[slug]/page.tsx — static: nothing here reads the request
+export default async function Post({ params }: { params: Promise&lt;{ slug: string }&gt; }) {
+  const { slug } = await params;         // Next 15: params is a Promise. Awaiting it does NOT make the route dynamic.
+  const post = await getPost(slug);      // slugs from generateStaticParams are built; others render on first request, then cached
+  return &lt;article&gt;{post.body}&lt;/article&gt;;
+}
+export const revalidate = 300;           // ISR: regenerate at most every 5 min
+
+// app/account/page.tsx — dynamic: cookies() reads the request
+import { cookies } from "next/headers";
+export default async function Account({ searchParams }: { searchParams: Promise&lt;{ tab?: string }&gt; }) {
+  const session = (await cookies()).get("session")?.value;   // Next 15: cookies() is async
+  const { tab = "profile" } = await searchParams;            // reading searchParams also opts into dynamic
+  return &lt;Profile session={session} tab={tab} /&gt;;
+}
+
+// explicit overrides on any page or layout
+export const dynamic = "force-dynamic";  // always per request, even if nothing reads the request
+export const dynamic = "force-static";   // build it; cookies()/headers() return empty values</code></pre>
+
+<div class="callout warn">
+  <div class="tag">Gotcha</div>
+  <p>Dynamic-ness is <em>inherited downward</em>. <code>cookies()</code> in <code>app/layout.tsx</code> makes every route in the app dynamic, including the marketing pages that could have been static. Read request data in the leaf that needs it.</p>
+</div>
+</section>
+
+<section class="block" data-block="diagram" id="5a-13">
+<div class="tag">Mechanism</div>
+<script type="application/json">{
+  "direction": "down",
+  "nodes": [
+    { "id": "route",  "label": "route segment", "kind": "box" },
+    { "id": "q1",     "label": "reads the request?", "kind": "note" },
+    { "id": "dyn",    "label": "dynamic\nrender per request", "kind": "pill" },
+    { "id": "q2",     "label": "revalidate = N?", "kind": "note" },
+    { "id": "stream", "label": "Suspense inside?\n→ streams", "kind": "note" },
+    { "id": "isr",    "label": "ISR\nregenerate every N s", "kind": "pill" },
+    { "id": "static", "label": "static\nbuilt once, CDN", "kind": "pill" }
+  ],
+  "edges": [
+    { "from": "route", "to": "q1" },
+    { "from": "q1", "to": "dyn", "label": "yes / force-dynamic" },
+    { "from": "q1", "to": "q2", "label": "no" },
+    { "from": "q2", "to": "isr", "label": "yes" },
+    { "from": "q2", "to": "static", "label": "no" },
+    { "from": "dyn", "to": "stream", "dashed": true }
+  ]
+}</script>
+<p class="caption">Reading the request (<code>cookies()</code>, <code>headers()</code>, <code>searchParams</code>, <code>connection()</code>, <code>force-dynamic</code>) is the only thing that makes a route dynamic; <code>revalidate</code> only matters once it is not. Streaming is orthogonal — it is how a dynamic render is delivered.</p>
+</section>
+
+<section class="block" data-block="exercise" id="5a-15" data-kind="complete" data-lang="js" data-mode="worker">
+<div class="tag">Exercise</div>
+<p>Implement <code>classifyRoute(segment)</code> → <code>"dynamic"</code> | <code>"isr"</code> | <code>"static"</code>. <code>segment</code> has <code>uses</code> (array of API names called during render), optional <code>dynamic</code> (<code>"force-dynamic"</code> | <code>"force-static"</code> | <code>"auto"</code>) and optional <code>revalidate</code> (number of seconds, or <code>false</code>). Rules, in priority order: <code>force-dynamic</code> wins; <code>force-static</code> ignores <code>uses</code>; otherwise any name in <code>DYNAMIC_APIS</code> makes it dynamic; a non-dynamic route with <code>revalidate &gt; 0</code> is ISR; else static. Tests cover each rule plus the empty case.</p>
+<pre><code class="language-javascript">const DYNAMIC_APIS = new Set(["cookies", "headers", "connection", "searchParams", "fetch:no-store"]);
+
+function classifyRoute(segment) {
+  // TODO
+}</code></pre>
+<script type="application/json">{
+  "tests": "test(\"nothing reads the request → static\", () => assert.equal(classifyRoute({ uses: [\"params\", \"fetch\"] }), \"static\"));\ntest(\"cookies() → dynamic\", () => assert.equal(classifyRoute({ uses: [\"params\", \"cookies\"] }), \"dynamic\"));\ntest(\"searchParams → dynamic even with revalidate\", () => assert.equal(classifyRoute({ uses: [\"searchParams\"], revalidate: 60 }), \"dynamic\"));\ntest(\"revalidate on a static route → isr\", () => assert.equal(classifyRoute({ uses: [\"params\"], revalidate: 300 }), \"isr\"));\ntest(\"revalidate: false → static\", () => assert.equal(classifyRoute({ uses: [], revalidate: false }), \"static\"));\ntest(\"force-dynamic wins\", () => assert.equal(classifyRoute({ uses: [], dynamic: \"force-dynamic\", revalidate: 60 }), \"dynamic\"));\ntest(\"force-static ignores cookies()\", () => assert.equal(classifyRoute({ uses: [\"cookies\"], dynamic: \"force-static\" }), \"static\"));\ntest(\"empty segment → static\", () => assert.equal(classifyRoute({}), \"static\"));",
+  "hints": [
+    "Check <code>segment.dynamic</code> first; only when it is absent or <code>\"auto\"</code> look at <code>uses</code>.",
+    "<code>(segment.uses ?? []).some((u) =&gt; DYNAMIC_APIS.has(u))</code> is the dynamic test; <code>force-static</code> must skip it.",
+    "ISR is the last branch before <code>\"static\"</code>: <code>typeof segment.revalidate === \"number\" &amp;&amp; segment.revalidate &gt; 0</code>."
+  ],
+  "solution": "const DYNAMIC_APIS = new Set([\"cookies\", \"headers\", \"connection\", \"searchParams\", \"fetch:no-store\"]);\n\nfunction classifyRoute(segment) {\n  const { uses = [], dynamic = \"auto\", revalidate } = segment;\n  if (dynamic === \"force-dynamic\") return \"dynamic\";\n  if (dynamic !== \"force-static\" && uses.some((u) => DYNAMIC_APIS.has(u))) return \"dynamic\";\n  if (typeof revalidate === \"number\" && revalidate > 0) return \"isr\";\n  return \"static\";\n}",
+  "explain": "This is the decision tree in 5a-13 as code. The order matters: an explicit <code>dynamic</code> export overrides inference, request-reading APIs override <code>revalidate</code> (you cannot ISR a per-user page), and <code>revalidate</code> only turns a <em>static</em> route into ISR."
+}</script>
+</section>
+
+<section class="block" data-block="concept" id="5a-03">
+<h2>Partial Prerendering (PPR)</h2>
+<p>PPR collapses the static/dynamic choice to the <em>boundary</em> level: the parts of a route outside <code>&lt;Suspense&gt;</code> are prerendered into a <strong>static shell at build time</strong>; the holes stream at request time. One route gets CDN-speed first byte <em>and</em> per-request content. In Next 15 it is experimental and canary-only; the opt-in is per route.</p>
+
+<pre><code class="language-tsx">// next.config.ts
+export default {
+  experimental: { ppr: "incremental" },   // or true for every route
+};
+
+// app/product/[slug]/page.tsx
+export const experimental_ppr = true;     // opt this route in
+
+import { Suspense } from "react";
+import { StaticProductInfo } from "./static-info";      // rendered at build
+import { DynamicStockLevel } from "./dynamic-stock";    // reads cookies() → streamed at request
+
+export default function ProductPage() {
+  return (
+    &lt;&gt;
+      &lt;StaticProductInfo /&gt;
+      &lt;Suspense fallback={&lt;span&gt;Checking stock…&lt;/span&gt;}&gt;
+        &lt;DynamicStockLevel /&gt;
+      &lt;/Suspense&gt;
+    &lt;/&gt;
+  );
+}</code></pre>
+
+<div class="callout good">
+  <div class="tag">Rule of thumb</div>
+  <p>Wrap each independently dynamic piece in its own <code>&lt;Suspense&gt;</code>. Without PPR, one <code>cookies()</code> call makes the whole route dynamic; with PPR, only that hole is. The same boundaries you add for streaming are the ones PPR prerenders around — write them now, PPR is a config flag later.</p>
+</div>
+</section>
+
+<section class="block" data-block="review" id="5a-16">
+<div class="tag">Code review</div>
+<ul>
+  <li><strong>One <code>&lt;Suspense&gt;</code> around the whole page.</strong> The shell is now an empty fallback; you have reinvented CSR's spinner with extra server cost. One boundary per independently slow subtree.</li>
+  <li><strong><code>await</code> in a layout.</strong> <code>const session = await getSession()</code> in <code>app/(app)/layout.tsx</code> puts every page under it behind that await. Move the read into the components that need it, or wrap them.</li>
+  <li><strong><code>cookies()</code> / <code>headers()</code> in the root layout</strong> (theme, locale). Every route in the app turns dynamic; the marketing pages stop being CDN hits. Read in the leaf, or do it in <code>middleware</code> and pass a header (5f).</li>
+  <li><strong><code>export const dynamic = "force-dynamic"</code> as the fix for stale data.</strong> It throws away static serving for the route; the real fix is targeted revalidation (5d).</li>
+  <li><strong>Slow <code>generateMetadata</code>.</strong> <code>&lt;head&gt;</code> must be complete before the shell can flush, so a slow metadata query delays first byte for the whole page (Next 15.2+ streams metadata for non-bot user agents, which softens but does not remove this).</li>
+  <li><strong>Hydration mismatch.</strong> Rendering <code>Date.now()</code>, <code>window.innerWidth</code>, or a locale-formatted number produces different HTML on server and client; React 19 reports a recoverable error and re-renders the subtree on the client — a visible flash and wasted work. Client-only values go in <code>useEffect</code>/<code>useSyncExternalStore</code>, or the component gets <code>suppressHydrationWarning</code> for a timestamp.</li>
+</ul>
+</section>
+
+<section class="block" data-block="exercise" id="5a-17" data-kind="mcq">
+<div class="tag">Check</div>
+<p>A team adds <code>const theme = (await cookies()).get("theme")</code> to <code>app/layout.tsx</code> so every page gets the right colour scheme. The app also has <code>/pricing</code> and <code>/docs/*</code>, which read no request data. What changes for those routes after the deploy?</p>
+<script type="application/json">{
+  "options": [
+    "Nothing — <code>/pricing</code> and <code>/docs/*</code> still prerender at build because they do not call <code>cookies()</code> themselves.",
+    "They become dynamic: every request to <code>/pricing</code> now renders on the server instead of being served from the CDN, because the root layout reads the request.",
+    "They become ISR with the default revalidate window, since a layout cannot force a page dynamic.",
+    "They are prerendered as before, but the layout part is re-rendered on the client after hydration to apply the theme."
+  ],
+  "answer": 1,
+  "explain": "Dynamic-ness flows down the segment tree: a layout that reads <code>cookies()</code> makes every route it wraps dynamic (5a-12). Option 3 describes nothing Next does — layouts are rendered on the server, not re-run on the client for request data. Fix: read the cookie in the one client island that needs it, or set the theme in middleware and read it from a header in a leaf."
+}</script>
+</section>
+
+<section class="block" data-block="recall" id="5a-04">
+<div class="tag">Recall</div>
+<dl>
+  <dt>Mechanically, what is the difference between SSR and streaming SSR?</dt>
+  <dd>SSR buffers the full HTML and sends one response. Streaming sends the shell (with Suspense fallbacks in the holes) as soon as it is ready, then appends one HTML chunk per boundary over the same chunked response as each resolves.</dd>
+
+  <dt>What makes an App Router route <em>dynamic</em> instead of static?</dt>
+  <dd>Reading the request during render: <code>cookies()</code>, <code>headers()</code>, <code>connection()</code>, the <code>searchParams</code> prop, a <code>fetch</code> with <code>cache: "no-store"</code> — or <code>export const dynamic = "force-dynamic"</code>. Awaiting <code>params</code> alone does not.</dd>
+
+  <dt>What does <code>export const revalidate = 60</code> do on a static route?</dt>
+  <dd>Makes it ISR: the built HTML is served (even if stale) and regenerated in the background at most once every 60 seconds. It has no effect on a dynamic route.</dd>
+
+  <dt>What is hydration, and what does the user see before it finishes?</dt>
+  <dd>React runs the Client Components in the browser and attaches event handlers to the server-rendered DOM instead of creating it. Before it finishes the page is painted but inert — clicks on JS-driven controls do nothing.</dd>
+
+  <dt>PPR serves a page in two stages — what are they and where does each run?</dt>
+  <dd>A static shell prerendered at build and served from the CDN; then the <code>&lt;Suspense&gt;</code> holes rendered at request time on the origin and streamed into it. Next 15: experimental, canary only, <code>experimental_ppr = true</code> per route.</dd>
+
+  <dt>What does this print, in order?
+<pre><code class="language-javascript">await render({ children: [
+  { name: "Nav",     delay: 20 },                  // no Suspense
+  { name: "Feed",    delay: 45, suspense: true },
+  { name: "Sidebar", delay: 10, suspense: true },
+] });  // render: suspended children stream after the shell; others are awaited first</code></pre></dt>
+  <dd><code>shell</code> (after Nav's 20 ms), <code>chunk: Sidebar</code>, <code>chunk: Feed</code>. An un-suspended await blocks the shell; boundaries flush in resolve order, not tree order.</dd>
+
+  <dt>A product page: hero image and name are the same for everyone; the "in stock" badge hits a live inventory API. Which strategy?</dt>
+  <dd>Static (or ISR) page with the badge in its own <code>&lt;Suspense&gt;</code> boundary — PPR when available: static shell from the CDN, stock streamed per request.</dd>
+
+  <dt>Why is <code>const session = await getSession()</code> in a layout a streaming problem?</dt>
+  <dd>Nothing in the layout is under a Suspense boundary, so the await sits on the shell's critical path: every page beneath waits for the session before the first byte is sent.</dd>
+</dl>
+</section>
+</article>
+<script type="module" src="/assets/runtime/boot.js"></script>
+</body>
+</html>

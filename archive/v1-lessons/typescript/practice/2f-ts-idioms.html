@@ -1,0 +1,560 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>2f. TS idioms · JS Curriculum</title>
+<link rel="icon" href="/assets/favicon.svg">
+<link rel="stylesheet" href="/assets/vendor/prism.css">
+<link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body data-lesson="2f" data-level="interactive">
+<article class="lesson">
+
+<header>
+  <h1>TS Idioms</h1>
+</header>
+
+<section class="block" data-block="concept" id="2f-10">
+<p>The type system of 2b–2d is static; the program it describes runs on untyped data. Every idiom here is about the boundary between the two: how a value of unknown shape becomes a typed one (<strong>narrowing</strong>), when that step is a real check (<code>typeof</code>, <code>in</code>, type guards, assertion functions) versus a promise you make to the compiler (<code>as</code>), and how to make the compiler prove you handled every case (<code>never</code>). 2g applies these to props and reducers; 2h puts a schema parser at the boundary so you rarely write the guards by hand.</p>
+</section>
+
+<section class="block" data-block="concept" id="2f-01">
+<h2><code>any</code> vs <code>unknown</code></h2>
+<ul>
+  <li><code>any</code> — opts out of type checking. Anything is assignable to it and it is assignable to anything, so it spreads through inferred types silently. <strong>Avoid.</strong></li>
+  <li><code>unknown</code> — the safe top type. Anything is assignable <em>to</em> it, but it is assignable to nothing else: you must narrow before use. <strong>Prefer this</strong> for <code>JSON.parse</code> results, <code>catch (e)</code>, event payloads, anything from outside the program.</li>
+</ul>
+
+<pre><code class="language-typescript">function parse(raw: unknown) {
+  if (typeof raw === "string") return raw.toUpperCase();  // narrowed: string
+  if (raw instanceof Error) return raw.message;           // narrowed: Error
+  throw new Error("unexpected");
+}</code></pre>
+<p>Narrowing is <strong>control-flow analysis</strong>: inside the <code>if</code>, and after an early <code>return</code>/<code>throw</code>, TS tracks a smaller type for the same variable. It works on <code>typeof</code>, <code>instanceof</code>, <code>in</code>, equality against literals, truthiness, and the two user-defined forms below.</p>
+</section>
+
+<section class="block" data-block="diagram" id="2f-11">
+<div class="tag">Mechanism</div>
+<script type="application/json">{
+  "direction": "down",
+  "nodes": [
+    { "id": "unk",      "label": "unknown", "kind": "pill", "row": 0 },
+    { "id": "typeof",   "label": "typeof x ===", "kind": "box", "row": 1 },
+    { "id": "inst",     "label": "x instanceof C", "kind": "box", "row": 1 },
+    { "id": "inop",     "label": "\"key\" in x", "kind": "box", "row": 1 },
+    { "id": "guard",    "label": "isT(x): x is T", "kind": "box", "row": 1 },
+    { "id": "asserts",  "label": "assertT(x):\nasserts x is T", "kind": "box", "row": 1 },
+    { "id": "as",       "label": "x as T", "kind": "note", "row": 1 },
+    { "id": "branch",   "label": "T inside\nthe if-branch", "kind": "pill", "row": 2 },
+    { "id": "scope",    "label": "T for the rest\nof the scope", "kind": "pill", "row": 2 },
+    { "id": "unchecked","label": "T, unchecked\n(you promised)", "kind": "pill", "row": 2 }
+  ],
+  "edges": [
+    { "from": "unk", "to": "typeof" },
+    { "from": "unk", "to": "inst" },
+    { "from": "unk", "to": "inop" },
+    { "from": "unk", "to": "guard" },
+    { "from": "unk", "to": "asserts" },
+    { "from": "unk", "to": "as", "dashed": true },
+    { "from": "typeof", "to": "branch", "label": "runtime check" },
+    { "from": "inst",   "to": "branch" },
+    { "from": "inop",   "to": "branch" },
+    { "from": "guard",  "to": "branch" },
+    { "from": "asserts","to": "scope", "label": "throws otherwise" },
+    { "from": "as",     "to": "unchecked", "label": "no check", "dashed": true }
+  ]
+}</script>
+<p class="caption">Five of the six paths out of <code>unknown</code> run code at runtime and narrow only where that code proved something. <code>as</code> is the dashed one: it compiles to nothing, so it narrows without evidence.</p>
+</section>
+
+<section class="block" data-block="bridge" id="2f-12">
+<div class="tag">Python bridge</div>
+<p><code>unknown</code> ≈ <code>object</code>, <code>any</code> ≈ <code>typing.Any</code> — same contagion. A type guard <code>x is Cat</code> ≈ <code>TypeGuard[Cat]</code> (3.10) or the stricter <code>TypeIs[Cat]</code> (3.13), which also narrows the <em>else</em> branch like TS does. <code>as</code> ≈ <code>typing.cast</code>: zero runtime effect, pure assertion to the checker. <code>never</code> ≈ <code>Never</code> and the exhaustiveness idiom is <code>assert_never(x)</code> (3.11). Branded types ≈ <code>NewType("UserId", str)</code>. No Python equivalent exists for <code>asserts x is T</code> — mypy narrows an inline <code>assert isinstance(x, str)</code>, but a <em>function</em> that asserts does not narrow at its call site.</p>
+</section>
+
+<section class="block" data-block="concept" id="2f-02">
+<h2>Type guards — custom predicates</h2>
+<p>A function returning <code>x is Cat</code> is a boolean function the checker trusts: in the true branch <code>x</code> is <code>Cat</code>, in the false branch the <code>Cat</code> member is removed from the union. The body is ordinary runtime code — and the checker does <em>not</em> verify that the body actually proves the predicate.</p>
+<pre><code class="language-typescript">type Cat = { kind: "cat"; meows: boolean };
+type Dog = { kind: "dog"; barks: boolean };
+
+function isCat(x: Cat | Dog): x is Cat {
+  return x.kind === "cat";
+}
+
+function speak(pet: Cat | Dog) {
+  if (isCat(pet)) return pet.meows ? "meow" : "…";   // pet: Cat
+  return pet.barks ? "woof" : "…";                     // pet: Dog
+}
+
+// Guards from unknown are where they earn their keep:
+function isUser(x: unknown): x is { id: string; email: string } {
+  return typeof x === "object" &amp;&amp; x !== null
+    &amp;&amp; typeof (x as { id?: unknown }).id === "string"
+    &amp;&amp; typeof (x as { email?: unknown }).email === "string";
+}</code></pre>
+<div class="callout warn">
+  <div class="tag">A guard can lie</div>
+  <p><code>function isUser(x: unknown): x is User { return typeof x === "object"; }</code> compiles. Every object now passes as a <code>User</code>, and the <code>TypeError</code> shows up three modules away. The predicate return type is a contract you wrote; the body has to honour it.</p>
+</div>
+</section>
+
+<section class="block" data-block="playground" id="2f-13" data-lang="ts">
+<div class="tag">Try it</div>
+<p>Types are stripped before this runs — what's left is the guard bodies. Try: pass <code>{ id: 7, email: "x" }</code> to <code>isUser</code>; remove the <code>x !== null</code> check and call <code>isUser(null)</code>; make <code>parse</code> return <code>raw</code> unchanged in the fallthrough instead of throwing.</p>
+<pre><code class="language-typescript">function parse(raw: unknown): string {
+  if (typeof raw === "string") return raw.toUpperCase();
+  if (raw instanceof Error) return raw.message;
+  throw new Error("unexpected " + typeof raw);
+}
+
+type User = { id: string; email: string };
+function isUser(x: unknown): x is User {
+  return typeof x === "object" &amp;&amp; x !== null
+    &amp;&amp; typeof (x as { id?: unknown }).id === "string"
+    &amp;&amp; typeof (x as { email?: unknown }).email === "string";
+}
+
+console.log(parse("hi"));
+console.log(parse(new Error("boom")));
+try { parse(42); } catch (e) { console.log((e as Error).message); }
+
+console.log(isUser({ id: "u1", email: "a@b.c" }));
+console.log(isUser({ id: "u1" }));
+console.log(isUser(JSON.parse('{"id":"u2","email":"x@y.z","extra":1}')));</code></pre>
+<output>HI
+boom
+unexpected number
+true
+false
+true</output>
+</section>
+
+<section class="block" data-block="concept" id="2f-03">
+<h2><code>in</code> narrowing — discriminated unions without a kind field</h2>
+<p>When a union lacks a shared discriminant field, <code>"key" in x</code> narrows to the members that declare that key (required <em>or</em> optional). At runtime <code>in</code> checks key <em>presence</em>, including on the prototype chain — a key holding <code>undefined</code> or <code>null</code> still counts as present.</p>
+
+<pre><code class="language-typescript">type ApiSuccess = { data: unknown };
+type ApiError   = { error: string; code: number };
+type ApiResult  = ApiSuccess | ApiError;
+
+function handle(result: ApiResult) {
+  if ("error" in result) {
+    console.error(result.code, result.error);   // result: ApiError
+  } else {
+    render(result.data);                        // result: ApiSuccess
+  }
+}
+
+// Also works when one branch has a field the other doesn't
+type WithId    = { id: string; name: string };
+type WithoutId = { name: string };
+function label(x: WithId | WithoutId) {
+  return "id" in x ? `#${x.id}` : x.name;        // x: WithId in the true branch
+}</code></pre>
+</section>
+
+<section class="block" data-block="exercise" id="2f-14" data-kind="predict" data-lang="ts">
+<div class="tag">Exercise</div>
+<p><code>in</code> narrows on key presence. What does this print? One value per line.</p>
+<pre><code class="language-typescript">type WithId    = { id: string; name: string };
+type WithoutId = { name: string };
+
+function label(x: WithId | WithoutId) {
+  return "id" in x ? `#${x.id}` : x.name;
+}
+
+console.log(label({ name: "a" }));
+console.log(label({ id: "7", name: "b" }));
+console.log(label(JSON.parse('{"id":null,"name":"c"}')));
+console.log("id" in { id: undefined });
+console.log("toString" in {});</code></pre>
+<script type="application/json">{
+  "expected": "a\n#7\n#null\ntrue\ntrue",
+  "hints": [
+    "<code>JSON.parse</code> returns <code>any</code>, so the third call type-checks; the runtime object has a real key <code>id</code> whose value is <code>null</code>.",
+    "<code>in</code> asks \"does this key exist\", not \"is this value defined\" — and it walks the prototype chain."
+  ],
+  "explain": "Lines 1–2 are the designed cases. Line 3 shows the boundary problem: the type said <code>id: string</code>, the data had <code>id: null</code>, and <code>in</code> happily narrowed to <code>WithId</code> — so <code>x.id</code> is <code>null</code> and the template prints <code>#null</code>. Line 4: an explicit <code>undefined</code> is still a present key. Line 5: <code>toString</code> lives on <code>Object.prototype</code>, and <code>in</code> finds it. None of this is a TS bug; the untrusted data needed a real check (2h)."
+}</script>
+</section>
+
+<section class="block" data-block="concept" id="2f-04">
+<h2>Assertion functions</h2>
+<p>An assertion function narrows for all code after the call. The signature <code>asserts x is T</code> tells the checker: if this returns normally, <code>x</code> is <code>T</code>. If it throws, the rest of the scope is unreachable for the bad case.</p>
+
+<pre><code class="language-typescript">function assertIsString(x: unknown): asserts x is string {
+  if (typeof x !== "string") throw new Error(`Expected string, got ${typeof x}`);
+}
+
+function assertDefined&lt;T&gt;(x: T | null | undefined, what = "value"): asserts x is T {
+  if (x == null) throw new Error(`Expected ${what} to be defined`);
+}
+
+const raw: unknown = JSON.parse(input);
+assertIsString(raw);
+raw.toUpperCase();          // OK — raw: string from here on
+
+const user = users.find(u =&gt; u.id === id);   // User | undefined
+assertDefined(user, "user");
+user.email;                 // OK — user: User</code></pre>
+
+<div class="callout review">
+  <div class="tag">Assertion vs type guard</div>
+  <p>A type guard (<code>x is T</code>) is for <code>if</code> branches — both outcomes continue. An assertion function (<code>asserts x is T</code>) is for invariants — the wrong case is a bug and should throw. Reach for guards at boundaries where both shapes are legitimate, assertions where the other shape means the program is already broken.</p>
+</div>
+<div class="callout warn">
+  <div class="tag">Explicit annotation required</div>
+  <p>An assertion function must have an explicit return-type annotation; <code>const assertDefined = (x) =&gt; { … }</code> without <code>: asserts x is T</code> is an ordinary <code>void</code> function and narrows nothing. The same applies when you call it through a variable whose type was inferred: TS 3.7+ requires every name in the call chain to be explicitly typed.</p>
+</div>
+</section>
+
+<section class="block" data-block="exercise" id="2f-15" data-kind="fix" data-lang="ts">
+<div class="tag">Exercise</div>
+<p><code>isOrder</code> is a type guard that lies: it returns <code>true</code> for any non-null object, so malformed webhook payloads reach <code>total()</code> and crash. Fix the guard so it only accepts objects where <code>id</code> is a string and <code>items</code> is an array whose every element has a numeric <code>price</code>. Tests feed it good payloads, partial ones, wrong primitive types, and <code>null</code>.</p>
+<pre><code class="language-typescript">type Item  = { price: number };
+type Order = { id: string; items: Item[] };
+
+// --- fix this guard
+function isOrder(x: unknown): x is Order {
+  return typeof x === "object" &amp;&amp; x !== null;
+}
+
+function total(payload: unknown): number {
+  if (!isOrder(payload)) throw new Error("bad payload");
+  return payload.items.reduce((sum, it) =&gt; sum + it.price, 0);
+}
+
+console.log(total({ id: "o1", items: [{ price: 2 }, { price: 3 }] }));</code></pre>
+<script type="application/json">{
+  "tests": "test(\"accepts a well-formed order\", () => { assert.equal(isOrder({ id: \"o1\", items: [{ price: 2 }] }), true); assert.equal(total({ id: \"o1\", items: [{ price: 2 }, { price: 3 }] }), 5); });\ntest(\"accepts an empty items array\", () => assert.equal(total({ id: \"o2\", items: [] }), 0));\ntest(\"rejects null and primitives\", () => { assert.equal(isOrder(null), false); assert.equal(isOrder(\"order\"), false); assert.equal(isOrder(42), false); });\ntest(\"rejects missing or wrongly typed fields\", () => { assert.equal(isOrder({}), false); assert.equal(isOrder({ id: 1, items: [] }), false); assert.equal(isOrder({ id: \"o3\" }), false); assert.equal(isOrder({ id: \"o3\", items: \"none\" }), false); });\ntest(\"rejects items without a numeric price\", () => { assert.equal(isOrder({ id: \"o4\", items: [{ price: \"9\" }] }), false); assert.equal(isOrder({ id: \"o4\", items: [{}] }), false); assert.throws(() => total({ id: \"o4\", items: [{ price: \"9\" }] })); });",
+  "hints": [
+    "Check the object first, then each field: <code>typeof o.id === \"string\"</code>, <code>Array.isArray(o.items)</code>.",
+    "To read fields off an <code>unknown</code> after the object check, cast once to a loose shape: <code>const o = x as { id?: unknown; items?: unknown }</code>.",
+    "Finish with <code>o.items.every(it =&gt; typeof it === \"object\" &amp;&amp; it !== null &amp;&amp; typeof (it as { price?: unknown }).price === \"number\")</code>."
+  ],
+  "solution": "type Item  = { price: number };\ntype Order = { id: string; items: Item[] };\n\n// --- fixed guard\nfunction isOrder(x: unknown): x is Order {\n  if (typeof x !== \"object\" || x === null) return false;\n  const o = x as { id?: unknown; items?: unknown };\n  if (typeof o.id !== \"string\" || !Array.isArray(o.items)) return false;\n  return o.items.every(it =>\n    typeof it === \"object\" && it !== null && typeof (it as { price?: unknown }).price === \"number\");\n}\n\nfunction total(payload: unknown): number {\n  if (!isOrder(payload)) throw new Error(\"bad payload\");\n  return payload.items.reduce((sum, it) => sum + it.price, 0);\n}\n\nconsole.log(total({ id: \"o1\", items: [{ price: 2 }, { price: 3 }] }));",
+  "explain": "The predicate type <code>x is Order</code> is a promise; the compiler checks the callers against it, never the body. A guard that under-checks is an <code>as</code> cast wearing a function signature. The fixed body checks exactly the fields <code>total</code> relies on — which is also why, in 2h, this becomes a schema (<code>z.object({ id: z.string(), items: z.array(…) })</code>) instead of hand-written <code>typeof</code> ladders."
+}</script>
+</section>
+
+<section class="block" data-block="concept" id="2f-05">
+<h2>Type assertions with <code>as</code></h2>
+<pre><code class="language-typescript">// Legitimate: you know more than TS — e.g. after a DOM query
+const input = document.getElementById("search") as HTMLInputElement;
+
+// Legitimate: fixing inference, not overriding it
+const routes = ["home", "about"] as const;           // readonly ["home", "about"], not string[]
+const empty = [] as string[];                        // instead of never[]
+
+// Unnecessary: a schema parse already produced the type (2h)
+const user = result.data;                            // User — no cast needed
+
+// Dangerous: bypasses all checks — only as a last resort
+const x = someOpaque as unknown as SpecificType;     // double-cast is a red flag in review</code></pre>
+
+<div class="callout warn">
+  <div class="tag">as is a cast, not a conversion</div>
+  <p><code>as</code> does not transform the value — it is erased on emit and only silences the checker. If the runtime value doesn't match, you get silent corruption later, not an error now. TS refuses a cast between types that don't overlap at all (<code>"x" as number</code>), which is what the <code>as unknown as T</code> double cast defeats. When you reach for <code>as</code>, ask: can I use a type guard, an assertion function, or a schema parse instead?</p>
+</div>
+</section>
+
+<section class="block" data-block="concept" id="2f-06">
+<h2>Exhaustiveness with <code>never</code></h2>
+<p>In a <code>switch</code> over a discriminant, each <code>case</code> removes a member from the union. After every member is handled, the remaining type is <code>never</code> — and <code>never</code> is the only type assignable to a <code>never</code> parameter. Adding a union member later makes the <code>default</code> branch a compile error at the exact spot that needs a new <code>case</code>.</p>
+<pre><code class="language-typescript">type Shape =
+  | { kind: "circle"; r: number }
+  | { kind: "square"; side: number }
+  | { kind: "tri"; b: number; h: number };
+
+function assertNever(x: never): never {
+  throw new Error("Unhandled case: " + JSON.stringify(x));
+}
+
+function area(s: Shape): number {
+  switch (s.kind) {
+    case "circle": return Math.PI * s.r ** 2;
+    case "square": return s.side ** 2;
+    case "tri":    return (s.b * s.h) / 2;
+    default:       return assertNever(s);   // s: never here; error if a kind is missing
+  }
+}</code></pre>
+<p>The runtime <code>throw</code> is not redundant: data from outside (a stale client, a hand-edited row) can carry a <code>kind</code> the type never allowed. <code>assertNever</code> is both a compile-time proof and a runtime guard.</p>
+</section>
+
+<section class="block" data-block="stepper" id="2f-16" data-kind="chain">
+<div class="tag">Step through</div>
+<script type="application/json">{
+  "code": "type Shape =\n  | { kind: \"circle\"; r: number }\n  | { kind: \"square\"; side: number }\n  | { kind: \"tri\"; b: number; h: number };\nfunction area(s: Shape): number {\n  switch (s.kind) {\n    case \"circle\": return Math.PI * s.r ** 2;\n    case \"square\": return s.side ** 2;\n    case \"tri\":    return (s.b * s.h) / 2;\n    default:       return assertNever(s);\n  }\n}",
+  "steps": [
+    { "label": "Enter the switch", "line": 6, "note": "<code>s</code> is the whole union. Control-flow analysis will subtract one member per handled <code>case</code>.",
+      "state": { "nodes": [
+        { "id": "s", "label": "s: Shape (remaining)", "fields": ["kind: \"circle\"", "kind: \"square\"", "kind: \"tri\""] },
+        { "id": "c", "label": "case \"circle\"", "fields": ["s: { kind: \"circle\"; r }"] },
+        { "id": "q", "label": "case \"square\"", "fields": ["s: { kind: \"square\"; side }"] },
+        { "id": "t", "label": "case \"tri\"", "fields": ["s: { kind: \"tri\"; b; h }"] },
+        { "id": "d", "label": "default", "fields": ["s: never"] } ],
+        "edges": [["s", "c", "s.kind === …"], ["c", "q", "else"], ["q", "t", "else"], ["t", "d", "else"]],
+        "active": ["s"] } },
+    { "label": "case \"circle\"", "line": 7, "note": "Inside this branch the discriminant is known, so <code>s</code> is the one member with <code>kind: \"circle\"</code> — <code>s.r</code> type-checks.",
+      "state": { "nodes": [
+        { "id": "s", "label": "s: Shape (remaining)", "fields": ["kind: \"circle\"", "kind: \"square\"", "kind: \"tri\""] },
+        { "id": "c", "label": "case \"circle\"", "fields": ["s: { kind: \"circle\"; r }"] },
+        { "id": "q", "label": "case \"square\"", "fields": ["s: { kind: \"square\"; side }"] },
+        { "id": "t", "label": "case \"tri\"", "fields": ["s: { kind: \"tri\"; b; h }"] },
+        { "id": "d", "label": "default", "fields": ["s: never"] } ],
+        "edges": [["s", "c", "s.kind === …"], ["c", "q", "else"], ["q", "t", "else"], ["t", "d", "else"]],
+        "active": ["c"] } },
+    { "label": "Circle eliminated", "line": 8, "note": "The <code>case</code> returned, so on the fall-through path <code>s</code> can't be a circle any more. The checker subtracts it from the union.",
+      "state": { "nodes": [
+        { "id": "s", "label": "s: Shape (remaining)", "fields": ["kind: \"square\"", "kind: \"tri\""] },
+        { "id": "c", "label": "case \"circle\"", "fields": ["s: { kind: \"circle\"; r }"] },
+        { "id": "q", "label": "case \"square\"", "fields": ["s: { kind: \"square\"; side }"] },
+        { "id": "t", "label": "case \"tri\"", "fields": ["s: { kind: \"tri\"; b; h }"] },
+        { "id": "d", "label": "default", "fields": ["s: never"] } ],
+        "edges": [["s", "c", "s.kind === …"], ["c", "q", "else"], ["q", "t", "else"], ["t", "d", "else"]],
+        "active": ["s"] } },
+    { "label": "case \"square\"", "line": 8, "note": "Same rule: inside the branch, <code>s</code> is the square member; <code>s.side</code> exists.",
+      "state": { "nodes": [
+        { "id": "s", "label": "s: Shape (remaining)", "fields": ["kind: \"square\"", "kind: \"tri\""] },
+        { "id": "c", "label": "case \"circle\"", "fields": ["s: { kind: \"circle\"; r }"] },
+        { "id": "q", "label": "case \"square\"", "fields": ["s: { kind: \"square\"; side }"] },
+        { "id": "t", "label": "case \"tri\"", "fields": ["s: { kind: \"tri\"; b; h }"] },
+        { "id": "d", "label": "default", "fields": ["s: never"] } ],
+        "edges": [["s", "c", "s.kind === …"], ["c", "q", "else"], ["q", "t", "else"], ["t", "d", "else"]],
+        "active": ["q"] } },
+    { "label": "Square eliminated", "line": 9, "note": "Two members handled, one left. The remaining type is now a single object type, not a union.",
+      "state": { "nodes": [
+        { "id": "s", "label": "s: Shape (remaining)", "fields": ["kind: \"tri\""] },
+        { "id": "c", "label": "case \"circle\"", "fields": ["s: { kind: \"circle\"; r }"] },
+        { "id": "q", "label": "case \"square\"", "fields": ["s: { kind: \"square\"; side }"] },
+        { "id": "t", "label": "case \"tri\"", "fields": ["s: { kind: \"tri\"; b; h }"] },
+        { "id": "d", "label": "default", "fields": ["s: never"] } ],
+        "edges": [["s", "c", "s.kind === …"], ["c", "q", "else"], ["q", "t", "else"], ["t", "d", "else"]],
+        "active": ["s"] } },
+    { "label": "case \"tri\"", "line": 9, "note": "Last member handled.",
+      "state": { "nodes": [
+        { "id": "s", "label": "s: Shape (remaining)", "fields": ["kind: \"tri\""] },
+        { "id": "c", "label": "case \"circle\"", "fields": ["s: { kind: \"circle\"; r }"] },
+        { "id": "q", "label": "case \"square\"", "fields": ["s: { kind: \"square\"; side }"] },
+        { "id": "t", "label": "case \"tri\"", "fields": ["s: { kind: \"tri\"; b; h }"] },
+        { "id": "d", "label": "default", "fields": ["s: never"] } ],
+        "edges": [["s", "c", "s.kind === …"], ["c", "q", "else"], ["q", "t", "else"], ["t", "d", "else"]],
+        "active": ["t"] } },
+    { "label": "Nothing remains: never", "line": 10, "note": "Every member subtracted — the empty union is <code>never</code>. <code>assertNever(s: never)</code> accepts it, so the file compiles.",
+      "state": { "nodes": [
+        { "id": "s", "label": "s: Shape (remaining)", "fields": ["never"] },
+        { "id": "c", "label": "case \"circle\"", "fields": ["s: { kind: \"circle\"; r }"] },
+        { "id": "q", "label": "case \"square\"", "fields": ["s: { kind: \"square\"; side }"] },
+        { "id": "t", "label": "case \"tri\"", "fields": ["s: { kind: \"tri\"; b; h }"] },
+        { "id": "d", "label": "default", "fields": ["s: never ✓ compiles"] } ],
+        "edges": [["s", "c", "s.kind === …"], ["c", "q", "else"], ["q", "t", "else"], ["t", "d", "else"]],
+        "active": ["d"] } },
+    { "label": "Later: a 4th kind is added", "line": 4, "note": "Someone adds <code>{ kind: \"hex\"; side: number }</code> to <code>Shape</code> and forgets <code>area</code>. The subtraction now leaves one member standing.",
+      "state": { "nodes": [
+        { "id": "s", "label": "s: Shape (remaining)", "fields": ["kind: \"hex\""] },
+        { "id": "c", "label": "case \"circle\"", "fields": ["s: { kind: \"circle\"; r }"] },
+        { "id": "q", "label": "case \"square\"", "fields": ["s: { kind: \"square\"; side }"] },
+        { "id": "t", "label": "case \"tri\"", "fields": ["s: { kind: \"tri\"; b; h }"] },
+        { "id": "d", "label": "default", "fields": ["s: never"] } ],
+        "edges": [["s", "c", "s.kind === …"], ["c", "q", "else"], ["q", "t", "else"], ["t", "d", "else"]],
+        "active": ["s"] } },
+    { "label": "Compile error at default", "line": 10, "note": "<code>{ kind: \"hex\" }</code> is not assignable to <code>never</code> — TS2345, pointing at the <code>switch</code> that needs a new <code>case</code>. Without <code>assertNever</code> this would have been a silent <code>undefined</code> return at runtime.",
+      "state": { "nodes": [
+        { "id": "s", "label": "s: Shape (remaining)", "fields": ["kind: \"hex\""] },
+        { "id": "c", "label": "case \"circle\"", "fields": ["s: { kind: \"circle\"; r }"] },
+        { "id": "q", "label": "case \"square\"", "fields": ["s: { kind: \"square\"; side }"] },
+        { "id": "t", "label": "case \"tri\"", "fields": ["s: { kind: \"tri\"; b; h }"] },
+        { "id": "d", "label": "default", "fields": ["s: { kind: \"hex\" }", "✗ not assignable to never"] } ],
+        "edges": [["s", "c", "s.kind === …"], ["c", "q", "else"], ["q", "t", "else"], ["t", "d", "else"]],
+        "active": ["d"] } }
+  ]
+}</script>
+</section>
+
+<section class="block" data-block="exercise" id="2f-17" data-kind="complete" data-lang="ts">
+<div class="tag">Exercise</div>
+<p>Implement <code>assertNever</code> and finish <code>describe</code>. Contract: <code>describe</code> returns <code>"card ending 4242"</code> / <code>"paypal: a@b.c"</code> / <code>"bank: DE89"</code> for the three members (last four digits, the email, the IBAN's first four chars). <code>assertNever(x: never)</code> throws an <code>Error</code> whose message contains the unexpected <code>kind</code>. Tests call <code>describe</code> with each member and with a method whose <code>kind</code> the type doesn't allow (cast through <code>any</code>, as stale data would arrive).</p>
+<pre><code class="language-typescript">type Payment =
+  | { kind: "card"; number: string }
+  | { kind: "paypal"; email: string }
+  | { kind: "bank"; iban: string };
+
+function assertNever(x: never): never {
+  // TODO: throw with the offending kind in the message
+  throw new Error("TODO");
+}
+
+function describe(p: Payment): string {
+  switch (p.kind) {
+    case "card": return "card ending " + p.number.slice(-4);
+    // TODO: paypal, bank, default → assertNever
+  }
+  return "";
+}
+
+console.log(describe({ kind: "card", number: "4111111111114242" }));</code></pre>
+<script type="application/json">{
+  "tests": "test(\"card\", () => assert.equal(describe({ kind: \"card\", number: \"4111111111114242\" }), \"card ending 4242\"));\ntest(\"paypal\", () => assert.equal(describe({ kind: \"paypal\", email: \"a@b.c\" }), \"paypal: a@b.c\"));\ntest(\"bank\", () => assert.equal(describe({ kind: \"bank\", iban: \"DE89370400440532013000\" }), \"bank: DE89\"));\ntest(\"unknown kind throws and names it\", () => { let err: unknown; try { describe({ kind: \"crypto\", wallet: \"0x1\" } as any); } catch (e) { err = e; } assert(err instanceof Error, \"should throw an Error\"); assert(/crypto/.test(err.message), \"message should contain the kind\"); });\ntest(\"assertNever itself throws\", () => assert.throws(() => assertNever({ kind: \"x\" } as never)));",
+  "hints": [
+    "<code>assertNever</code> receives <code>never</code>, which you can't read fields from without a cast: <code>(x as { kind?: string }).kind</code> or just <code>JSON.stringify(x)</code>.",
+    "Add <code>case \"paypal\"</code> and <code>case \"bank\"</code> with the string formats from the prompt, then <code>default: return assertNever(p);</code>.",
+    "Once the <code>default</code> returns, the trailing <code>return \"\"</code> is unreachable — delete it; TS knows the switch is exhaustive."
+  ],
+  "solution": "type Payment =\n  | { kind: \"card\"; number: string }\n  | { kind: \"paypal\"; email: string }\n  | { kind: \"bank\"; iban: string };\n\nfunction assertNever(x: never): never {\n  throw new Error(\"Unhandled payment kind: \" + JSON.stringify(x));\n}\n\nfunction describe(p: Payment): string {\n  switch (p.kind) {\n    case \"card\":   return \"card ending \" + p.number.slice(-4);\n    case \"paypal\": return \"paypal: \" + p.email;\n    case \"bank\":   return \"bank: \" + p.iban.slice(0, 4);\n    default:       return assertNever(p);\n  }\n}\n\nconsole.log(describe({ kind: \"card\", number: \"4111111111114242\" }));",
+  "explain": "After three <code>case</code>s the remaining type of <code>p</code> is <code>never</code>, so <code>assertNever(p)</code> compiles; add a fourth member to <code>Payment</code> and the same line becomes an error. The runtime <code>throw</code> handles the other direction — data the type never promised — and naming the <code>kind</code> in the message is what turns a 2 a.m. page into a one-line fix."
+}</script>
+</section>
+
+<section class="block" data-block="concept" id="2f-07">
+<h2><code>noUncheckedIndexedAccess</code> in practice</h2>
+<p>When this flag is on (recommended — see 2e), indexing an array or a <code>Record&lt;string, T&gt;</code> returns <code>T | undefined</code>. This forces the empty-array and missing-key cases into the code that reads them.</p>
+
+<pre><code class="language-typescript">const items = ["a", "b", "c"];
+
+const first = items[0];           // string | undefined (flag on)
+first.toUpperCase();              // Error: 'first' is possibly 'undefined'
+
+// Handle it where you read it:
+const first2 = items[0];
+if (first2 !== undefined) first2.toUpperCase();   // OK
+
+// Or reach for APIs that were always honest about absence:
+const first3 = items.at(0);       // string | undefined regardless of the flag
+const hit = items.find(s =&gt; s === "b");           // string | undefined
+
+// Iteration is unaffected — elements of a for…of / map are never undefined:
+for (const s of items) s.toUpperCase();           // OK</code></pre>
+<div class="callout warn">
+  <div class="tag">Not a substitute for a length check</div>
+  <p><code>if (items.length &gt; 0) items[0].toUpperCase()</code> is still an error: TS doesn't correlate <code>length</code> with index types. Either read into a variable and test it, or destructure: <code>const [head] = items;</code> gives <code>string | undefined</code> once and you narrow that.</p>
+</div>
+</section>
+
+<section class="block" data-block="concept" id="2f-08">
+<h2><code>satisfies</code> — validate shape without widening</h2>
+<p>See 2d for the mechanics. The payoff: a compile-time shape check <em>and</em> TS keeps the literal / narrower inferred type for use after the declaration. An annotation (<code>: Theme</code>) replaces the inferred type with the declared one; <code>satisfies</code> only checks against it.</p>
+
+<pre><code class="language-typescript">type Theme = { colors: Record&lt;string, string&gt; };
+
+const theme = {
+  colors: {
+    primary: "#0070f3",
+    danger: "#ff0000",
+  },
+} satisfies Theme;
+
+theme.colors.primary.startsWith("#");   // OK — primary: string, key known to exist
+theme.colors.warning;                   // Error — no such key (inference kept the exact keys)
+
+const theme2: Theme = { colors: { primary: "#0070f3" } };
+theme2.colors.primary;                  // string | undefined with noUncheckedIndexedAccess —
+                                        // the annotation widened colors to Record&lt;string, string&gt;</code></pre>
+</section>
+
+<section class="block" data-block="exercise" id="2f-18" data-kind="mcq">
+<div class="tag">Check</div>
+<p><code>noUncheckedIndexedAccess</code> is on. Given <code>type Theme = { colors: Record&lt;string, string&gt; }</code>, which declaration lets <code>theme.colors.primary.startsWith("#")</code> compile <em>and</em> rejects a value with <code>colors: { primary: 7 }</code>?</p>
+<script type="application/json">{
+  "options": [
+    "<code>const theme: Theme = { colors: { primary: \"#0070f3\" } }</code>",
+    "<code>const theme = { colors: { primary: \"#0070f3\" } } satisfies Theme</code>",
+    "<code>const theme = { colors: { primary: \"#0070f3\" } } as Theme</code>",
+    "<code>const theme = { colors: { primary: \"#0070f3\" } } as const</code>"
+  ],
+  "answer": 1,
+  "explain": "The annotation (A) checks the shape but widens <code>colors</code> to <code>Record&lt;string, string&gt;</code>, so <code>primary</code> is <code>string | undefined</code> under the flag — error. <code>as</code> (C) also widens and skips the check for a number. <code>as const</code> (D) keeps the literal but never compares against <code>Theme</code>, so <code>primary: 7</code> passes. Only <code>satisfies</code> (B) does both: checked against <code>Theme</code>, inferred type kept."
+}</script>
+</section>
+
+<section class="block" data-block="concept" id="2f-09">
+<h2>Branded types — nominal typing on demand</h2>
+<p>TS is structural: two <code>string</code>s are interchangeable even if one is a user id and the other an order id. A <strong>brand</strong> intersects the primitive with a phantom property that only exists at the type level, so the two aliases stop being assignable to each other. Nothing changes at runtime; the brand is applied once, at the place that validated the value.</p>
+<pre><code class="language-typescript">declare const brand: unique symbol;
+type Brand&lt;T, Name extends string&gt; = T &amp; { readonly [brand]: Name };
+
+type UserId  = Brand&lt;string, "UserId"&gt;;
+type OrderId = Brand&lt;string, "OrderId"&gt;;
+
+function parseUserId(s: string): UserId {
+  if (!/^u_[a-z0-9]{8}$/.test(s)) throw new Error(`bad user id: ${s}`);
+  return s as UserId;                 // the one sanctioned cast: right after the check
+}
+
+function loadUser(id: UserId) { /* … */ }
+
+loadUser(parseUserId("u_1a2b3c4d"));  // OK
+loadUser("u_1a2b3c4d");               // Error: string is not UserId
+loadUser(orderId);                    // Error: OrderId is not UserId</code></pre>
+<p><code>unique symbol</code> keeps the brand out of autocomplete and out of <code>Object.keys</code> expectations; the older <code>{ __brand: "UserId" }</code> spelling works the same way but shows up as a real-looking property.</p>
+</section>
+
+<section class="block" data-block="review" id="2f-19">
+<div class="tag">Code review</div>
+<ul>
+  <li><strong><code>as</code> on data from outside the process.</strong> <code>JSON.parse(body) as Order</code>, <code>req.body as CreateUser</code>, <code>await res.json() as User[]</code>. The cast is erased; the first wrong field is a <code>TypeError</code> in a different module. Parse with a schema (2h) or a real guard. ESLint: <code>@typescript-eslint/consistent-type-assertions</code> can forbid object-literal casts.</li>
+  <li><strong>Guards that under-check.</strong> <code>x is User</code> with a body that only tests <code>typeof x === "object"</code>. Reviewers read guard bodies against the predicate type field by field.</li>
+  <li><strong><code>any</code> in a signature.</strong> One <code>any</code> parameter poisons every inferred type downstream. <code>unknown</code> plus narrowing, or a generic. ESLint: <code>@typescript-eslint/no-explicit-any</code>, <code>no-unsafe-*</code>.</li>
+  <li><strong>Non-null assertions (<code>!</code>) to silence <code>noUncheckedIndexedAccess</code>.</strong> <code>items[0]!</code> is the empty-array bug the flag exists to catch. Narrow the value or use <code>at()</code> / <code>find()</code> and handle <code>undefined</code>. ESLint: <code>@typescript-eslint/no-non-null-assertion</code>.</li>
+  <li><strong><code>switch</code> over a union with no <code>default: assertNever</code>.</strong> Adding a member compiles and silently returns <code>undefined</code>. ESLint: <code>@typescript-eslint/switch-exhaustiveness-check</code>.</li>
+  <li><strong><code>@ts-ignore</code>.</strong> Suppresses forever, including errors that appear later on that line. <code>@ts-expect-error</code> fails the build once the error is gone, so the suppression can't outlive its reason. ESLint: <code>@typescript-eslint/ban-ts-comment</code>.</li>
+  <li><strong><code>catch (e: any)</code>.</strong> <code>useUnknownInCatchVariables</code> (part of <code>strict</code>) makes <code>e</code> <code>unknown</code> on purpose: anything can be thrown. Narrow with <code>e instanceof Error</code> before reading <code>.message</code>.</li>
+</ul>
+</section>
+
+<section class="block" data-block="exercise" id="2f-20" data-kind="mcq">
+<div class="tag">Check</div>
+<p>A handler does <code>const order = JSON.parse(body) as Order;</code> and passes <code>order</code> through four service layers to <code>order.items.map(…)</code>. A client sends <code>{"id":"o1"}</code> with no <code>items</code>. Where does the failure surface?</p>
+<script type="application/json">{
+  "options": [
+    "At the <code>as Order</code> line: the cast throws because the value doesn't match the type.",
+    "Nowhere: <code>order.items</code> is typed <code>Item[]</code>, so <code>map</code> returns an empty array.",
+    "At <code>order.items.map</code>, four layers away, as <code>TypeError: Cannot read properties of undefined</code> — the cast was erased and no layer in between checked anything.",
+    "At compile time: TS reports that <code>JSON.parse</code> returns <code>any</code> and refuses the cast."
+  ],
+  "answer": 2,
+  "explain": "<code>as</code> compiles to nothing (2f-05), and every layer trusts the type it was handed. The crash lands wherever the missing field is first dereferenced, with a stack trace that doesn't mention the request. A guard or schema parse at the boundary (<code>isOrder</code> from the fix exercise, or <code>OrderSchema.parse</code> in 2h) turns this into a 400 with a field name."
+}</script>
+</section>
+
+<section class="block" data-block="recall" id="2f-21">
+<div class="tag">Recall</div>
+<dl>
+  <dt>What is the one-line difference between <code>any</code> and <code>unknown</code>?</dt>
+  <dd>Both accept any value; <code>any</code> is also assignable to everything (checks off, spreads through inference), <code>unknown</code> is assignable to nothing until you narrow it.</dd>
+
+  <dt>Which narrowing forms run code at runtime, and which one doesn't?</dt>
+  <dd><code>typeof</code>, <code>instanceof</code>, <code>in</code>, literal equality, type guards (<code>x is T</code>) and assertion functions (<code>asserts x is T</code>) all execute a check. <code>as</code> is erased on emit and narrows with no check.</dd>
+
+  <dt>Type guard vs assertion function — when do you use which?</dt>
+  <dd>Guard (<code>x is T</code>) for <code>if</code> branches where both outcomes are legitimate; assertion (<code>asserts x is T</code>) for invariants — it throws on the bad case and narrows for the rest of the scope. Both need explicit return-type annotations.</dd>
+
+  <dt>What does this print?
+<pre><code class="language-typescript">function label(x: { id: string; name: string } | { name: string }) {
+  return "id" in x ? `#${x.id}` : x.name;
+}
+console.log(label(JSON.parse('{"id":null,"name":"c"}')));
+console.log("id" in { id: undefined });</code></pre></dt>
+  <dd><code>#null</code> then <code>true</code>. <code>in</code> tests key presence (including <code>undefined</code>/<code>null</code> values and the prototype chain), and the type annotation never checked the parsed data.</dd>
+
+  <dt>Why does a type guard whose body only checks <code>typeof x === "object"</code> compile, and what goes wrong?</dt>
+  <dd>The checker verifies callers against the predicate type, never the body against it. Every object passes as <code>T</code>; the <code>TypeError</code> appears wherever a missing field is first read.</dd>
+
+  <dt>How does <code>default: return assertNever(s)</code> catch a forgotten <code>case</code>?</dt>
+  <dd>Each handled <code>case</code> subtracts a member; after all are handled <code>s</code> is <code>never</code>, the only type assignable to a <code>never</code> parameter. A new member leaves <code>s</code> as that member → compile error at the <code>switch</code>. The <code>throw</code> inside also catches stale runtime data.</dd>
+
+  <dt>Under <code>noUncheckedIndexedAccess</code>, what is the type of <code>items[0]</code> for <code>items: string[]</code>, and does <code>if (items.length &gt; 0)</code> help?</dt>
+  <dd><code>string | undefined</code>. The length check doesn't narrow the index type; read into a variable (or destructure <code>const [head] = items</code>) and test that for <code>undefined</code>.</dd>
+
+  <dt><code>: Theme</code> vs <code>satisfies Theme</code> — what's kept and what's lost?</dt>
+  <dd>The annotation replaces the inferred type with <code>Theme</code> (keys widen to <code>Record</code>, values may become <code>| undefined</code>). <code>satisfies</code> checks against <code>Theme</code> but keeps the inferred literal keys and types.</dd>
+
+  <dt>What does a branded type change at runtime, and where is the <code>as</code> allowed?</dt>
+  <dd>Nothing — the brand is a phantom property (<code>unique symbol</code>) that exists only in the type. The single cast lives in the function that validated the value (<code>parseUserId</code>); everything else receives <code>UserId</code> already branded.</dd>
+</dl>
+</section>
+</article>
+<script type="module" src="/assets/runtime/boot.js"></script>
+</body>
+</html>

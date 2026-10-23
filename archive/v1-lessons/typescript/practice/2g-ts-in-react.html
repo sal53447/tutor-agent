@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>2g. TS in React · JS Curriculum</title>
+<link rel="icon" href="/assets/favicon.svg">
+<link rel="stylesheet" href="/assets/vendor/prism.css">
+<link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body data-lesson="2g" data-level="migrated">
+<article class="lesson">
+
+<header>
+  <h1>TS in React</h1>
+</header>
+
+<section class="block" data-block="concept" id="2g-01">
+<pre><code class="language-typescript">// Props
+type ButtonProps = {
+  children: React.ReactNode;
+  variant?: "primary" | "secondary";
+  onClick?: (e: React.MouseEvent&lt;HTMLButtonElement&gt;) =&gt; void;
+};
+
+function Button({ children, variant = "primary", onClick }: ButtonProps) {
+  return &lt;button data-variant={variant} onClick={onClick}&gt;{children}&lt;/button&gt;;
+}
+
+// Refs with forwardRef
+const Input = React.forwardRef&lt;HTMLInputElement, React.InputHTMLAttributes&lt;HTMLInputElement&gt;&gt;(
+  (props, ref) =&gt; &lt;input ref={ref} {...props} /&gt;
+);
+
+// State
+const [user, setUser] = useState&lt;User | null&gt;(null);
+
+// Events — get the right event type
+function onSubmit(e: React.FormEvent&lt;HTMLFormElement&gt;) { e.preventDefault(); }
+function onChange(e: React.ChangeEvent&lt;HTMLInputElement&gt;) { setValue(e.target.value); }
+
+// Generic component
+function Select&lt;T extends string&gt;(props: {
+  options: T[];
+  value: T;
+  onChange: (v: T) =&gt; void;
+}) { /* ... */ }</code></pre>
+</section>
+
+<section class="block" data-block="concept" id="2g-02">
+<h2><code>useRef</code> typing</h2>
+<pre><code class="language-typescript">// DOM ref — initial value null, type is HTMLInputElement
+// ref.current is HTMLInputElement | null (null until the element mounts)
+const inputRef = useRef&lt;HTMLInputElement&gt;(null);
+inputRef.current?.focus();
+
+// Mutable value ref — not a DOM node, holds an arbitrary value
+// Pass a non-null initial value; ref.current is number (never null)
+const timerRef = useRef&lt;number&gt;(0);
+timerRef.current = window.setTimeout(fn, 1000);</code></pre>
+
+<div class="callout review">
+  <div class="tag">null vs 0 initial value</div>
+  <p>Pass <code>null</code> when attaching to a DOM element — React sets <code>current</code> after mount. Pass a real initial value (<code>0</code>, <code>false</code>, etc.) for mutable instance variables. The initial value determines whether <code>current</code> is nullable.</p>
+</div>
+</section>
+
+<section class="block" data-block="concept" id="2g-03">
+<h2><code>useReducer</code> with discriminated union actions</h2>
+<p>This is the payoff of discriminated unions from 2b: each action is a separate type branch, and the reducer gets exhaustive checking for free.</p>
+
+<pre><code class="language-typescript">type State = { count: number; status: "idle" | "loading" | "error" };
+
+type Action =
+  | { type: "increment" }
+  | { type: "decrement" }
+  | { type: "setStatus"; status: State["status"] };
+
+function reducer(state: State, action: Action): State {
+  switch (action.type) {
+    case "increment":  return { ...state, count: state.count + 1 };
+    case "decrement":  return { ...state, count: state.count - 1 };
+    case "setStatus":  return { ...state, status: action.status };
+    // TS errors here if a new Action branch is added and not handled
+  }
+}
+
+const [state, dispatch] = useReducer(reducer, { count: 0, status: "idle" });
+dispatch({ type: "increment" });
+dispatch({ type: "setStatus", status: "loading" });
+// dispatch({ type: "typo" });   // Error — not a valid action</code></pre>
+</section>
+
+<section class="block" data-block="concept" id="2g-04">
+<h2>Context typing</h2>
+<pre><code class="language-typescript">type User = { id: string; name: string };
+type UserContextValue = { user: User; logout: () =&gt; void };
+
+// createContext requires a default — use null and handle it in the hook
+const UserContext = React.createContext&lt;UserContextValue | null&gt;(null);
+
+// Custom hook: throws if used outside the provider, returns a non-null value
+function useUserContext(): UserContextValue {
+  const ctx = React.useContext(UserContext);
+  if (!ctx) throw new Error("useUserContext must be used within UserProvider");
+  return ctx;
+}
+
+function UserProvider({ children }: { children: React.ReactNode }) {
+  const [user, setUser] = useState&lt;User | null&gt;(null);
+  if (!user) return &lt;LoginPage /&gt;;
+  return (
+    &lt;UserContext.Provider value={{ user, logout: () =&gt; setUser(null) }}&gt;
+      {children}
+    &lt;/UserContext.Provider&gt;
+  );
+}</code></pre>
+</section>
+
+<section class="block" data-block="concept" id="2g-05">
+<h2>Extending native element props</h2>
+<pre><code class="language-typescript">// ComponentProps — grab all props a native element or component accepts
+type NativeButtonProps = React.ComponentProps&lt;"button"&gt;;
+
+// Extend a native element, adding your own props
+type ButtonProps = React.ComponentPropsWithoutRef&lt;"button"&gt; &amp; {
+  variant?: "primary" | "danger";
+  loading?: boolean;
+};
+
+function Button({ variant = "primary", loading, children, ...rest }: ButtonProps) {
+  // ...rest passes through className, disabled, onClick, aria-*, etc.
+  return &lt;button {...rest} data-variant={variant}&gt;{children}&lt;/button&gt;;
+}
+
+// Use ComponentPropsWithRef when you need to forward a ref
+type InputProps = React.ComponentPropsWithRef&lt;"input"&gt; &amp; { label: string };</code></pre>
+</section>
+
+<section class="block" data-block="concept" id="2g-06">
+<h2>Generic hooks</h2>
+<pre><code class="language-typescript">// A generic fetch hook — T flows from call site to return type
+function useFetch&lt;T&gt;(url: string): { data: T | null; loading: boolean; error: Error | null } {
+  const [data, setData]       = useState&lt;T | null&gt;(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError]     = useState&lt;Error | null&gt;(null);
+
+  useEffect(() =&gt; {
+    fetch(url)
+      .then(r =&gt; r.json() as Promise&lt;T&gt;)
+      .then(setData)
+      .catch(setError)
+      .finally(() =&gt; setLoading(false));
+  }, [url]);
+
+  return { data, loading, error };
+}
+
+// Usage — T is inferred from the explicit type argument
+const { data } = useFetch&lt;User[]&gt;("/api/users");
+// data: User[] | null</code></pre>
+</section>
+
+<section class="block" data-block="concept" id="2g-07">
+<h2>Async event handlers</h2>
+<pre><code class="language-typescript">// Event handlers must return void, not Promise&lt;void&gt; — React doesn't await them.
+// Type the handler as () =&gt; void even when the body is async.
+function Form() {
+  // Correct: the onClick prop type is MouseEventHandler, which expects void
+  const handleSubmit = async (e: React.FormEvent&lt;HTMLFormElement&gt;): Promise&lt;void&gt; =&gt; {
+    e.preventDefault();
+    await submitData();   // async work is fine, React just ignores the Promise
+  };
+
+  return &lt;form onSubmit={handleSubmit}&gt;...&lt;/form&gt;;
+}
+
+// If you assign the handler to a typed variable, use Promise&lt;void&gt; as return type
+// to suppress the "floating promise" lint rule — but the prop itself stays void.</code></pre>
+
+<div class="callout review">
+  <div class="tag">Patterns to memorize</div>
+  <ul>
+    <li><code>React.ReactNode</code> for <code>children</code> (not <code>JSX.Element</code> — too narrow).</li>
+    <li>Don't type return values of components. Let TS infer.</li>
+    <li>Avoid <code>React.FC</code>. It adds implicit <code>children</code> and is going out of fashion.</li>
+    <li>For events, type the <em>handler</em>, not just the value — get autocomplete on <code>e.target</code>, <code>e.currentTarget</code>.</li>
+    <li>Use <code>ComponentPropsWithoutRef</code> when spreading native props; use <code>ComponentPropsWithRef</code> when forwarding a ref.</li>
+  </ul>
+</div>
+</section>
+</article>
+<script type="module" src="/assets/runtime/boot.js"></script>
+</body>
+</html>

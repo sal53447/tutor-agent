@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>5d. Data fetching &amp; caching · JS Curriculum</title>
+<link rel="icon" href="/assets/favicon.svg">
+<link rel="stylesheet" href="/assets/vendor/prism.css">
+<link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body data-lesson="5d" data-level="interactive">
+<article class="lesson">
+
+<header>
+  <h1>Data Fetching &amp; Caching</h1>
+</header>
+
+<section class="block" data-block="concept" id="5d-01">
+<p>Most "Next.js is behaving strangely" bugs are one of four caches doing exactly what it was told. Next 15 made every one of them <strong>opt-in</strong> — a bare <code>fetch</code> no longer lands in the Data Cache — but a static route is still prerendered once at build, so "not cached" and "fresh per request" are different claims. This lesson is the model behind those claims; 5e (Server Actions) assumes you know what <code>revalidateTag</code> purges, and 5i (production architecture) assumes you can say which cache a stale page came from.</p>
+
+<div class="callout warn">
+  <div class="tag">Next 14 vs Next 15 — breaking default</div>
+  <p>In Next 14, <code>fetch()</code> defaulted to <strong>cached indefinitely</strong> (<code>force-cache</code>), and <code>GET</code> route handlers were cached too. In Next 15 both flipped to <strong>uncached</strong>. Tutorials that say "fetch is cached by default" describe Next 14.</p>
+</div>
+</section>
+
+<section class="block" data-block="concept" id="5d-03">
+<h2>The four caches — what they actually are</h2>
+<ol>
+  <li><strong>Request memoization</strong> — per-render, in-memory dedupe of identical <code>fetch</code> calls (same URL <em>and</em> options, <code>GET</code>) inside one React render pass. Two components fetching <code>/api/user</code> → one HTTP request. Gone when the render finishes. React, not Next, does this; for non-<code>fetch</code> work use React <code>cache()</code> (5d-17).</li>
+  <li><strong>Data Cache</strong> — cross-request, persistent on the server (filesystem, or a cache handler such as Redis). Shared across <em>all</em> users. Survives deploys on Vercel. Written only by <code>fetch</code> with <code>force-cache</code> / <code>revalidate</code>, by <code>unstable_cache</code>, and by <code>"use cache"</code>. This is what <code>revalidateTag</code> purges.</li>
+  <li><strong>Full Route Cache</strong> — the rendered HTML + RSC payload of a <em>static</em> route, produced at build (or on first request with ISR). A route is static unless it uses a dynamic API (<code>cookies()</code>, <code>headers()</code>, <code>searchParams</code>, <code>connection()</code>), a <code>cache: "no-store"</code> fetch, or <code>export const dynamic = "force-dynamic"</code>.</li>
+  <li><strong>Router Cache</strong> — client-side, in-memory store of RSC payloads for routes the user visited or that were prefetched. In Next 15 dynamic pages have a <code>staleTimes.dynamic</code> of 0 (was 30 s in 14); static pages and loading boundaries stay for 5 minutes. <code>router.refresh()</code> and a <code>revalidatePath</code> in a Server Action clear it.</li>
+</ol>
+<p>Layered top to bottom, the question at each layer is what decides whether the request goes further down:</p>
+</section>
+
+<section class="block" data-block="diagram" id="5d-08">
+<div class="tag">Mechanism</div>
+<script type="application/json">{
+  "direction": "down",
+  "nodes": [
+    { "id": "router", "label": "Router Cache\nbrowser, per session", "kind": "box", "row": 0 },
+    { "id": "q_router", "label": "payload still fresh?\nstaleTimes: dynamic 0, static 5 min", "kind": "note", "row": 0 },
+    { "id": "route", "label": "Full Route Cache\nHTML + RSC payload", "kind": "cyl", "row": 1 },
+    { "id": "q_route", "label": "static route?\nno dynamic APIs, no no-store", "kind": "note", "row": 1 },
+    { "id": "memo", "label": "Request memoization\none render pass", "kind": "box", "row": 2 },
+    { "id": "q_memo", "label": "same URL + options\nalready fetched this render?", "kind": "note", "row": 2 },
+    { "id": "data", "label": "Data Cache\nserver, all users", "kind": "cyl", "row": 3 },
+    { "id": "q_data", "label": "force-cache / revalidate\n/ unstable_cache?", "kind": "note", "row": 3 },
+    { "id": "origin", "label": "Origin API / DB", "kind": "cyl", "row": 4 }
+  ],
+  "edges": [
+    { "from": "router", "to": "route", "label": "navigate → RSC request" },
+    { "from": "route", "to": "memo", "label": "render" },
+    { "from": "memo", "to": "data", "label": "fetch()" },
+    { "from": "data", "to": "origin", "label": "miss / stale" },
+    { "from": "q_router", "to": "router", "label": "no → ask server", "dashed": true },
+    { "from": "q_route", "to": "route", "label": "no → render per request", "dashed": true },
+    { "from": "q_memo", "to": "memo", "label": "yes → reuse", "dashed": true },
+    { "from": "q_data", "to": "data", "label": "no → straight to origin", "dashed": true }
+  ]
+}</script>
+<p class="caption">Every layer answers "no" by default in Next 15 except the top two, which are structural: a route with no dynamic API is prerendered whether or not its fetches are cached.</p>
+</section>
+
+<section class="block" data-block="bridge" id="5d-16">
+<div class="tag">Python bridge</div>
+<p>Django's <code>cache.get_or_set("products", load, timeout=60)</code> is the Data Cache with <code>revalidate: 60</code> — one shared, cross-request store keyed by you. <code>@cache_page(60)</code> is the Full Route Cache: the whole response, keyed by URL. Request memoization is an <code>lru_cache</code> whose lifetime is one request — Django has no built-in for it; people reach for <code>request</code>-scoped attributes or <code>django-cacheops</code>. The Router Cache has no server-side analogue at all: it is the browser remembering RSC payloads, which is why a stale page can appear with the server never having been asked. One difference matters in review: Django's <code>timeout</code> expires the entry (next reader blocks on <code>load</code>); Next's <code>revalidate</code> is <em>stale-while-revalidate</em> (next reader gets the old value, refresh happens behind them).</p>
+</section>
+
+<section class="block" data-block="concept" id="5d-07">
+<h2><code>fetch</code> in Next 15: opt-in, per call</h2>
+<p>Next patches the global <code>fetch</code> on the server to read two extra options. Nothing is written to the Data Cache unless you say so:</p>
+
+<pre><code class="language-tsx">// Default — not stored in the Data Cache. In a static route this still runs
+// ONCE, at build; only in a dynamic route does it run per request.
+const res = await fetch("https://api.example.com/products");
+
+// Explicit no-store: per request, and the route becomes dynamic.
+const res = await fetch(url, { cache: "no-store" });
+
+// Data Cache, forever (the Next 14 default) — until revalidateTag/Path.
+const res = await fetch(url, { cache: "force-cache" });
+
+// Data Cache, time-based: after 60 s the next hit is served stale and
+// triggers a background refresh (stale-while-revalidate).
+const res = await fetch(url, { next: { revalidate: 60 } });
+
+// Data Cache, tagged: purged on demand by revalidateTag("products").
+// A tag on an uncached fetch labels nothing — pair it with force-cache or revalidate.
+const res = await fetch(url, { cache: "force-cache", next: { tags: ["products"] } });</code></pre>
+
+<p>Route-level knobs exist too, exported from a <code>page.tsx</code> / <code>layout.tsx</code> / <code>route.ts</code>: <code>export const revalidate = 60</code> (applies to every fetch in the segment that doesn't set its own, and to the Full Route Cache), <code>export const dynamic = "force-dynamic"</code> (render per request), <code>export const fetchCache = "force-cache"</code> (restore Next 14 behaviour for a segment). The <em>lowest</em> <code>revalidate</code> among a route's fetches is the route's revalidation period.</p>
+
+<div class="callout warn">
+  <div class="tag">Gotcha — "uncached" is not "fresh"</div>
+  <p><code>fetch(url)</code> with no options in a page that reads no cookies, headers or search params runs at <code>next build</code> and never again. The data is baked into the Full Route Cache until the next deploy or a <code>revalidatePath</code>. If you wanted per-request data, say <code>cache: "no-store"</code> (or read a dynamic API, or <code>force-dynamic</code>). Dev mode hides this — <code>next dev</code> renders every request.</p>
+</div>
+</section>
+
+<section class="block" data-block="stepper" id="5d-09" data-kind="timeline">
+<div class="tag">Step through</div>
+<script type="application/json">{
+  "code": "// app/products/page.tsx (dynamic route — reads cookies())\nconst res = await fetch(API, { next: { revalidate: 60 } });",
+  "steps": [
+    { "label": "Request at t=0", "note": "A dynamic route renders per request. The fetch asks the Data Cache for <code>API</code> first.",
+      "state": { "lanes": [
+        { "name": "Server", "items": [{ "label": "req t=0", "state": "active" }, { "label": "req t=30", "state": "idle" }, { "label": "req t=90", "state": "idle" }, { "label": "req t=95", "state": "idle" }] },
+        { "name": "Data Cache", "items": [{ "label": "MISS", "state": "idle" }, { "label": "HIT age 30", "state": "idle" }, { "label": "STALE age 90", "state": "idle" }, { "label": "HIT age 5", "state": "idle" }] },
+        { "name": "Origin", "items": [{ "label": "fetch #1 blocking", "state": "idle" }, { "label": "fetch #2 background", "state": "idle" }] }
+      ] } },
+    { "label": "Cache miss", "note": "No entry for this URL + options. The only option is to go to the origin, and the render has to wait for it.",
+      "state": { "lanes": [
+        { "name": "Server", "items": [{ "label": "req t=0", "state": "active" }, { "label": "req t=30", "state": "idle" }, { "label": "req t=90", "state": "idle" }, { "label": "req t=95", "state": "idle" }] },
+        { "name": "Data Cache", "items": [{ "label": "MISS", "state": "active" }, { "label": "HIT age 30", "state": "idle" }, { "label": "STALE age 90", "state": "idle" }, { "label": "HIT age 5", "state": "idle" }] },
+        { "name": "Origin", "items": [{ "label": "fetch #1 blocking", "state": "idle" }, { "label": "fetch #2 background", "state": "idle" }] }
+      ] } },
+    { "label": "Origin fetch, blocking", "note": "The response is stored with <code>at = 0</code> and <code>revalidate = 60</code>. Request 1 pays the full origin latency.",
+      "state": { "lanes": [
+        { "name": "Server", "items": [{ "label": "req t=0", "state": "active" }, { "label": "req t=30", "state": "idle" }, { "label": "req t=90", "state": "idle" }, { "label": "req t=95", "state": "idle" }] },
+        { "name": "Data Cache", "items": [{ "label": "MISS", "state": "done" }, { "label": "HIT age 30", "state": "idle" }, { "label": "STALE age 90", "state": "idle" }, { "label": "HIT age 5", "state": "idle" }] },
+        { "name": "Origin", "items": [{ "label": "fetch #1 blocking", "state": "active" }, { "label": "fetch #2 background", "state": "idle" }] }
+      ] } },
+    { "label": "Request at t=30: hit", "note": "Age 30 &lt; 60. Served from the Data Cache — any user, any server instance sharing the cache handler. The origin is not contacted.",
+      "state": { "lanes": [
+        { "name": "Server", "items": [{ "label": "req t=0", "state": "done" }, { "label": "req t=30", "state": "active" }, { "label": "req t=90", "state": "idle" }, { "label": "req t=95", "state": "idle" }] },
+        { "name": "Data Cache", "items": [{ "label": "MISS", "state": "done" }, { "label": "HIT age 30", "state": "active" }, { "label": "STALE age 90", "state": "idle" }, { "label": "HIT age 5", "state": "idle" }] },
+        { "name": "Origin", "items": [{ "label": "fetch #1 blocking", "state": "done" }, { "label": "fetch #2 background", "state": "idle" }] }
+      ] } },
+    { "label": "Request at t=90: stale", "note": "Age 90 ≥ 60. The entry is <em>stale</em>, not gone. Time-based revalidation never deletes — it marks.",
+      "state": { "lanes": [
+        { "name": "Server", "items": [{ "label": "req t=0", "state": "done" }, { "label": "req t=30", "state": "done" }, { "label": "req t=90", "state": "active" }, { "label": "req t=95", "state": "idle" }] },
+        { "name": "Data Cache", "items": [{ "label": "MISS", "state": "done" }, { "label": "HIT age 30", "state": "done" }, { "label": "STALE age 90", "state": "active" }, { "label": "HIT age 5", "state": "idle" }] },
+        { "name": "Origin", "items": [{ "label": "fetch #1 blocking", "state": "done" }, { "label": "fetch #2 background", "state": "idle" }] }
+      ] } },
+    { "label": "Serve stale, refresh behind", "note": "Request 3 gets the <strong>t=0 data</strong> immediately. The origin fetch starts in the background; this request does not wait for it. That is the stale-while-revalidate contract.",
+      "state": { "lanes": [
+        { "name": "Server", "items": [{ "label": "req t=0", "state": "done" }, { "label": "req t=30", "state": "done" }, { "label": "req t=90", "state": "done" }, { "label": "req t=95", "state": "idle" }] },
+        { "name": "Data Cache", "items": [{ "label": "MISS", "state": "done" }, { "label": "HIT age 30", "state": "done" }, { "label": "STALE age 90", "state": "done" }, { "label": "HIT age 5", "state": "idle" }] },
+        { "name": "Origin", "items": [{ "label": "fetch #1 blocking", "state": "done" }, { "label": "fetch #2 background", "state": "active" }] }
+      ] } },
+    { "label": "Refresh lands", "note": "The entry is replaced: <code>at = 90</code>. A burst of stale requests during the refresh would all have been served the old value and triggered one refresh, not one each.",
+      "state": { "lanes": [
+        { "name": "Server", "items": [{ "label": "req t=0", "state": "done" }, { "label": "req t=30", "state": "done" }, { "label": "req t=90", "state": "done" }, { "label": "req t=95", "state": "idle" }] },
+        { "name": "Data Cache", "items": [{ "label": "MISS", "state": "done" }, { "label": "HIT age 30", "state": "done" }, { "label": "STALE age 90", "state": "done" }, { "label": "HIT age 5", "state": "idle" }] },
+        { "name": "Origin", "items": [{ "label": "fetch #1 blocking", "state": "done" }, { "label": "fetch #2 background", "state": "done" }] }
+      ] } },
+    { "label": "Request at t=95: fresh hit", "note": "Age 5. The new data is served. Compare on-demand invalidation (<code>revalidateTag</code>, 5d-02): that <em>purges</em>, so the next request would block on the origin instead of getting stale data.",
+      "state": { "lanes": [
+        { "name": "Server", "items": [{ "label": "req t=0", "state": "done" }, { "label": "req t=30", "state": "done" }, { "label": "req t=90", "state": "done" }, { "label": "req t=95", "state": "active" }] },
+        { "name": "Data Cache", "items": [{ "label": "MISS", "state": "done" }, { "label": "HIT age 30", "state": "done" }, { "label": "STALE age 90", "state": "done" }, { "label": "HIT age 5", "state": "active" }] },
+        { "name": "Origin", "items": [{ "label": "fetch #1 blocking", "state": "done" }, { "label": "fetch #2 background", "state": "done" }] }
+      ] } },
+    { "label": "Settled", "note": "Four requests, two origin calls, one user who saw 90-second-old data. <code>revalidate</code> is a bound on staleness, not a guarantee of freshness.",
+      "state": { "lanes": [
+        { "name": "Server", "items": [{ "label": "req t=0", "state": "done" }, { "label": "req t=30", "state": "done" }, { "label": "req t=90", "state": "done" }, { "label": "req t=95", "state": "done" }] },
+        { "name": "Data Cache", "items": [{ "label": "MISS", "state": "done" }, { "label": "HIT age 30", "state": "done" }, { "label": "STALE age 90", "state": "done" }, { "label": "HIT age 5", "state": "done" }] },
+        { "name": "Origin", "items": [{ "label": "fetch #1 blocking", "state": "done" }, { "label": "fetch #2 background", "state": "done" }] }
+      ] } }
+  ]
+}</script>
+</section>
+
+<section class="block" data-block="playground" id="5d-10" data-lang="js" data-mode="worker">
+<div class="tag">Try it</div>
+<p>The two server-side layers as 20 lines of plain JS — no Next here, only the rules. <code>render</code> is one React render pass with its own memo; <code>dataCache</code> outlives renders. Try: give <code>/api/user</code> a <code>revalidate</code>; set <code>clock.now = 30</code> before render 3; delete the <code>memo</code> check and watch render 1 double.</p>
+<pre><code class="language-javascript">let upstream = 0;
+const dataCache = new Map();            // cross-request, shared by every render
+const clock = { now: 0 };               // seconds
+
+function fetchData(url, { revalidate } = {}) {
+  if (revalidate === undefined) { upstream++; return "uncached"; }   // Next 15 default
+  const hit = dataCache.get(url);
+  if (hit &amp;&amp; clock.now - hit.at &lt; revalidate) return "HIT";
+  upstream++;
+  dataCache.set(url, { at: clock.now });
+  return hit ? "STALE → refreshed" : "MISS";
+}
+
+function render(label, components) {
+  const memo = new Map();               // request memoization: one per render pass
+  for (const [url, opts] of components) {
+    if (!memo.has(url)) memo.set(url, fetchData(url, opts));
+  }
+  console.log(label, [...memo.values()].join(", "), "| upstream:", upstream);
+}
+
+render("render 1:", [["/api/user"], ["/api/user"], ["/api/products", { revalidate: 60 }]]);
+render("render 2:", [["/api/user"], ["/api/products", { revalidate: 60 }]]);
+clock.now = 120;
+render("render 3:", [["/api/products", { revalidate: 60 }]]);</code></pre>
+<output>render 1: uncached, MISS | upstream: 2
+render 2: uncached, HIT | upstream: 3
+render 3: STALE → refreshed | upstream: 4</output>
+</section>
+
+<section class="block" data-block="exercise" id="5d-11" data-kind="predict" data-lang="js">
+<div class="tag">Exercise</div>
+<p>A Data Cache entry with <code>revalidate: 60</code> and a fake clock. <code>refresh</code> is deliberately synchronous so there is no timing to guess — only the stale-while-revalidate rule. What does this print? One value per line.</p>
+<pre><code class="language-javascript">const clock = { now: 0 };
+const cache = new Map();
+let origin = 0;
+
+function refresh(key) { origin++; cache.set(key, { at: clock.now }); }
+
+function get(key, { revalidate }) {
+  const hit = cache.get(key);
+  if (hit &amp;&amp; clock.now - hit.at &lt; revalidate) return "HIT";
+  if (hit) { refresh(key); return "STALE"; }     // serve old value, revalidate behind
+  refresh(key); return "MISS";
+}
+
+console.log(get("/products", { revalidate: 60 }));
+clock.now = 59;
+console.log(get("/products", { revalidate: 60 }));
+clock.now = 60;
+console.log(get("/products", { revalidate: 60 }));
+console.log(get("/products", { revalidate: 60 }));
+clock.now = 200;
+console.log(get("/products", { revalidate: 60 }));
+console.log(origin);</code></pre>
+<script type="application/json">{
+  "expected": "MISS\nHIT\nSTALE\nHIT\nSTALE\n3",
+  "hints": [
+    "Fresh means <code>age &lt; revalidate</code>. At exactly 60 s the entry is stale.",
+    "A stale read refreshes the entry <em>and</em> returns <code>STALE</code>; the very next read sees <code>at = now</code>, so it hits. Count how many times <code>refresh</code> ran."
+  ],
+  "explain": "t=0 miss (origin 1). t=59: age 59 &lt; 60 → hit. t=60: age 60 is not &lt; 60 → stale, origin 2, entry now <code>at=60</code>; the next read at the same instant is a hit. t=200: stale again, origin 3. Time-based revalidation never blocks a reader after the first miss — it bounds staleness to one <code>revalidate</code> window plus one refresh."
+}</script>
+</section>
+
+<section class="block" data-block="concept" id="5d-02">
+<h2>Cache invalidation — <code>revalidateTag</code> and <code>revalidatePath</code></h2>
+<p>Time-based revalidation bounds staleness; on-demand revalidation ends it. Both calls work from Server Actions and route handlers (never during render), and both mark entries so that the <em>next</em> request re-fetches — unlike the time-based path, that request blocks on the origin; nothing stale is served.</p>
+
+<pre><code class="language-typescript">import { revalidateTag, revalidatePath } from "next/cache";
+
+// Every Data Cache entry tagged "products" — across all routes that used it
+revalidateTag("products");
+
+// Every entry of one route: its Data Cache fetches, its Full Route Cache entry,
+// and (when called from a Server Action) the caller's Router Cache
+revalidatePath("/products");
+revalidatePath("/products/[slug]", "page");   // every product page, on next visit
+revalidatePath("/", "layout");                // everything under the root layout</code></pre>
+
+<p>Tags are a many-to-many index: one fetch can carry several tags, one tag can cover many fetches. <code>revalidateTag("product-42")</code> after editing product 42 touches exactly the entries that carried that tag — the catalog page, the detail page, the cart badge — and nothing else.</p>
+
+<div class="callout good">
+  <div class="tag">Rule of thumb</div>
+  <p>Tag at the resource level (<code>"products"</code>, <code>`product-${id}`</code>) and invalidate by tag from the mutation. Reach for <code>revalidatePath</code> when the unit really is a page (a CMS "publish" button), and for <code>revalidatePath("/", "layout")</code> only as a deliberate full flush — it is a cache-wide sledgehammer that every tagged fetch on the site will pay for.</p>
+</div>
+</section>
+
+<section class="block" data-block="exercise" id="5d-12" data-kind="complete" data-lang="js">
+<div class="tag">Exercise</div>
+<p>Implement the tag index that <code>revalidateTag</code> needs. <code>get(key, fetcher, { tags })</code> returns the cached value when the entry exists and is not stale; otherwise it awaits <code>fetcher()</code>, stores the value with its tags, and indexes the key under each tag. <code>revalidateTag(tag)</code> marks every key under that tag stale (no fetch yet — the next <code>get</code> pays for it). An unknown tag is a no-op. Tests count calls to the fetcher.</p>
+<pre><code class="language-javascript">function createDataCache() {
+  const entries = new Map();   // key → { value, tags, stale }
+  const byTag = new Map();     // tag → Set of keys
+
+  return {
+    async get(key, fetcher, { tags = [] } = {}) {
+      // TODO: return entries.get(key).value when present and not stale;
+      // otherwise fetch, store { value, tags, stale: false } and index the key under each tag
+      return fetcher();
+    },
+    revalidateTag(tag) {
+      // TODO: mark every key under `tag` stale
+    },
+    revalidatePath(key) {
+      const e = entries.get(key);
+      if (e) e.stale = true;
+    },
+  };
+}</code></pre>
+<script type="application/json">{
+  "tests": "function counter() { let n = 0; const f = () => Promise.resolve(\"v\" + (++n)); f.calls = () => n; return f; }\ntest(\"second get is served from the cache\", async () => { const c = createDataCache(); const f = counter(); assert.equal(await c.get(\"/products\", f, { tags: [\"products\"] }), \"v1\"); assert.equal(await c.get(\"/products\", f, { tags: [\"products\"] }), \"v1\"); assert.equal(f.calls(), 1); });\ntest(\"revalidateTag marks only the tagged entries stale\", async () => { const c = createDataCache(); const p = counter(), u = counter(); await c.get(\"/products\", p, { tags: [\"products\"] }); await c.get(\"/user\", u, { tags: [\"user\"] }); c.revalidateTag(\"products\"); assert.equal(await c.get(\"/products\", p, { tags: [\"products\"] }), \"v2\"); assert.equal(await c.get(\"/user\", u, { tags: [\"user\"] }), \"v1\"); assert.equal(u.calls(), 1); });\ntest(\"an entry can carry several tags\", async () => { const c = createDataCache(); const f = counter(); await c.get(\"/p/42\", f, { tags: [\"products\", \"product-42\"] }); c.revalidateTag(\"product-42\"); assert.equal(await c.get(\"/p/42\", f, { tags: [\"products\", \"product-42\"] }), \"v2\"); c.revalidateTag(\"products\"); assert.equal(await c.get(\"/p/42\", f, { tags: [\"products\", \"product-42\"] }), \"v3\"); });\ntest(\"unknown tag is a no-op\", async () => { const c = createDataCache(); const f = counter(); await c.get(\"/a\", f, { tags: [\"a\"] }); c.revalidateTag(\"nope\"); assert.equal(await c.get(\"/a\", f, { tags: [\"a\"] }), \"v1\"); });\ntest(\"a stale entry is refetched once, then cached again\", async () => { const c = createDataCache(); const f = counter(); await c.get(\"/a\", f, { tags: [\"a\"] }); c.revalidatePath(\"/a\"); assert.equal(await c.get(\"/a\", f), \"v2\"); assert.equal(await c.get(\"/a\", f), \"v2\"); assert.equal(f.calls(), 2); });",
+  "hints": [
+    "In <code>get</code>: <code>const e = entries.get(key); if (e &amp;&amp; !e.stale) return e.value;</code> — then fetch and store.",
+    "Index while storing: <code>for (const t of tags) (byTag.get(t) ?? byTag.set(t, new Set()).get(t)).add(key)</code>.",
+    "<code>revalidateTag</code>: <code>for (const key of byTag.get(tag) ?? []) entries.get(key).stale = true;</code> — mark, don't delete, so the tags survive for the next revalidation."
+  ],
+  "solution": "function createDataCache() {\n  const entries = new Map();   // key → { value, tags, stale }\n  const byTag = new Map();     // tag → Set of keys\n\n  return {\n    async get(key, fetcher, { tags = [] } = {}) {\n      const e = entries.get(key);\n      if (e && !e.stale) return e.value;\n      const value = await fetcher();\n      entries.set(key, { value, tags, stale: false });\n      for (const t of tags) {\n        if (!byTag.has(t)) byTag.set(t, new Set());\n        byTag.get(t).add(key);\n      }\n      return value;\n    },\n    revalidateTag(tag) {\n      for (const key of byTag.get(tag) ?? []) {\n        const e = entries.get(key);\n        if (e) e.stale = true;\n      }\n    },\n    revalidatePath(key) {\n      const e = entries.get(key);\n      if (e) e.stale = true;\n    },\n  };\n}",
+  "explain": "Tags are a reverse index from tag to keys; invalidation walks it and flips a flag. Marking instead of deleting is what Next does too: the entry (and its tags) stays until the next reader replaces it. That is also why <code>revalidateTag</code> is cheap to call — the cost moves to the next request for each affected key (see 5d-02)."
+}</script>
+</section>
+
+<section class="block" data-block="concept" id="5d-04">
+<h2><code>unstable_cache</code> — the Data Cache for ORM calls and SDKs</h2>
+<p><code>fetch</code> options only reach HTTP. For Prisma, Drizzle, or any SDK that doesn't go through <code>fetch</code>, wrap the function with <code>unstable_cache</code>: same Data Cache, same <code>revalidate</code> and <code>tags</code>, keyed by the function's id + the <code>keyParts</code> you pass + the serialized arguments.</p>
+
+<pre><code class="language-typescript">import { unstable_cache } from "next/cache";
+import { db } from "@/lib/db";
+
+export const getProducts = unstable_cache(
+  async (categoryId: string) =&gt; {
+    return db.product.findMany({
+      where: { categoryId },
+      orderBy: { createdAt: "desc" },
+    });
+  },
+  ["products-by-category"],      // keyParts — distinguishes this from other wrapped fns
+  {
+    tags: ["products"],          // revalidateTag("products") purges every category
+    revalidate: 3600,            // and it goes stale after an hour anyway
+  }
+);
+
+// app/c/[id]/page.tsx — Next 15: params is a Promise
+export default async function Page({ params }: { params: Promise&lt;{ id: string }&gt; }) {
+  const { id } = await params;
+  const products = await getProducts(id);
+  // …
+}</code></pre>
+
+<div class="callout warn">
+  <div class="tag">Gotchas</div>
+  <ul>
+    <li>Arguments must be serializable — they become part of the key. Pass <code>userId</code>, not <code>session</code>.</li>
+    <li>You cannot call <code>cookies()</code> or <code>headers()</code> inside the wrapped function: the cache is shared across users, so per-request input has to come in as an argument. Forgetting this is how user A sees user B's dashboard.</li>
+    <li>The name is honest about the API surface, not about reliability — it is the production-stable choice in Next 15. The successor is the <code>"use cache"</code> directive (5d-05).</li>
+  </ul>
+</div>
+</section>
+
+<section class="block" data-block="concept" id="5d-17">
+<h2>Request memoization for non-<code>fetch</code>: React <code>cache()</code></h2>
+<p>Memoization of <code>fetch</code> is automatic. A database call made from a layout <em>and</em> a page in the same render runs twice unless you wrap it in React's <code>cache()</code> — a per-render memo keyed by arguments, dropped when the render finishes. It is not the Data Cache: nothing persists, nothing is shared between requests, so it is safe for user-specific reads.</p>
+
+<pre><code class="language-typescript">import { cache } from "react";
+import { db } from "@/lib/db";
+
+// One query per render pass, however many components call it
+export const getCurrentUser = cache(async (sessionId: string) =&gt; {
+  return db.user.findFirst({ where: { sessionId } });
+});
+
+// layout.tsx and page.tsx both call getCurrentUser(sid) → one query</code></pre>
+
+<div class="callout py">
+  <div class="tag">Python bridge</div>
+  <p><code>cache()</code> ≈ <code>functools.lru_cache</code> attached to the request object instead of the process — identical arguments return the same promise, and the table is thrown away with the render. <code>unstable_cache</code> ≈ <code>django.core.cache</code>.</p>
+</div>
+</section>
+
+<section class="block" data-block="exercise" id="5d-13" data-kind="fix" data-lang="js">
+<div class="tag">Exercise</div>
+<p>This cache implements <code>revalidate</code> the Django way: when the entry is older than the window, the reader <em>blocks</em> on the origin, and every concurrent stale reader blocks on its own origin call. Make it stale-while-revalidate, as Next does: a stale read returns the old value immediately and starts one background refresh per key; readers arriving while that refresh is in flight get the old value and start nothing. <code>origin</code> is instrumented; the tests count its calls and check which value each read got.</p>
+<pre><code class="language-javascript">// --- fake origin + clock (leave as is)
+const clock = { now: 0 };
+let originCalls = 0;
+function origin(key) {
+  originCalls++;
+  return new Promise(r =&gt; setTimeout(() =&gt; r(`${key}@${clock.now}`), 10));
+}
+
+// --- fix this
+function createCache({ revalidate }) {
+  const entries = new Map();   // key → { value, at }
+  return {
+    async get(key) {
+      const e = entries.get(key);
+      if (e &amp;&amp; clock.now - e.at &lt; revalidate) return e.value;   // fresh → hit
+      const value = await origin(key);                           // stale or miss: block
+      entries.set(key, { value, at: clock.now });
+      return value;
+    },
+  };
+}</code></pre>
+<script type="application/json">{
+  "tests": "const sleep = (ms) => new Promise(r => setTimeout(r, ms));\ntest(\"miss populates, then hits inside the window\", async () => { originCalls = 0; clock.now = 0; const c = createCache({ revalidate: 60 }); assert.equal(await c.get(\"p\"), \"p@0\"); clock.now = 30; assert.equal(await c.get(\"p\"), \"p@0\"); assert.equal(originCalls, 1); });\ntest(\"stale read returns the old value and refreshes behind it\", async () => { originCalls = 0; clock.now = 0; const c = createCache({ revalidate: 60 }); await c.get(\"p\"); clock.now = 90; assert.equal(await c.get(\"p\"), \"p@0\", \"stale read must serve the old value\"); assert.equal(originCalls, 2, \"a refresh must have started\"); await sleep(20); assert.equal(await c.get(\"p\"), \"p@90\", \"after the refresh lands, the new value\"); assert.equal(originCalls, 2); });\ntest(\"a burst of stale reads triggers one refresh\", async () => { originCalls = 0; clock.now = 0; const c = createCache({ revalidate: 60 }); await c.get(\"p\"); clock.now = 90; const vals = await Promise.all([c.get(\"p\"), c.get(\"p\"), c.get(\"p\"), c.get(\"p\")]); assert.equal(vals, [\"p@0\", \"p@0\", \"p@0\", \"p@0\"]); assert.equal(originCalls, 2, \"one background refresh, not four\"); await sleep(20); });\ntest(\"keys are independent\", async () => { originCalls = 0; clock.now = 0; const c = createCache({ revalidate: 60 }); assert.equal(await c.get(\"a\"), \"a@0\"); assert.equal(await c.get(\"b\"), \"b@0\"); assert.equal(originCalls, 2); });",
+  "hints": [
+    "Three cases, not two: fresh → return; stale → <em>start</em> a refresh and return <code>e.value</code> without awaiting; miss → await the refresh.",
+    "Keep an <code>inflight</code> map of key → promise. <code>refresh(key)</code> returns the existing promise if there is one, otherwise stores <code>origin(key).then(store).finally(() =&gt; inflight.delete(key))</code>.",
+    "Set <code>at: clock.now</code> inside the <code>.then</code> — the entry's age restarts when the refresh <em>lands</em>, not when it was requested."
+  ],
+  "solution": "// --- fake origin + clock (leave as is)\nconst clock = { now: 0 };\nlet originCalls = 0;\nfunction origin(key) {\n  originCalls++;\n  return new Promise(r => setTimeout(() => r(`${key}@${clock.now}`), 10));\n}\n\nfunction createCache({ revalidate }) {\n  const entries = new Map();   // key → { value, at }\n  const inflight = new Map();  // key → Promise<value>\n\n  function refresh(key) {\n    if (!inflight.has(key)) {\n      const p = origin(key)\n        .then(value => { entries.set(key, { value, at: clock.now }); return value; })\n        .finally(() => inflight.delete(key));\n      inflight.set(key, p);\n    }\n    return inflight.get(key);\n  }\n\n  return {\n    async get(key) {\n      const e = entries.get(key);\n      if (e && clock.now - e.at < revalidate) return e.value;   // fresh → hit\n      if (e) { refresh(key); return e.value; }                 // stale → serve old, refresh behind\n      return refresh(key);                                     // miss → must wait\n    },\n  };\n}",
+  "explain": "The blocking version turns every expiry into a latency spike for one user and, under load, into a thundering herd on the origin. Stale-while-revalidate moves the cost off the request path and the in-flight map collapses the herd to one call. This is exactly what 5d-09 animates; it is also why a <code>revalidate: 60</code> page can show 61-second-old data to one request every minute."
+}</script>
+</section>
+
+<section class="block" data-block="concept" id="5d-05">
+<h2>Forward pointer: <code>"use cache"</code>, <code>cacheLife</code>, <code>cacheTag</code></h2>
+<p>The directive-based model replaces <code>unstable_cache</code>'s wrapper with an annotation on the function, component or file. In Next 15 it is experimental (<code>experimental.useCache</code> or <code>dynamicIO</code> in <code>next.config.ts</code>); Next 16 ships it as Cache Components. The semantics carry over one-to-one — a tag is a tag, a lifetime is a <code>revalidate</code> — so what this lesson taught stays true.</p>
+
+<pre><code class="language-typescript">// next.config.ts: experimental: { useCache: true }   (Next 15)
+import { cacheLife, cacheTag } from "next/cache";
+
+export async function getProducts(categoryId: string) {
+  "use cache";
+  cacheTag("products");          // same tags, same revalidateTag("products")
+  cacheLife("hours");            // named profile: seconds | minutes | hours | days | weeks | max
+  return db.product.findMany({ where: { categoryId } });
+}</code></pre>
+
+<p>Pick <code>unstable_cache</code> for Next 15 production code; read <code>"use cache"</code> code without surprise.</p>
+</section>
+
+<section class="block" data-block="review" id="5d-14">
+<div class="tag">Code review</div>
+<ul>
+  <li><strong>Optionless <code>fetch</code> in a static page.</strong> Ask "when is this supposed to be fresh?". If the answer is "per request", it needs <code>cache: "no-store"</code> or the route needs <code>force-dynamic</code>; if "every N minutes", <code>next: { revalidate }</code>. As written it is a build-time snapshot that <code>next dev</code> will never show you.</li>
+  <li><strong>User data in the Data Cache.</strong> An <code>unstable_cache</code> or <code>force-cache</code> fetch whose result depends on the session but whose key doesn't include the user id is a cross-user leak. Either the user id is an argument (part of the key) or the read is not cached and goes through React <code>cache()</code> only.</li>
+  <li><strong><code>revalidatePath("/", "layout")</code> after every mutation.</strong> Flushes the site. Tag the fetches, invalidate the tag. Reviewers also look for mutations that revalidate nothing — the page will show the old row until the window expires.</li>
+  <li><strong>One <code>no-store</code> fetch in a layout.</strong> It makes every route under that layout dynamic, which silently drops the Full Route Cache for the whole subtree. Scope dynamic reads to the component that needs them, or stream them in a <code>Suspense</code> boundary.</li>
+  <li><strong><code>revalidate</code> values that don't agree.</strong> The lowest one across a route's fetches wins for the route. A <code>revalidate: 10</code> on a widget sets the page to 10 s whatever the page exported.</li>
+  <li><strong>Calling <code>revalidateTag</code> during render</strong> (in a component, a <code>generateMetadata</code>) throws in Next 15. It belongs in a Server Action or route handler, after the write.</li>
+  <li><strong>"It's stale after navigating back."</strong> That is the Router Cache, not the server. Next 15 defaults dynamic pages to 0 s there; if you set <code>experimental.staleTimes</code> up for speed, mutations need <code>revalidatePath</code> in the action (which clears it) or <code>router.refresh()</code>.</li>
+</ul>
+</section>
+
+<section class="block" data-block="exercise" id="5d-15" data-kind="mcq">
+<div class="tag">Check</div>
+<p><code>app/pricing/page.tsx</code> reads no cookies, headers or search params and does <code>const plans = await (await fetch("https://billing.internal/plans")).json()</code> with no options. It is deployed on Monday. On Wednesday the billing team changes a price. What do visitors see on Wednesday?</p>
+<script type="application/json">{
+  "options": [
+    "The new price — Next 15 doesn't cache <code>fetch</code>, so every request hits the billing API.",
+    "Monday's price, until the next deploy or a <code>revalidatePath(\"/pricing\")</code> — the route is static, so the uncached fetch ran once at build.",
+    "Monday's price for at most 60 seconds — the default <code>revalidate</code> window.",
+    "A build error on Monday: a <code>fetch</code> without a <code>cache</code> option is not allowed in a static route."
+  ],
+  "answer": 1,
+  "explain": "\"Not in the Data Cache\" and \"runs per request\" are different claims. With no dynamic API and no <code>no-store</code>, the route is prerendered at build and served from the Full Route Cache; the fetch simply isn't memoized between builds. Per-request pricing needs <code>cache: \"no-store\"</code> or <code>export const dynamic = \"force-dynamic\"</code>; periodic needs <code>next: { revalidate }</code>. There is no default window (option 3 is Next's ISR from a tutorial, not a default). See 5d-07."
+}</script>
+</section>
+
+<section class="block" data-block="recall" id="5d-06">
+<div class="tag">Recall</div>
+<dl>
+  <dt>In Next 15, what does a bare <code>fetch(url)</code> in a server component do — and does the answer differ between a static and a dynamic route?</dt>
+  <dd>It is not stored in the Data Cache. In a dynamic route it runs per request; in a static route it runs once at <code>next build</code> and the result is baked into the Full Route Cache. Per-request freshness needs <code>cache: "no-store"</code>.</dd>
+
+  <dt>Name the four caches, where each lives, and how long each lasts.</dt>
+  <dd>Request memoization (server, one render pass); Data Cache (server, cross-request, until revalidated); Full Route Cache (server, static routes, until revalidated or redeployed); Router Cache (browser memory, dynamic 0 s / static 5 min in Next 15).</dd>
+
+  <dt>What is the difference between time-based (<code>revalidate: 60</code>) and on-demand (<code>revalidateTag</code>) revalidation for the request that crosses the boundary?</dt>
+  <dd>Time-based is stale-while-revalidate: that request gets the old value and a refresh runs behind it. On-demand purges: that request blocks on the origin and gets fresh data.</dd>
+
+  <dt>What does this print?
+<pre><code class="language-javascript">const clock = { now: 0 }; const cache = new Map(); let origin = 0;
+function refresh(k) { origin++; cache.set(k, { at: clock.now }); }
+function get(k, { revalidate }) {
+  const hit = cache.get(k);
+  if (hit &amp;&amp; clock.now - hit.at &lt; revalidate) return "HIT";
+  if (hit) { refresh(k); return "STALE"; }
+  refresh(k); return "MISS";
+}
+console.log(get("p", { revalidate: 60 }));
+clock.now = 60; console.log(get("p", { revalidate: 60 }));
+console.log(get("p", { revalidate: 60 }));
+console.log(origin);</code></pre></dt>
+  <dd><code>MISS</code>, <code>STALE</code>, <code>HIT</code>, <code>2</code>. Age 60 is not &lt; 60, so the second read is stale; it refreshes (<code>at = 60</code>) and the third read hits.</dd>
+
+  <dt>You have a Drizzle query for the product catalog. How do you cache it with tag-based invalidation, and what must its arguments satisfy?</dt>
+  <dd>Wrap it in <code>unstable_cache(fn, keyParts, { tags: ["products"], revalidate })</code>. Arguments must be serializable (they form the key) and the function must not read <code>cookies()</code>/<code>headers()</code> — the cache is shared across users.</dd>
+
+  <dt>Two components in one render call <code>db.user.find(id)</code>. How do you make that one query, and why isn't <code>unstable_cache</code> the answer?</dt>
+  <dd>Wrap it in React <code>cache()</code>: per-render memoization keyed by arguments, dropped after the render. <code>unstable_cache</code> would persist the user row across requests and users.</dd>
+
+  <dt>After editing product 42 in a Server Action, which call purges only the product-related cached data, and what does <code>revalidatePath("/", "layout")</code> do instead?</dt>
+  <dd><code>revalidateTag("product-42")</code> (or <code>"products"</code>) — only entries carrying that tag. <code>revalidatePath("/", "layout")</code> invalidates every route under the root layout: a site-wide flush.</dd>
+
+  <dt>A layout does one <code>fetch(url, { cache: "no-store" })</code>. What happens to the routes beneath it?</dt>
+  <dd>They all become dynamic — rendered per request, with no Full Route Cache entry. Scope the uncached read to the component that needs it or stream it in a <code>Suspense</code> boundary.</dd>
+</dl>
+</section>
+</article>
+<script type="module" src="/assets/runtime/boot.js"></script>
+</body>
+</html>

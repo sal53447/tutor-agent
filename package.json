@@ -1,0 +1,32 @@
+{
+  "name": "tutor-agent",
+  "private": true,
+  "version": "3.0.0",
+  "description": "Interactive DSA curriculum for a Python engineer \u2014 agent-authored Markdown sources, rendered to browser-run lessons.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "dev": "node scripts/dev.mjs --watch",
+    "validate": "node scripts/build.mjs && node scripts/validate.mjs",
+    "vendor": "node scripts/vendor.mjs",
+    "snippets": "node scripts/build.mjs && node scripts/run-snippets.mjs",
+    "smoke": "node scripts/build.mjs && node scripts/smoke.mjs",
+    "check": "node scripts/build.mjs && node scripts/validate.mjs && node scripts/run-snippets.mjs && node scripts/smoke.mjs",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "esbuild": "0.24.2",
+    "marked": "14.1.4",
+    "parse5": "7.2.1",
+    "playwright-core": "1.49.1",
+    "prismjs": "1.29.0",
+    "react": "19.0.0",
+    "react-dom": "19.0.0",
+    "sucrase": "3.35.0",
+    "vitest": "2.1.8",
+    "yaml": "2.6.1"
+  }
+}

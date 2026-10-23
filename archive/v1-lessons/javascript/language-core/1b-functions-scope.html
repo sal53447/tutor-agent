@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>1b. Functions, closures, this · JS Curriculum</title>
+<link rel="icon" href="/assets/favicon.svg">
+<link rel="stylesheet" href="/assets/vendor/prism.css">
+<link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body data-lesson="1b" data-level="interactive">
+<article class="lesson">
+
+<header>
+  <h1>Functions, Closures, and <code>this</code></h1>
+</header>
+
+<section class="block" data-block="concept" id="1b-01">
+<p>Functions are first-class values: you pass them around, return them, store them in variables. JS leans heavily on higher-order functions — more than Python culturally does. Three mechanisms from this lesson carry the rest of the curriculum: <strong>hoisting/TDZ</strong> explains what a module can reference before it runs (1e), <strong>closures</strong> are how React hooks remember state between renders (4c, 4d — every "stale closure" bug is this lesson), and the <strong><code>this</code></strong> rules explain why a method handed to <code>setTimeout</code> or an event listener breaks.</p>
+</section>
+
+<section class="block" data-block="concept" id="1b-02">
+<h2>Three function forms</h2>
+<pre><code class="language-javascript">// 1. Function declaration — hoisted, has its own `this`, has `arguments`
+function add(a, b) { return a + b; }
+
+// 2. Function expression — not hoisted, otherwise same
+const add2 = function (a, b) { return a + b; };
+
+// 3. Arrow function — not hoisted, NO own `this`, NO `arguments`, cannot be `new`'d
+const add3 = (a, b) =&gt; a + b;</code></pre>
+
+<p>Arrow functions are not just shorter syntax. They capture <code>this</code> lexically from the enclosing scope. This is often what you want — and occasionally exactly what you don't.</p>
+
+<p><code>...rest</code> replaces <code>arguments</code>. <code>arguments</code> is array-like, not a real array, and doesn't exist in arrow functions; a rest parameter is a real array and works in every form:</p>
+<pre><code class="language-javascript">function old() { console.log(arguments[0]); }          // legacy
+const sum = (...nums) =&gt; nums.reduce((a, b) =&gt; a + b, 0); // modern
+sum(1, 2, 3);  // 6</code></pre>
+</section>
+
+<section class="block" data-block="concept" id="1b-05">
+<h2>Hoisting and the Temporal Dead Zone</h2>
+<p>Before a scope's code runs, the engine registers every declaration in it. Function <em>declarations</em> are fully <strong>hoisted</strong> — name and body — so you can call them before the line they appear on. <code>let</code>/<code>const</code>/<code>class</code> bindings are registered too, but stay <em>uninitialized</em> until their line executes: that window is the <strong>Temporal Dead Zone (TDZ)</strong>, and touching the binding inside it throws a <code>ReferenceError</code> — even via <code>typeof</code>.</p>
+
+<pre><code class="language-javascript">// Function declaration — fine, fully hoisted
+greet("world");               // "hello world"
+function greet(name) { return `hello ${name}`; }
+
+// const function expression — TDZ
+sayBye("world");              // ReferenceError: Cannot access 'sayBye' before initialization
+const sayBye = (name) =&gt; `bye ${name}`;</code></pre>
+
+<div class="callout warn">
+  <div class="tag">Gotcha</div>
+  <p><code>var</code> declarations <em>are</em> hoisted (to <code>undefined</code>), which is why calling a <code>var</code>-assigned function before the assignment returns <code>TypeError: sayBye is not a function</code> — a different and more confusing failure mode. Another reason to never use <code>var</code>.</p>
+</div>
+</section>
+
+<section class="block" data-block="stepper" id="1b-08" data-kind="chain">
+<div class="tag">Step through</div>
+<script type="application/json">{
+  "code": "console.log(typeof greet);\nconsole.log(greet(\"world\"));\ntry { sayBye(\"x\"); } catch (e) { console.log(e.name); }\nfunction greet(name) { return `hello ${name}`; }\nconst sayBye = (name) => `bye ${name}`;\nconsole.log(sayBye(\"world\"));",
+  "steps": [
+    { "label": "Scope created, nothing run", "note": "Before line 1 executes, the engine has scanned the scope: <code>greet</code> is already a callable function (declaration = hoisted whole); <code>sayBye</code> exists as a name but is <em>uninitialized</em> — that's the TDZ. A <code>var</code> here would read <code>undefined</code> instead.",
+      "state": { "nodes": [
+        { "id": "scope", "label": "module scope", "fields": ["greet: ƒ greet (hoisted)", "sayBye: ⟨uninitialized⟩ TDZ"] },
+        { "id": "out", "label": "console", "fields": [] }
+      ], "edges": [], "active": ["scope"] } },
+    { "label": "typeof greet", "line": 1, "note": "The binding already holds the function, so <code>typeof</code> says <code>\"function\"</code>.",
+      "state": { "nodes": [
+        { "id": "scope", "label": "module scope", "fields": ["greet: ƒ greet (hoisted)", "sayBye: ⟨uninitialized⟩ TDZ"] },
+        { "id": "out", "label": "console", "fields": ["function"] }
+      ], "edges": [], "active": ["out"] } },
+    { "label": "Call before the declaration line", "line": 2, "note": "Works. The declaration's position in the file is irrelevant to when it becomes callable — only the scope matters.",
+      "state": { "nodes": [
+        { "id": "scope", "label": "module scope", "fields": ["greet: ƒ greet (hoisted)", "sayBye: ⟨uninitialized⟩ TDZ"] },
+        { "id": "out", "label": "console", "fields": ["function", "hello world"] }
+      ], "edges": [], "active": ["out"] } },
+    { "label": "TDZ access throws", "line": 3, "note": "<code>sayBye</code> is in scope but uninitialized. Reading it is a <code>ReferenceError</code> (\"Cannot access 'sayBye' before initialization\"), not <code>undefined</code>. <code>typeof sayBye</code> would throw too.",
+      "state": { "nodes": [
+        { "id": "scope", "label": "module scope", "fields": ["greet: ƒ greet (hoisted)", "sayBye: ⟨uninitialized⟩ TDZ"] },
+        { "id": "out", "label": "console", "fields": ["function", "hello world", "ReferenceError"] }
+      ], "edges": [], "active": ["scope", "out"] } },
+    { "label": "Declaration line is a no-op", "line": 4, "note": "Execution reaches the <code>function</code> statement. Nothing happens at runtime — the hoisting pass already did the work.",
+      "state": { "nodes": [
+        { "id": "scope", "label": "module scope", "fields": ["greet: ƒ greet (hoisted)", "sayBye: ⟨uninitialized⟩ TDZ"] },
+        { "id": "out", "label": "console", "fields": ["function", "hello world", "ReferenceError"] }
+      ], "edges": [], "active": ["scope"] } },
+    { "label": "const initialises — TDZ ends", "line": 5, "note": "The arrow function is created <em>now</em> and stored in the binding. From this line on, <code>sayBye</code> is usable.",
+      "state": { "nodes": [
+        { "id": "scope", "label": "module scope", "fields": ["greet: ƒ greet (hoisted)", "sayBye: ƒ (initialised)"] },
+        { "id": "out", "label": "console", "fields": ["function", "hello world", "ReferenceError"] }
+      ], "edges": [], "active": ["scope"] } },
+    { "label": "Call after initialisation", "line": 6, "note": "Same name, same scope, one line later — works. Rule of thumb: declarations up top, or use function declarations for anything called before its definition.",
+      "state": { "nodes": [
+        { "id": "scope", "label": "module scope", "fields": ["greet: ƒ greet (hoisted)", "sayBye: ƒ (initialised)"] },
+        { "id": "out", "label": "console", "fields": ["function", "hello world", "ReferenceError", "bye world"] }
+      ], "edges": [], "active": ["out"] } }
+  ]
+}</script>
+</section>
+
+<section class="block" data-block="concept" id="1b-03">
+<h2>Closures — the real workhorse</h2>
+<p>A <strong>closure</strong> is a function plus the scope it was created in. The function keeps a live link to that scope's <em>bindings</em> — not copies of their values — so it sees later changes and can make its own. Identical to Python closures, but used much more idiomatically in JS.</p>
+
+<pre><code class="language-javascript">function makeCounter() {
+  let count = 0;                       // captured
+  return {
+    inc: () =&gt; ++count,
+    get: () =&gt; count,
+  };
+}
+const c = makeCounter();
+c.inc(); c.inc();
+c.get();  // 2 — count is private and shared between the two methods</code></pre>
+
+<div class="callout py">
+  <div class="tag">Python bridge</div>
+  <p>Python has closures (nested <code>def</code>), but the culture prefers classes for anything stateful, and writing to a captured variable needs <code>nonlocal</code>. JS closures write to captured bindings freely and are used for private state, module state, event handlers, and anywhere you'd reach for a class in Python. Recognize this pattern — you'll see it constantly.</p>
+</div>
+</section>
+
+<section class="block" data-block="stepper" id="1b-07" data-kind="chain">
+<div class="tag">Step through</div>
+<script type="application/json">{
+  "code": "function makeCounter() {\n  let count = 0;\n  return { inc: () => ++count, get: () => count };\n}\nconst c = makeCounter();\nc.inc();\nc.inc();\nconsole.log(c.get());",
+  "steps": [
+    { "label": "makeCounter() called", "line": 5, "note": "Every call creates a fresh scope (an <em>environment record</em>) whose parent is the scope the function was <em>defined</em> in — the module scope, not the caller's.",
+      "state": { "nodes": [
+        { "id": "g",  "label": "module scope", "fields": ["makeCounter: ƒ", "c: ⟨TDZ⟩"] },
+        { "id": "mc", "label": "makeCounter() scope", "fields": ["count: 0"] }
+      ], "edges": [["mc", "g", "parent"]], "active": ["mc"] } },
+    { "label": "Arrows capture the scope", "line": 3, "note": "Creating a function records the current scope as its <code>[[Environment]]</code>. Both arrows point at the <em>same</em> <code>makeCounter()</code> scope — they share <code>count</code>.",
+      "state": { "nodes": [
+        { "id": "g",   "label": "module scope", "fields": ["makeCounter: ƒ", "c: ⟨TDZ⟩"] },
+        { "id": "mc",  "label": "makeCounter() scope", "fields": ["count: 0"] },
+        { "id": "inc", "label": "inc ƒ", "fields": ["[[Environment]] ↑"] },
+        { "id": "get", "label": "get ƒ", "fields": ["[[Environment]] ↑"] }
+      ], "edges": [["mc", "g", "parent"], ["inc", "mc", "[[Environment]]"], ["get", "mc", "[[Environment]]"]], "active": ["inc", "get"] } },
+    { "label": "makeCounter returns", "line": 5, "note": "The call frame is gone, but the scope is <em>not</em> garbage — <code>inc</code> and <code>get</code> still reference it, and <code>c</code> references them. That reachable-after-return scope is the closure.",
+      "state": { "nodes": [
+        { "id": "g",   "label": "module scope", "fields": ["makeCounter: ƒ", "c: { inc, get }"] },
+        { "id": "mc",  "label": "makeCounter() scope", "fields": ["count: 0"] },
+        { "id": "inc", "label": "inc ƒ", "fields": ["[[Environment]] ↑"] },
+        { "id": "get", "label": "get ƒ", "fields": ["[[Environment]] ↑"] }
+      ], "edges": [["mc", "g", "parent"], ["inc", "mc", "[[Environment]]"], ["get", "mc", "[[Environment]]"]], "active": ["g", "mc"] } },
+    { "label": "c.inc(): lookup count", "line": 6, "note": "The call creates a scope for <code>inc</code> (no locals). <code>count</code> isn't there, so lookup walks the chain: <code>inc()</code> scope → <code>makeCounter()</code> scope.",
+      "state": { "nodes": [
+        { "id": "g",    "label": "module scope", "fields": ["makeCounter: ƒ", "c: { inc, get }"] },
+        { "id": "mc",   "label": "makeCounter() scope", "fields": ["count: 0"] },
+        { "id": "inc",  "label": "inc ƒ", "fields": ["[[Environment]] ↑"] },
+        { "id": "get",  "label": "get ƒ", "fields": ["[[Environment]] ↑"] },
+        { "id": "call", "label": "inc() scope", "fields": ["(no locals) — count?"] }
+      ], "edges": [["mc", "g", "parent"], ["inc", "mc", "[[Environment]]"], ["get", "mc", "[[Environment]]"], ["call", "mc", "parent"]], "active": ["call"] } },
+    { "label": "Found — mutate in place", "line": 6, "note": "<code>++count</code> writes to the <em>binding</em> in the <code>makeCounter()</code> scope. No copy was taken when the arrow was created; closures capture variables, not values.",
+      "state": { "nodes": [
+        { "id": "g",    "label": "module scope", "fields": ["makeCounter: ƒ", "c: { inc, get }"] },
+        { "id": "mc",   "label": "makeCounter() scope", "fields": ["count: 1"] },
+        { "id": "inc",  "label": "inc ƒ", "fields": ["[[Environment]] ↑"] },
+        { "id": "get",  "label": "get ƒ", "fields": ["[[Environment]] ↑"] },
+        { "id": "call", "label": "inc() scope", "fields": ["(no locals) — count?"] }
+      ], "edges": [["mc", "g", "parent"], ["inc", "mc", "[[Environment]]"], ["get", "mc", "[[Environment]]"], ["call", "mc", "parent"]], "active": ["mc"] } },
+    { "label": "Second c.inc()", "line": 7, "note": "A new <code>inc()</code> call scope, same parent. The chain is fixed at definition time, so it finds the same <code>count</code> again.",
+      "state": { "nodes": [
+        { "id": "g",    "label": "module scope", "fields": ["makeCounter: ƒ", "c: { inc, get }"] },
+        { "id": "mc",   "label": "makeCounter() scope", "fields": ["count: 2"] },
+        { "id": "inc",  "label": "inc ƒ", "fields": ["[[Environment]] ↑"] },
+        { "id": "get",  "label": "get ƒ", "fields": ["[[Environment]] ↑"] },
+        { "id": "call", "label": "inc() scope #2", "fields": ["(no locals) — count?"] }
+      ], "edges": [["mc", "g", "parent"], ["inc", "mc", "[[Environment]]"], ["get", "mc", "[[Environment]]"], ["call", "mc", "parent"]], "active": ["call", "mc"] } },
+    { "label": "c.get() reads the shared binding", "line": 8, "note": "<code>get</code> walks the same chain and reads <code>2</code>. A second <code>makeCounter()</code> call would create a separate scope with its own <code>count</code> — that's how closures give you private, per-instance state without a class.",
+      "state": { "nodes": [
+        { "id": "g",    "label": "module scope", "fields": ["makeCounter: ƒ", "c: { inc, get }"] },
+        { "id": "mc",   "label": "makeCounter() scope", "fields": ["count: 2"] },
+        { "id": "inc",  "label": "inc ƒ", "fields": ["[[Environment]] ↑"] },
+        { "id": "get",  "label": "get ƒ", "fields": ["[[Environment]] ↑"] },
+        { "id": "call", "label": "get() scope", "fields": ["→ 2"] }
+      ], "edges": [["mc", "g", "parent"], ["inc", "mc", "[[Environment]]"], ["get", "mc", "[[Environment]]"], ["call", "mc", "parent"]], "active": ["get", "mc"] } }
+  ]
+}</script>
+</section>
+
+<section class="block" data-block="playground" id="1b-10" data-lang="js">
+<div class="tag">Try it</div>
+<p>Run it, then: create a second counter and show the two don't share <code>count</code>; change the loop's <code>let</code> to <code>var</code> and predict the array before running; make <code>inc</code> take a <code>step</code> argument.</p>
+<pre><code class="language-javascript">function makeCounter() {
+  let count = 0;
+  return { inc: () =&gt; ++count, get: () =&gt; count };
+}
+const c = makeCounter();
+c.inc(); c.inc();
+console.log(c.get());
+
+// One closure per iteration: `let` creates a fresh binding each loop
+const fns = [];
+for (let i = 0; i &lt; 3; i++) fns.push(() =&gt; i);
+console.log(fns.map(f =&gt; f()));</code></pre>
+<output>2
+[0, 1, 2]</output>
+</section>
+
+<section class="block" data-block="exercise" id="1b-12" data-kind="predict" data-lang="js">
+<div class="tag">Exercise</div>
+<p>What does this print? Arrays print as <code>[a, b, c]</code>; one line per <code>console.log</code>.</p>
+<pre><code class="language-javascript">const fns = [];
+for (var i = 0; i &lt; 3; i++) fns.push(() =&gt; i);
+console.log(fns.map(f =&gt; f()));
+
+const gns = [];
+for (let j = 0; j &lt; 3; j++) gns.push(() =&gt; j);
+console.log(gns.map(g =&gt; g()));
+
+function outer() {
+  let n = 0;
+  return () =&gt; ++n;
+}
+const a = outer(), b = outer();
+a(); a();
+console.log(a(), b());</code></pre>
+<script type="application/json">{
+  "expected": "[3, 3, 3]\n[0, 1, 2]\n3 1",
+  "hints": [
+    "Closures capture <em>bindings</em>, not values. How many <code>i</code> bindings does a <code>var</code> loop create? How many <code>j</code> bindings does a <code>let</code> loop create?",
+    "The <code>var</code> loop has one function-scoped <code>i</code>, which is <code>3</code> by the time any closure runs. <code>let</code> gives each iteration its own <code>j</code>.",
+    "Each <code>outer()</code> call creates a separate scope with its own <code>n</code>; <code>a</code> and <code>b</code> don't share."
+  ],
+  "explain": "<code>var i</code> is one binding for the whole function, so all three closures read the final value <code>3</code>. <code>let j</code> is re-bound per iteration (the spec copies it into a fresh scope each time), so each closure keeps its own <code>0</code>, <code>1</code>, <code>2</code>. The third case is the stepper in 1b-07 twice over: two <code>outer()</code> calls, two independent <code>n</code> bindings."
+}</script>
+</section>
+
+<section class="block" data-block="concept" id="1b-04">
+<h2>The <code>this</code> keyword — four binding rules</h2>
+<p><code>this</code> is decided at <em>call time</em>, by the shape of the call expression — not by where the function was defined. That's the entire trick. Arrow functions opt out: they have no <code>this</code> of their own and read the enclosing scope's.</p>
+
+<pre><code class="language-javascript">// 1. Default — `this` is undefined (strict mode / modules) or globalThis (sloppy)
+function show() { console.log(this); }
+show();
+
+// 2. Implicit (method call) — `this` is the object before the dot
+const obj = { name: "x", show() { console.log(this.name); } };
+obj.show();           // "x"
+
+// 3. Explicit — `.call`, `.apply`, `.bind`
+show.call({ name: "y" });
+
+// 4. `new` — `this` is the freshly created instance
+function Foo() { this.x = 1; }
+new Foo();            // { x: 1 }</code></pre>
+
+<div class="callout warn">
+  <div class="tag">The classic trap</div>
+  <p>When you pass a method as a callback, it loses its <code>this</code>: <code>setTimeout(obj.show, 100)</code> runs <code>show</code> with no object before the dot, so <code>this</code> is <code>undefined</code> and <code>this.name</code> throws. Fixes: <code>setTimeout(() =&gt; obj.show(), 100)</code> or <code>setTimeout(obj.show.bind(obj), 100)</code>. Arrow functions sidestep it by not having their own <code>this</code> — they inherit from the enclosing scope.</p>
+</div>
+</section>
+
+<section class="block" data-block="diagram" id="1b-09">
+<div class="tag">Mechanism</div>
+<script type="application/json">{
+  "direction": "down",
+  "nodes": [
+    { "id": "q",        "label": "How is f called?",                    "kind": "note", "row": 0 },
+    { "id": "new",      "label": "new f()",                             "kind": "box",  "row": 1 },
+    { "id": "explicit", "label": "f.call(o) / f.apply(o)\nf.bind(o)()", "kind": "box",  "row": 1 },
+    { "id": "method",   "label": "o.f()",                               "kind": "box",  "row": 1 },
+    { "id": "plain",    "label": "f()",                                 "kind": "box",  "row": 1 },
+    { "id": "arrow",    "label": "f is an arrow\n(any call form)",      "kind": "box",  "row": 1 },
+    { "id": "r_new",    "label": "the new instance",                    "kind": "pill", "row": 2 },
+    { "id": "r_obj",    "label": "o",                                   "kind": "pill", "row": 2 },
+    { "id": "r_undef",  "label": "undefined (strict)\nglobalThis (sloppy)", "kind": "pill", "row": 2 },
+    { "id": "r_lex",    "label": "this of the\nenclosing scope",        "kind": "pill", "row": 2 }
+  ],
+  "edges": [
+    { "from": "q", "to": "new" },
+    { "from": "q", "to": "explicit" },
+    { "from": "q", "to": "method" },
+    { "from": "q", "to": "plain" },
+    { "from": "q", "to": "arrow" },
+    { "from": "new",      "to": "r_new" },
+    { "from": "explicit", "to": "r_obj" },
+    { "from": "method",   "to": "r_obj" },
+    { "from": "plain",    "to": "r_undef", "label": "detached callback" },
+    { "from": "arrow",    "to": "r_lex" }
+  ]
+}</script>
+<p class="caption">Read the call site, not the definition. Precedence when rules collide: <code>new</code> &gt; <code>bind</code> &gt; explicit <code>call</code>/<code>apply</code> &gt; method call &gt; plain call. A method passed as a callback is invoked as <code>f()</code> — the "plain" column — which is the whole trap.</p>
+</section>
+
+<section class="block" data-block="bridge" id="1b-17">
+<div class="tag">Python bridge</div>
+<p>Python binds <code>self</code> at <em>attribute access</em>: <code>f = obj.method</code> produces a bound-method object, so <code>f()</code> still works. JS has no bound-method creation on access — <code>const f = obj.method</code> gives you the bare function, and <code>f()</code> runs with <code>this === undefined</code>. The equivalent of Python's automatic binding is explicit: <code>obj.method.bind(obj)</code>, an arrow wrapper <code>() =&gt; obj.method()</code>, or a class-field arrow (below). Python's <code>@staticmethod</code> is what every JS arrow function effectively is: no implicit receiver.</p>
+</section>
+
+<section class="block" data-block="concept" id="1b-06">
+<h2>Class field arrow functions — modern <code>this</code> binding</h2>
+<p>When you need a method that is safe to pass as a callback (an event handler, a <code>setTimeout</code> target), declare it as a class field arrow. The arrow is created per-instance in the constructor with <code>this</code> already lexically bound — no <code>.bind(this)</code> needed. Cost: one function object per instance instead of one shared on the prototype, which only matters for thousands of instances.</p>
+
+<pre><code class="language-javascript">class Button {
+  label = "Click me";
+
+  // Arrow field: `this` is always the instance, even when passed as a callback
+  handleClick = () =&gt; {
+    console.log(this.label);
+  };
+}
+
+const btn = new Button();
+element.addEventListener("click", btn.handleClick); // works, no bind needed</code></pre>
+</section>
+
+<section class="block" data-block="playground" id="1b-11" data-lang="js">
+<div class="tag">Try it</div>
+<p>Run it, then: turn <code>inc</code> into an arrow and see every call break; replace <code>.bind(counter)</code> with <code>() =&gt; counter.inc()</code>; call <code>bound.call({ count: 100 })</code> and check that <code>bind</code> wins.</p>
+<pre><code class="language-javascript">const counter = {
+  count: 0,
+  inc() { this.count++; return this.count; },
+};
+
+console.log(counter.inc());                      // implicit: object before the dot
+const loose = counter.inc;                       // detached — no object before the dot
+try { loose(); } catch (e) { console.log(e.name); }
+console.log(counter.inc.call({ count: 10 }));    // explicit
+const bound = counter.inc.bind(counter);
+console.log(bound());                            // bound: this fixed forever
+
+const arrow = () =&gt; typeof this;                 // lexical: the module's this
+console.log(arrow.call({ count: 1 }));           // call() can't change it</code></pre>
+<output>1
+TypeError
+11
+2
+undefined</output>
+</section>
+
+<section class="block" data-block="exercise" id="1b-13" data-kind="fix" data-lang="js">
+<div class="tag">Exercise</div>
+<p><code>Ticker.start</code> hands <code>this.tick</code> to a scheduler that calls it back later, detached from the instance. In strict mode (every class body is strict) <code>this</code> is <code>undefined</code> inside the callback and <code>this.n++</code> throws. Fix <code>Ticker</code> so the scheduler can call the method and the instance's <code>n</code> still updates. The tests check <code>n</code> after <code>start()</code>, the values the scheduler received, and that <code>tick()</code> still works as a normal method call.</p>
+<pre><code class="language-javascript">// --- instrumented scheduler (leave as is): calls back synchronously, detached
+const received = [];
+function schedule(cb) { received.push(cb()); }
+
+// --- fix this
+class Ticker {
+  constructor() { this.n = 0; }
+  tick() { this.n++; return this.n; }
+  start() {
+    schedule(this.tick);
+    schedule(this.tick);
+  }
+}</code></pre>
+<script type="application/json">{
+  "tests": "test(\"n is incremented through the callback\", () => { received.length = 0; const t = new Ticker(); t.start(); assert.equal(t.n, 2); });\ntest(\"scheduler received the returned counts\", () => { received.length = 0; const t = new Ticker(); t.start(); assert.equal(received, [1, 2]); });\ntest(\"tick() still works as a normal method\", () => { const t = new Ticker(); t.start(); assert.equal(t.tick(), 3); });\ntest(\"instances don't share state\", () => { received.length = 0; const a = new Ticker(), b = new Ticker(); a.start(); assert.equal(b.n, 0); });",
+  "hints": [
+    "<code>schedule(this.tick)</code> passes the bare function; when <code>schedule</code> calls <code>cb()</code> there is no object before the dot.",
+    "Two idiomatic fixes: wrap it — <code>schedule(() =&gt; this.tick())</code> — or bind it once in the constructor: <code>this.tick = this.tick.bind(this)</code>.",
+    "Third option: make <code>tick</code> a class-field arrow, <code>tick = () =&gt; { this.n++; return this.n; }</code>, so every instance gets a pre-bound copy."
+  ],
+  "solution": "// --- instrumented scheduler (leave as is): calls back synchronously, detached\nconst received = [];\nfunction schedule(cb) { received.push(cb()); }\n\nclass Ticker {\n  constructor() { this.n = 0; }\n  tick() { this.n++; return this.n; }\n  start() {\n    schedule(() => this.tick());\n    schedule(() => this.tick());\n  }\n}",
+  "explain": "The arrow wrapper has no <code>this</code> of its own, so it reads <code>start</code>'s <code>this</code> — the instance — and then calls <code>tick</code> as a method (<code>this.tick()</code>, object before the dot). <code>bind</code> and class-field arrows achieve the same by fixing <code>this</code> once; the choice is style, but passing an unbound method is the bug <code>@typescript-eslint/unbound-method</code> exists to catch."
+}</script>
+</section>
+
+<section class="block" data-block="exercise" id="1b-14" data-kind="complete" data-lang="js">
+<div class="tag">Exercise</div>
+<p>Implement <code>memoize(fn, key)</code> with a closure. The returned function calls <code>fn</code> at most once per key and returns the cached result afterwards. <code>key(...args)</code> computes the cache key and defaults to the first argument. Use a <code>Map</code> so object keys work by identity. Results that are <code>undefined</code> must be cached too — check presence with <code>has</code>, not <code>get</code>. Tests count how often <code>fn</code> runs.</p>
+<pre><code class="language-javascript">function memoize(fn, key = (...args) =&gt; args[0]) {
+  // TODO: closure over a Map
+}</code></pre>
+<script type="application/json">{
+  "tests": "test(\"second call with the same key is cached\", () => { let calls = 0; const sq = memoize(x => { calls++; return x * x; }); assert.equal(sq(3), 9); assert.equal(sq(3), 9); assert.equal(calls, 1); });\ntest(\"different keys compute separately\", () => { let calls = 0; const sq = memoize(x => { calls++; return x * x; }); sq(2); sq(3); sq(2); assert.equal(calls, 2); });\ntest(\"object keys compare by identity\", () => { let calls = 0; const f = memoize(o => { calls++; return 1; }); const k = {}; f(k); f(k); assert.equal(calls, 1); f({}); assert.equal(calls, 2); });\ntest(\"undefined results are cached\", () => { let calls = 0; const u = memoize(() => { calls++; }); u(); u(); assert.equal(calls, 1); });\ntest(\"custom key function sees all arguments\", () => { let calls = 0; const add = memoize((a, b) => { calls++; return a + b; }, (a, b) => a + \":\" + b); assert.equal(add(1, 2), 3); add(1, 2); assert.equal(calls, 1); assert.equal(add(2, 1), 3); assert.equal(calls, 2); });",
+  "hints": [
+    "Create <code>const cache = new Map()</code> inside <code>memoize</code> and return a function — the returned function closes over <code>cache</code>, <code>fn</code> and <code>key</code>.",
+    "In the returned function: <code>const k = key(...args); if (cache.has(k)) return cache.get(k);</code> — <code>has</code>, because a cached <code>undefined</code> would look like a miss with <code>get</code>.",
+    "Then <code>const v = fn(...args); cache.set(k, v); return v;</code>."
+  ],
+  "solution": "function memoize(fn, key = (...args) => args[0]) {\n  const cache = new Map();\n  return (...args) => {\n    const k = key(...args);\n    if (cache.has(k)) return cache.get(k);\n    const v = fn(...args);\n    cache.set(k, v);\n    return v;\n  };\n}",
+  "explain": "The <code>Map</code> lives in <code>memoize</code>'s scope and survives the return because the inner function references it — the same mechanism as <code>makeCounter</code> in 1b-07. Each <code>memoize</code> call gets its own cache, so two memoized functions never collide. <code>Map</code> rather than <code>{}</code> because object keys are compared by reference instead of being stringified to <code>\"[object Object]\"</code>."
+}</script>
+</section>
+
+<section class="block" data-block="review" id="1b-18">
+<div class="tag">Code review</div>
+<ul>
+  <li><strong>Unbound method passed as a callback.</strong> <code>el.addEventListener("click", this.onClick)</code>, <code>setTimeout(obj.method, …)</code>, <code>arr.map(this.format)</code> — all run the method with <code>this === undefined</code>. Wrap in an arrow, bind in the constructor, or use a class-field arrow. ESLint: <code>@typescript-eslint/unbound-method</code>.</li>
+  <li><strong>Arrow function as an object-literal method or prototype method that uses <code>this</code>.</strong> <code>{ name: "x", greet: () =&gt; this.name }</code> never sees the object. Use method shorthand <code>greet() {}</code>.</li>
+  <li><strong>Default to arrows; use <code>function</code> only when you need <code>this</code> or hoisting.</strong> A plain utility that reads <code>this</code> is a smell — refactor toward explicit parameters.</li>
+  <li><strong><code>var</code> in loops with closures.</strong> One shared binding → every callback sees the last value. <code>let</code>/<code>const</code>; ESLint <code>no-var</code>, <code>no-loop-func</code>.</li>
+  <li><strong>Closures over mutable state in long-lived callbacks.</strong> The React "stale closure": an effect or interval that captured a value from a previous render keeps using it. Functional updates (<code>setN(n =&gt; n + 1)</code>) and correct dependency arrays (4d) are the fix — the mechanism is this lesson's.</li>
+  <li><strong>Reading a <code>let</code>/<code>const</code> before its line in module initialisation order.</strong> Shows up as a TDZ <code>ReferenceError</code> that only appears with circular imports (1e). Declarations up top; no top-level side effects that call across modules.</li>
+  <li><strong><code>arguments</code>.</strong> Legacy, array-like, absent in arrows. Use rest parameters. ESLint: <code>prefer-rest-params</code>.</li>
+</ul>
+</section>
+
+<section class="block" data-block="exercise" id="1b-15" data-kind="mcq">
+<div class="tag">Check</div>
+<p>Preview of 4d. A React component runs this effect once on mount; the counter goes to 1 and then stops increasing, although the interval keeps firing every second:</p>
+<pre><code class="language-javascript">useEffect(() =&gt; {
+  const id = setInterval(() =&gt; setCount(count + 1), 1000);
+  return () =&gt; clearInterval(id);
+}, []);</code></pre>
+<p>Which explanation is correct?</p>
+<script type="application/json">{
+  "options": [
+    "<code>count</code> is a <code>const</code>, so it can never change inside the callback.",
+    "The interval callback is a closure over the <code>count</code> binding of the first render (<code>0</code>); later renders create new bindings the old closure never sees, so it keeps computing <code>0 + 1</code>. Use <code>setCount(c =&gt; c + 1)</code> or list <code>count</code> as a dependency.",
+    "<code>setInterval</code> is throttled to a single call by React Strict Mode.",
+    "<code>setCount</code> is asynchronous and drops updates that arrive while a render is in progress."
+  ],
+  "answer": 1,
+  "explain": "Each render is a new function call with its own <code>count</code> binding (1b-07 with a different <code>outer()</code> per render). The interval closed over the first call's scope — a correct, fully working closure, just over a value that is now stale. A functional update reads React's current state instead of the captured binding; adding <code>count</code> to the deps re-creates the interval with a fresh closure."
+}</script>
+</section>
+
+<section class="block" data-block="recall" id="1b-16">
+<div class="tag">Recall</div>
+<dl>
+  <dt>What is the Temporal Dead Zone, and what does reading a binding inside it do?</dt>
+  <dd>The span from the start of a scope until a <code>let</code>/<code>const</code>/<code>class</code> declaration's line runs. The binding exists but is uninitialized; reading it — even with <code>typeof</code> — throws a <code>ReferenceError</code>.</dd>
+  <dt>Which function form is hoisted with its body, and what happens when you call a <code>var</code>-assigned function before its assignment?</dt>
+  <dd>Only function <em>declarations</em>. A <code>var</code> binding is hoisted as <code>undefined</code>, so calling it throws <code>TypeError: x is not a function</code> rather than a <code>ReferenceError</code>.</dd>
+  <dt>Do closures capture values or bindings? What does that mean for <code>let count = 0</code> captured by two arrows?</dt>
+  <dd>Bindings. Both arrows reference the same <code>count</code> in the same scope, so a write through one is visible through the other — and the scope outlives the function call that created it.</dd>
+  <dt>What does this print?
+<pre><code class="language-javascript">const fns = [];
+for (var i = 0; i &lt; 3; i++) fns.push(() =&gt; i);
+console.log(fns.map(f =&gt; f()));
+const gns = [];
+for (let j = 0; j &lt; 3; j++) gns.push(() =&gt; j);
+console.log(gns.map(g =&gt; g()));</code></pre></dt>
+  <dd><code>[3, 3, 3]</code> then <code>[0, 1, 2]</code>. <code>var</code> gives one function-scoped binding, already <code>3</code> when the closures run; <code>let</code> creates a fresh binding per iteration.</dd>
+  <dt>The four <code>this</code> binding rules, in precedence order.</dt>
+  <dd><code>new f()</code> → the new instance; <code>f.call/apply(o)</code> and <code>f.bind(o)</code> → <code>o</code>; <code>o.f()</code> → <code>o</code>; plain <code>f()</code> → <code>undefined</code> in strict mode / modules. Arrow functions ignore all four and use the enclosing scope's <code>this</code>.</dd>
+  <dt>Why does <code>setTimeout(obj.show, 100)</code> fail when <code>show</code> reads <code>this.name</code>, and what are the three fixes?</dt>
+  <dd>The timer calls the bare function with no object before the dot, so <code>this</code> is <code>undefined</code>. Fix with an arrow wrapper <code>() =&gt; obj.show()</code>, <code>obj.show.bind(obj)</code>, or declare <code>show</code> as a class-field arrow.</dd>
+  <dt>What does <code>this</code> refer to inside an arrow function, and can <code>.call()</code> change it?</dt>
+  <dd>The <code>this</code> of the scope where the arrow was <em>defined</em>; it has none of its own. <code>call</code>, <code>apply</code>, <code>bind</code> and <code>new</code> cannot change it (<code>new</code> on an arrow throws).</dd>
+  <dt>How do Python and JS differ when you do <code>f = obj.method</code> and then call <code>f()</code>?</dt>
+  <dd>Python creates a bound method on attribute access, so <code>f()</code> still has <code>self</code>. JS hands you the bare function; <code>f()</code> runs with <code>this === undefined</code> unless you <code>bind</code> it.</dd>
+</dl>
+</section>
+</article>
+<script type="module" src="/assets/runtime/boot.js"></script>
+</body>
+</html>

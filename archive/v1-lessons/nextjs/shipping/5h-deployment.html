@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>5h. Deployment · JS Curriculum</title>
+<link rel="icon" href="/assets/favicon.svg">
+<link rel="stylesheet" href="/assets/vendor/prism.css">
+<link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body data-lesson="5h" data-level="migrated">
+<article class="lesson">
+
+<header>
+  <h1>Deployment — Vercel vs Self-hosted</h1>
+</header>
+
+<section class="block" data-block="concept" id="5h-01">
+<p><code>next build</code> produces three different kinds of output — static files, server code, middleware — and a host is just a decision about where each one runs. Vercel splits them across a CDN, serverless functions and edge functions with a shared cache; a self-hosted container runs all three in one Node process. Every deployment surprise (a stale <code>NEXT_PUBLIC_</code> value, a 404 on a JS chunk, a <code>revalidatePath</code> that only "worked" on one replica) is one of those outputs landing somewhere you didn't picture. 5i builds on this when it adds a CDN, cache and queue around the app.</p>
+</section>
+
+<section class="block" data-block="concept" id="5h-05">
+<h2>Environment variables — two namespaces, two moments</h2>
+<ul>
+  <li><strong><code>NEXT_PUBLIC_*</code></strong> — inlined into the client bundle <em>at build time</em> as string literals. Visible to every user in the JS source. Changing the value on the host after the build changes nothing until you rebuild.</li>
+  <li><strong>Everything else</strong> — server-only, read from <code>process.env</code> <em>at runtime</em> in server components, actions, route handlers, middleware. Never shipped to the browser.</li>
+</ul>
+<p>The second moment has a catch: statically prerendered pages run at <code>next build</code>. A page that reads <code>process.env.CMS_TOKEN</code> and fetches at build needs that variable in the <em>build</em> environment (the Docker build stage, the CI job), not only in the running container.</p>
+
+<div class="callout bad">
+  <div class="tag">Rule</div>
+  <p>If a variable name starts with <code>NEXT_PUBLIC_</code>, it is baked into the JS bundle and visible in the browser's source. A DB password or API secret there is public. Use non-prefixed vars for anything sensitive and read them only in server code — <code>import "server-only"</code> on the module that reads them makes the bundler enforce it (5i).</p>
+</div>
+
+<pre><code class="language-typescript">// lib/env.ts — parse once at boot, fail fast, export typed values
+import "server-only";
+import { z } from "zod";
+
+const schema = z.object({
+  DATABASE_URL: z.string().url(),
+  PORT: z.coerce.number().int().default(3000),
+  DEBUG: z.enum(["true", "false"]).default("false").transform(v =&gt; v === "true"),
+});
+export const env = schema.parse(process.env);      // throws with every missing key listed</code></pre>
+</section>
+
+<section class="block" data-block="exercise" id="5h-11" data-kind="predict" data-lang="js">
+<div class="tag">Exercise</div>
+<p>A six-line model of what the bundler does with env vars. <code>inline</code> plays <code>next build</code>; the two <code>new Function</code> calls play the browser and the server. What does this print, one line per <code>console.log</code>?</p>
+<pre><code class="language-javascript">const buildEnv   = { NEXT_PUBLIC_API: "https://api.v1", DB_URL: "postgres://build" };
+const runtimeEnv = { NEXT_PUBLIC_API: "https://api.v2", DB_URL: "postgres://prod" };
+
+// next build: every env.NEXT_PUBLIC_* in client code becomes a string literal
+function inline(src, env) {
+  return src.replace(/env\.(NEXT_PUBLIC_\w+)/g, (_, k) =&gt; JSON.stringify(env[k]));
+}
+
+const clientCode = 'console.log("client api:", env.NEXT_PUBLIC_API, "db:", env.DB_URL);';
+const serverCode = 'console.log("server api:", env.NEXT_PUBLIC_API, "db:", env.DB_URL);';
+
+const bundle = inline(clientCode, buildEnv);       // produced once, at build
+console.log(bundle);
+new Function("env", bundle)({});                   // browser: there is no server env
+new Function("env", serverCode)(runtimeEnv);       // server: reads env per request</code></pre>
+<script type="application/json">{
+  "expected": "console.log(\"client api:\", \"https://api.v1\", \"db:\", env.DB_URL);\nclient api: https://api.v1 db: undefined\nserver api: https://api.v2 db: postgres://prod",
+  "hints": [
+    "The regex only matches names starting with <code>NEXT_PUBLIC_</code>; <code>env.DB_URL</code> is left as code in the bundle.",
+    "The bundle was built with <code>buildEnv</code> and later runs with an empty object — what happens to the literal, and to the lookup that survived?",
+    "The server code was never inlined; it reads whatever env it's given at call time."
+  ],
+  "explain": "The first line is the bundle itself: the public var became the literal <code>\"https://api.v1\"</code> and the private one stayed a lookup. In the browser that lookup finds nothing (<code>undefined</code>) — the secret never left the server — while the literal is frozen at the build-time value even though <code>runtimeEnv</code> has <code>v2</code>. The server line sees the runtime values because nothing was inlined. Changing <code>NEXT_PUBLIC_API</code> on the host without rebuilding has no effect; changing <code>DB_URL</code> does."
+}</script>
+</section>
+
+<section class="block" data-block="exercise" id="5h-12" data-kind="fix" data-lang="js">
+<div class="tag">Exercise</div>
+<p><code>loadConfig</code> runs once at boot and is the only place the app reads env. Env values are always strings (or missing), and this version forgets that: a <code>PORT</code> of <code>"8080"</code> comes out as a string, <code>DEBUG="false"</code> comes out <em>truthy</em>, and a missing <code>DATABASE_URL</code> is returned as <code>undefined</code> instead of failing at boot. Fix it: numbers parsed, booleans accept <code>"true"/"1"</code> as true and <code>"false"/"0"</code> as false, defaults applied only when the key is <em>absent</em>, and a missing required key throws an <code>Error</code> whose message names it.</p>
+<pre><code class="language-javascript">// --- fix this
+function loadConfig(env) {
+  return {
+    port: env.PORT || 3000,
+    debug: env.DEBUG || false,
+    maxConnections: env.MAX_CONNECTIONS || 10,
+    databaseUrl: env.DATABASE_URL,
+  };
+}</code></pre>
+<script type="application/json">{
+  "tests": "const base = { DATABASE_URL: \"postgres://x\" };\ntest(\"numbers are numbers\", () => { const c = loadConfig({ ...base, PORT: \"8080\", MAX_CONNECTIONS: \"20\" }); assert.equal(c.port, 8080); assert.equal(c.maxConnections, 20); });\ntest(\"defaults when absent\", () => { const c = loadConfig(base); assert.equal(c.port, 3000); assert.equal(c.maxConnections, 10); assert.equal(c.debug, false); });\ntest(\"DEBUG=false is false, DEBUG=true/1 is true\", () => { assert.equal(loadConfig({ ...base, DEBUG: \"false\" }).debug, false); assert.equal(loadConfig({ ...base, DEBUG: \"0\" }).debug, false); assert.equal(loadConfig({ ...base, DEBUG: \"true\" }).debug, true); assert.equal(loadConfig({ ...base, DEBUG: \"1\" }).debug, true); });\ntest(\"missing DATABASE_URL throws and names the key\", () => { let err; try { loadConfig({ PORT: \"1\" }); } catch (e) { err = e; } assert(err instanceof Error, \"should throw\"); assert(/DATABASE_URL/.test(err.message), \"message should name DATABASE_URL\"); });\ntest(\"present value is kept\", () => assert.equal(loadConfig(base).databaseUrl, \"postgres://x\"));",
+  "hints": [
+    "<code>||</code> treats <code>\"false\"</code> and <code>\"0\"</code> as truthy strings — you need to look at the string's <em>content</em>, and use <code>??</code> (or an <code>in</code> check) for \"absent\".",
+    "Write three tiny helpers: <code>num(v, d)</code>, <code>bool(v, d)</code>, <code>required(env, key)</code>. <code>Number(\"8080\")</code> is 8080; <code>Number(undefined)</code> is <code>NaN</code>, so default first.",
+    "<code>required</code>: <code>if (env[key] == null || env[key] === \"\") throw new Error(`Missing env: ${key}`)</code>."
+  ],
+  "solution": "const num = (v, d) => (v == null ? d : Number(v));\nconst bool = (v, d) => (v == null ? d : /^(true|1)$/i.test(v));\nfunction required(env, key) {\n  if (env[key] == null || env[key] === \"\") throw new Error(`Missing env: ${key}`);\n  return env[key];\n}\n\nfunction loadConfig(env) {\n  return {\n    port: num(env.PORT, 3000),\n    debug: bool(env.DEBUG, false),\n    maxConnections: num(env.MAX_CONNECTIONS, 10),\n    databaseUrl: required(env, \"DATABASE_URL\"),\n  };\n}",
+  "explain": "Env is an untyped string bag; <code>||</code> on strings is the classic footgun (<code>DEBUG=false</code> turning debug <em>on</em> in production is a real incident). Parsing once at boot and throwing on a missing key moves the failure from \"first request that needed the DB, 20 minutes after deploy\" to \"container never came up, deploy rolled back\" — which is where you want it. In TypeScript this is the <code>z.coerce.number()</code> / <code>z.enum</code> schema in 5h-05."
+}</script>
+</section>
+
+<section class="block" data-block="concept" id="5h-09">
+<h2>What <code>next build</code> produces</h2>
+<p>One command, three kinds of artifact. Where each one runs is what differs between hosts.</p>
+<ul>
+  <li><strong>Static assets</strong> — <code>.next/static/</code> (hashed JS/CSS chunks, immutable forever) and prerendered HTML + RSC payloads for every route that could be rendered at build. Serve from a CDN.</li>
+  <li><strong>Server code</strong> — <code>.next/server/</code>: route handlers, server components, server actions, the ISR renderer. Needs Node (or, per route, the Edge runtime).</li>
+  <li><strong>Middleware</strong> — a separate bundle meant to run before routing, as close to the user as possible.</li>
+</ul>
+<p>Per route, the build also decides a <em>rendering mode</em> from the route's segment config and what it reads: static (prerendered once), ISR (prerendered, regenerated after <code>revalidate</code> seconds), dynamic (rendered per request), or edge (<code>runtime = "edge"</code>). <code>next build</code> prints this table; read it before every deploy.</p>
+<pre><code class="language-bash">Route (app)                     Size   First Load JS
+┌ ○ /                           1.2 kB      90 kB     ○ static
+├ ● /blog/[slug]                2.1 kB      92 kB     ● SSG / ISR  (revalidate: 60)
+├ ƒ /dashboard                  4.0 kB      99 kB     ƒ dynamic  (uses cookies)
+└ ƒ /api/health                 0 B          0 B
+ƒ Middleware                    28 kB</code></pre>
+</section>
+
+<section class="block" data-block="diagram" id="5h-08">
+<div class="tag">Mechanism</div>
+<script type="application/json">{
+  "direction": "right",
+  "nodes": [
+    { "id": "build",  "label": "next build",                    "kind": "box" },
+    { "id": "static", "label": "static assets\n+ prerendered",  "kind": "box" },
+    { "id": "server", "label": "server code\nRSC · actions · API", "kind": "box" },
+    { "id": "mw",     "label": "middleware",                    "kind": "box" },
+    { "id": "vcdn",   "label": "Vercel: CDN",                   "kind": "pill" },
+    { "id": "vfn",    "label": "Vercel: serverless\nfunction per route", "kind": "pill" },
+    { "id": "vedge",  "label": "Vercel: edge\nfunction",        "kind": "pill" },
+    { "id": "cont",   "label": "container:\nnode server.js",    "kind": "pill" },
+    { "id": "vcache", "label": "shared data cache\n(all regions)", "kind": "cyl" },
+    { "id": "disk",   "label": ".next/cache\n(this replica)",   "kind": "cyl" }
+  ],
+  "edges": [
+    { "from": "build",  "to": "static" },
+    { "from": "build",  "to": "server" },
+    { "from": "build",  "to": "mw" },
+    { "from": "static", "to": "vcdn" },
+    { "from": "server", "to": "vfn" },
+    { "from": "mw",     "to": "vedge" },
+    { "from": "static", "to": "cont", "dashed": true },
+    { "from": "server", "to": "cont", "dashed": true },
+    { "from": "mw",     "to": "cont", "dashed": true },
+    { "from": "vfn",    "to": "vcache", "label": "ISR / fetch cache" },
+    { "from": "cont",   "to": "disk",   "label": "ISR / fetch cache" }
+  ]
+}</script>
+<p class="caption">Same build, two placements. Vercel fans the three outputs out to specialised runtimes with one shared cache; a standalone container (dashed) runs all three in one process with a cache on its own disk — which is why multi-replica self-hosting needs a <code>cacheHandler</code>.</p>
+</section>
+
+<section class="block" data-block="exercise" id="5h-13" data-kind="complete" data-lang="js">
+<div class="tag">Exercise</div>
+<p>Implement the rendering-mode decision <code>next build</code> makes per route. Input: <code>{ runtime, dynamic, revalidate, usesRequest }</code> where <code>runtime</code> is <code>"nodejs"</code> or <code>"edge"</code>, <code>dynamic</code> is <code>"auto" | "force-dynamic" | "force-static"</code>, <code>revalidate</code> is <code>false</code> or a number of seconds, and <code>usesRequest</code> is true when the page reads <code>cookies()</code>, <code>headers()</code> or <code>searchParams</code>. Return one of <code>"edge"</code>, <code>"dynamic"</code>, <code>"isr"</code>, <code>"static"</code>. Precedence: edge runtime wins over everything; <code>force-dynamic</code> or <code>revalidate: 0</code> → dynamic; <code>force-static</code> ignores request usage; otherwise request usage → dynamic; a positive <code>revalidate</code> → isr; else static.</p>
+<pre><code class="language-javascript">function renderingMode({ runtime = "nodejs", dynamic = "auto", revalidate = false, usesRequest = false }) {
+  // TODO
+}</code></pre>
+<script type="application/json">{
+  "tests": "test(\"plain page is static\", () => assert.equal(renderingMode({}), \"static\"));\ntest(\"revalidate makes ISR\", () => assert.equal(renderingMode({ revalidate: 60 }), \"isr\"));\ntest(\"reading cookies/headers makes it dynamic\", () => { assert.equal(renderingMode({ usesRequest: true }), \"dynamic\"); assert.equal(renderingMode({ usesRequest: true, revalidate: 60 }), \"dynamic\"); });\ntest(\"force-dynamic and revalidate: 0 are dynamic\", () => { assert.equal(renderingMode({ dynamic: \"force-dynamic\" }), \"dynamic\"); assert.equal(renderingMode({ revalidate: 0 }), \"dynamic\"); });\ntest(\"force-static overrides request usage\", () => { assert.equal(renderingMode({ dynamic: \"force-static\", usesRequest: true }), \"static\"); assert.equal(renderingMode({ dynamic: \"force-static\", usesRequest: true, revalidate: 30 }), \"isr\"); });\ntest(\"edge runtime wins\", () => { assert.equal(renderingMode({ runtime: \"edge\" }), \"edge\"); assert.equal(renderingMode({ runtime: \"edge\", dynamic: \"force-static\" }), \"edge\"); });",
+  "hints": [
+    "Check in precedence order and return early: runtime first, then <code>force-dynamic</code> / <code>revalidate === 0</code>.",
+    "<code>force-static</code> means \"pretend <code>usesRequest</code> is false\" — but a positive <code>revalidate</code> still makes it ISR.",
+    "Last two lines: <code>if (typeof revalidate === \"number\" &amp;&amp; revalidate &gt; 0) return \"isr\"; return \"static\";</code>"
+  ],
+  "solution": "function renderingMode({ runtime = \"nodejs\", dynamic = \"auto\", revalidate = false, usesRequest = false }) {\n  if (runtime === \"edge\") return \"edge\";\n  if (dynamic === \"force-dynamic\" || revalidate === 0) return \"dynamic\";\n  const dynamicByUsage = dynamic === \"force-static\" ? false : usesRequest;\n  if (dynamicByUsage) return \"dynamic\";\n  if (typeof revalidate === \"number\" && revalidate > 0) return \"isr\";\n  return \"static\";\n}",
+  "explain": "This is the table <code>next build</code> prints, as a function. The surprising rows are the ones that bite in deploys: one <code>cookies()</code> call turns a page you thought was static into a per-request function (and on Vercel, a per-request invocation bill); <code>force-static</code> silences that but then <code>cookies()</code> returns empty. Knowing the precedence lets you read the build table and predict the host's behaviour before shipping."
+}</script>
+</section>
+
+<section class="block" data-block="concept" id="5h-02">
+<h2>Self-hosting with <code>output: "standalone"</code></h2>
+<pre><code class="language-typescript">// next.config.ts
+import type { NextConfig } from "next";
+const config: NextConfig = { output: "standalone" };
+export default config;</code></pre>
+<p>The build traces every file the server actually imports and writes a self-contained <code>.next/standalone/</code>: a <code>server.js</code> plus a pruned <code>node_modules</code>. Two things are deliberately <em>not</em> included and must be copied in: <code>.next/static</code> (the hashed client chunks) and <code>public/</code>. Forgetting either gives a page that renders and then 404s on every JS file.</p>
+<pre><code class="language-docker"># Dockerfile — two stages: build with everything, run with the trace
+FROM node:22-alpine AS build
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY . .
+# Build-time env: NEXT_PUBLIC_* and anything a prerendered page reads
+RUN npm run build
+
+FROM node:22-alpine
+WORKDIR /app
+ENV NODE_ENV=production HOSTNAME=0.0.0.0 PORT=3000
+COPY --from=build /app/.next/standalone ./
+COPY --from=build /app/.next/static ./.next/static
+COPY --from=build /app/public ./public
+USER node
+EXPOSE 3000
+CMD ["node", "server.js"]</code></pre>
+<p><code>HOSTNAME=0.0.0.0</code> matters: the standalone server binds to <code>localhost</code> by default, which inside a container means unreachable. Runtime secrets (<code>DATABASE_URL</code>, <code>AUTH_SECRET</code>) go in at <code>docker run</code> / the orchestrator, not in the image.</p>
+</section>
+
+<section class="block" data-block="concept" id="5h-03">
+<h2>What changes when you self-host</h2>
+<ul>
+  <li><strong>Image optimization</strong> — Next 15 bundles <code>sharp</code>, so <code>next/image</code> works in the container without extra installs. It costs CPU on your server per unique size; at volume, point <code>images.loader</code> at a CDN (Cloudinary, imgix, Cloudflare Images) and keep <code>images.remotePatterns</code> tight.</li>
+  <li><strong>ISR and the data cache</strong> — default storage is the filesystem under <code>.next/cache</code>, per replica. With two containers behind a load balancer, <code>revalidatePath()</code> invalidates the one that ran it. Configure <code>cacheHandler</code> (Redis via <code>@neshca/cache-handler</code>, or your own) and set <code>cacheMaxMemorySize: 0</code> so every replica reads the same cache.</li>
+  <li><strong>Middleware</strong> — runs in your Node process, before routing. Same semantics, no edge latency benefit; put a CDN in front if you need geography.</li>
+  <li><strong>Version skew</strong> — each replica must serve the same build: identical image tag, and <code>generateBuildId</code> pinned to the git SHA if you ever build per replica. Otherwise a client loaded from replica A asks replica B for a chunk hash it doesn't have.</li>
+  <li><strong>Process model</strong> — one Node process per container, no built-in worker pool. Scale by replicas, not threads; put a health check on a route handler (<code>/api/health</code>) and let the orchestrator restart on failure.</li>
+</ul>
+<pre><code class="language-typescript">// next.config.ts — shared cache for multi-replica ISR
+const config: NextConfig = {
+  output: "standalone",
+  cacheHandler: require.resolve("./cache-handler.mjs"),
+  cacheMaxMemorySize: 0,                 // disable the in-process LRU; Redis is the source of truth
+  generateBuildId: async () =&gt; process.env.GIT_SHA ?? null,
+};</code></pre>
+</section>
+
+<section class="block" data-block="bridge" id="5h-10">
+<div class="tag">Python bridge</div>
+<p>The standalone container is <code>gunicorn</code> and <code>collectstatic</code> in one. <code>node server.js</code> is the app server (one process, async — think a single <code>uvicorn</code> worker, not gunicorn's <code>--workers 4</code>; you scale with replicas). <code>COPY .next/static</code> and <code>public</code> into the image is <code>collectstatic</code>, except nothing like <code>whitenoise</code> is needed — the Next server serves them, and a CDN in front caches the hashed <code>_next/static/*</code> paths forever. What has no Django equivalent is build-time inlining: <code>settings.py</code> reads <code>os.environ</code> when the process starts, full stop, whereas <code>NEXT_PUBLIC_*</code> is frozen into the artifact at <code>docker build</code>. And prerendering means some of your "views" run during the build — the equivalent of Django executing a template at <code>collectstatic</code> time and needing the database then.</p>
+</section>
+
+<section class="block" data-block="concept" id="5h-04">
+<h2>Other targets — OpenNext, Cloudflare, Vercel</h2>
+<ul>
+  <li><strong>Vercel</strong> — zero config: CDN for static, a serverless function per route (or one edge function for <code>runtime = "edge"</code> routes and middleware), ISR and <code>fetch</code> cache shared globally, image optimization, preview deployments per branch. If you're small, just use it. What you give up: control over regions and runtimes, and the per-invocation bill when a page turns dynamic by accident (5h-13).</li>
+  <li><strong>OpenNext</strong> — community adapters that split the build the way Vercel does, for other clouds: <code>@opennextjs/aws</code> (Lambda + CloudFront + S3, used by SST) and <code>@opennextjs/cloudflare</code> (Workers with Node compatibility — the successor to the deprecated <code>@cloudflare/next-on-pages</code>, which forced the Edge runtime on every route).</li>
+  <li><strong>Container hosts</strong> — Fly.io, Railway, Render, ECS, Kubernetes: the standalone image from 5h-02 plus a shared cache handler if you run more than one replica.</li>
+</ul>
+<pre><code class="language-bash">npx opennextjs-cloudflare build      # adapts .next output for Workers
+npx opennextjs-cloudflare deploy</code></pre>
+</section>
+
+<section class="block" data-block="concept" id="5h-06">
+<h2>Post-response work — <code>after()</code></h2>
+<p><code>after()</code> (stable in Next 15.1, <code>next/server</code>) schedules work to run once the response has been sent: analytics, audit logs, cache warming. The response isn't delayed by it, and it works in server components, actions, route handlers and middleware.</p>
+<pre><code class="language-typescript">import { after } from "next/server";
+
+export async function GET() {
+  after(async () =&gt; {
+    await analytics.track("page_view");   // runs after the response is flushed
+  });
+  return Response.json({ ok: true });
+}</code></pre>
+<p>On serverless hosts the platform must keep the function alive for it (Vercel does, via <code>waitUntil</code>); in a container it just runs in the same process. Either way it's best-effort — a crash or a scale-down loses it. Anything that must happen goes in a queue (5i), not in <code>after()</code>.</p>
+</section>
+
+<section class="block" data-block="concept" id="5h-07">
+<h2>Startup and error hooks — <code>instrumentation.ts</code></h2>
+<p>Stable in Next 15 (no flag). Two exports from the project root: <code>register()</code> runs once per server start — initialise OpenTelemetry, Sentry, a logger; <code>onRequestError()</code> is called for every uncaught error in server code, with the request and the route it came from.</p>
+<pre><code class="language-typescript">// instrumentation.ts
+import type { Instrumentation } from "next";
+
+export async function register() {
+  if (process.env.NEXT_RUNTIME === "nodejs") {        // also runs for the edge runtime; branch on it
+    const { init } = await import("./sentry.server.config");
+    init();
+  }
+}
+
+export const onRequestError: Instrumentation.onRequestError = async (err, request, context) =&gt; {
+  await reportError(err, { path: request.path, route: context.routePath, kind: context.routeType });
+};</code></pre>
+<p>Dynamic <code>import()</code> inside <code>register</code> is deliberate: the file is loaded for both runtimes, and a Node-only SDK at the top level breaks the edge build. For Sentry specifically, <code>withSentryConfig()</code> around <code>next.config.ts</code> generates this file and uploads source maps.</p>
+</section>
+
+<section class="block" data-block="review" id="5h-14">
+<div class="tag">Code review</div>
+<ul>
+  <li><strong>Changed a <code>NEXT_PUBLIC_</code> value in the host's dashboard and redeployed the same image.</strong> No effect — it's a literal in the bundle. Rebuild, or move the value to the server and pass it down as a prop.</li>
+  <li><strong>Standalone image without <code>.next/static</code> and <code>public</code>.</strong> HTML renders, every chunk 404s, page never hydrates. The two <code>COPY</code> lines are not optional.</li>
+  <li><strong>Two or more replicas and no <code>cacheHandler</code>.</strong> <code>revalidatePath</code> / <code>revalidateTag</code> only clear the replica that ran them; users see different data depending on which container the load balancer picked. Redis-backed handler, <code>cacheMaxMemorySize: 0</code>.</li>
+  <li><strong>Prerendered page reads a secret that only exists at runtime.</strong> Build succeeds with <code>undefined</code> or fails in CI with a confusing stack. Either provide it to the build stage, or make the route dynamic on purpose.</li>
+  <li><strong>Boolean env via <code>||</code>.</strong> <code>DEBUG=false</code> enables debug. Parse env once through a schema (<code>lib/env.ts</code>) and import the parsed object everywhere.</li>
+  <li><strong>Must-happen work in <code>after()</code>.</strong> Billing, emails, webhooks: best-effort is not enough. <code>after()</code> for telemetry; a queue with retries for anything with a consequence.</li>
+  <li><strong>No health check, binding to <code>localhost</code>.</strong> The orchestrator can't tell a wedged process from a healthy one, and a missing <code>HOSTNAME=0.0.0.0</code> makes the container "healthy" and unreachable.</li>
+</ul>
+</section>
+
+<section class="block" data-block="exercise" id="5h-15" data-kind="mcq">
+<div class="tag">Check</div>
+<p>A standalone build runs as three replicas behind a load balancer, default cache config. <code>/posts</code> is ISR with <code>revalidate: 3600</code>. An editor publishes a post; the server action calls <code>revalidatePath("/posts")</code> and the editor sees the new post immediately. Support tickets say other users still see the old list. Why?</p>
+<script type="application/json">{
+  "options": [
+    "<code>revalidatePath</code> only marks the path stale for the <em>next</em> request from the same user; other users need a hard refresh.",
+    "The ISR cache is a directory inside each container. The action ran on one replica and cleared that replica's copy; the other two serve their cached HTML until their own hour is up.",
+    "Server actions run on the Edge runtime, which cannot write to the Node cache; <code>revalidatePath</code> is a no-op outside Vercel.",
+    "The load balancer caches responses; <code>revalidatePath</code> needs a <code>Cache-Control: no-store</code> on the action's response to purge it."
+  ],
+  "answer": 1,
+  "explain": "Without a <code>cacheHandler</code> the data/ISR cache lives in <code>.next/cache</code> on each replica's disk (and in each process's memory). Invalidation is a local write. The fix is a shared handler (Redis) with <code>cacheMaxMemorySize: 0</code> — the same shape Vercel provides out of the box, which is why this bug only appears after moving off it."
+}</script>
+</section>
+
+<section class="block" data-block="recall" id="5h-16">
+<div class="tag">Recall</div>
+<dl>
+  <dt>What are the three kinds of output of <code>next build</code>, and where does Vercel run each?</dt>
+  <dd>Static assets + prerendered pages → CDN; server code (RSC, actions, route handlers) → serverless function per route; middleware → edge function. Plus a globally shared ISR / fetch cache.</dd>
+
+  <dt>When is <code>NEXT_PUBLIC_API_URL</code> read, and what happens if you change it on the host without rebuilding?</dt>
+  <dd>At build time — it's inlined as a string literal into the client bundle. Changing it later does nothing until the next <code>next build</code>. Non-prefixed vars are read from <code>process.env</code> at runtime.</dd>
+
+  <dt>What does this print?
+<pre><code class="language-javascript">const env = { DEBUG: "false" };
+console.log(env.DEBUG || false, env.DEBUG === "true");</code></pre></dt>
+  <dd><code>false false</code> — the first is the <em>string</em> <code>"false"</code> (truthy), printed as its value. Env values are strings; parse them, never <code>||</code> them.</dd>
+
+  <dt>Which two directories must be copied into a standalone Docker image by hand, and what breaks without them?</dt>
+  <dd><code>.next/static</code> (hashed JS/CSS chunks) and <code>public/</code>. Without them the HTML renders but every chunk 404s and the page never hydrates.</dd>
+
+  <dt>Why does ISR invalidation misbehave with several self-hosted replicas, and what's the fix?</dt>
+  <dd>The cache is on each replica's own disk/memory; <code>revalidatePath</code> clears only the replica that ran it. Configure a shared <code>cacheHandler</code> (Redis) and <code>cacheMaxMemorySize: 0</code>.</dd>
+
+  <dt>A page calls <code>cookies()</code> with no other config. What rendering mode does <code>next build</code> assign, and how do you force it static?</dt>
+  <dd>Dynamic (rendered per request, a function invocation on serverless). <code>export const dynamic = "force-static"</code> makes it static — and <code>cookies()</code> then returns empty.</dd>
+
+  <dt>What is <code>after()</code> for, and what must not go in it?</dt>
+  <dd>Best-effort work after the response is sent (analytics, audit logs). Not for anything that must happen — a crash or scale-down loses it; use a queue with retries.</dd>
+
+  <dt>Which two functions can <code>instrumentation.ts</code> export?</dt>
+  <dd><code>register()</code> — runs once at server start (init OpenTelemetry / Sentry; branch on <code>NEXT_RUNTIME</code>, dynamic-import Node-only SDKs); <code>onRequestError(err, request, context)</code> — called for every uncaught server error with the route it came from.</dd>
+</dl>
+</section>
+</article>
+<script type="module" src="/assets/runtime/boot.js"></script>
+</body>
+</html>

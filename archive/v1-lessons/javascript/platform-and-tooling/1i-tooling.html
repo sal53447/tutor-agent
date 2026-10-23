@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>1i. Tooling ecosystem · JS Curriculum</title>
+<link rel="icon" href="/assets/favicon.svg">
+<link rel="stylesheet" href="/assets/vendor/prism.css">
+<link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body data-lesson="1i" data-level="interactive">
+<article class="lesson">
+
+<header>
+  <h1>Tooling Ecosystem</h1>
+</header>
+
+<section class="block" data-block="concept" id="1i-05">
+<p>Three mechanisms explain almost every "works on my machine" in a JS repo: how a version <em>range</em> in <code>package.json</code> becomes an exact version in the lockfile, how <code>import "zod"</code> becomes a file path at runtime, and which tool turns source into what actually ships. Express (Part 3), React (Part 4) and Next.js (Part 5) all assume you can read a <code>package.json</code>, trust a lockfile, and know why two copies of a package end up in <code>node_modules</code>.</p>
+</section>
+
+<section class="block" data-block="concept" id="1i-01">
+<h2>Package managers: npm, pnpm, yarn</h2>
+<ul>
+  <li><strong>npm</strong> — ships with Node, ubiquitous. Fine.</li>
+  <li><strong>pnpm</strong> — one content-addressable store on disk, hard-linked into each project; strict by default (you can only import what you declared). Faster, smaller, catches phantom dependencies. <strong>Recommended.</strong></li>
+  <li><strong>yarn</strong> — yarn 1 is legacy; yarn Berry (4.x) exists with niche adoption. Its ideas (lockfile, workspaces) are in npm and pnpm now.</li>
+</ul>
+<p>One-off tool execution without a global install:</p>
+<pre><code class="language-bash">npx create-next-app@latest my-app      # npm: uses the local binary if present, else a temp install
+pnpm dlx create-next-app@latest my-app # pnpm: always an isolated temp install, never touches node_modules
+corepack enable                        # pins the package manager itself via "packageManager" in package.json</code></pre>
+
+<div class="callout warn">
+  <div class="tag">Phantom dependencies</div>
+  <p>npm and yarn <em>hoist</em>: every transitive package lands flat in <code>node_modules/</code>, so <code>import "lodash"</code> works even though only one of your dependencies declared it. It breaks the day that dependency drops lodash. pnpm's layout (<code>node_modules/.pnpm/</code> + symlinks) makes undeclared imports fail immediately — which is the point.</p>
+</div>
+</section>
+
+<section class="block" data-block="bridge" id="1i-14">
+<div class="tag">Python bridge</div>
+<p><code>package.json</code> ≈ <code>pyproject.toml</code>; <code>pnpm-lock.yaml</code> ≈ <code>uv.lock</code>; <code>npm ci</code> / <code>pnpm install --frozen-lockfile</code> ≈ <code>uv sync --frozen</code>; <code>npx</code> / <code>pnpm dlx</code> ≈ <code>uvx</code> / <code>pipx run</code>. The structural difference: a venv holds <strong>one</strong> version of each package, so pip must solve a single global constraint set and fails on conflicts. <code>node_modules</code> is a <em>tree</em> — package A can depend on <code>zod@3</code> while B depends on <code>zod@4</code>, each gets its own nested copy, and resolution walks up directories from the importing file. That is why installs rarely conflict, why bundles get fat, why <code>instanceof</code> across two copies of a class fails (1g), and why <code>peerDependencies</code> exist at all: "I need <em>your</em> React, not a second one".</p>
+</section>
+
+<section class="block" data-block="concept" id="1i-02">
+<h2><code>package.json</code> essentials</h2>
+<pre><code class="language-json">{
+  "name": "my-app",
+  "version": "0.1.0",
+  "type": "module",
+  "packageManager": "pnpm@9.12.0",
+  "engines": { "node": "&gt;=22" },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "test": "vitest",
+    "lint": "eslint ."
+  },
+  "dependencies": { "express": "^5.1.0", "zod": "^3.24.0" },
+  "devDependencies": { "vite": "^6.0.0", "vitest": "^3.0.0", "typescript": "^5.7.0" }
+}</code></pre>
+<ul>
+  <li><code>"type": "module"</code> — <code>.js</code> files are ES modules (1e). Without it they are CommonJS.</li>
+  <li><code>dependencies</code> vs <code>devDependencies</code> — what the deployed artifact imports at runtime vs what builds and tests it. <code>npm ci --omit=dev</code> in a Docker image installs only the former.</li>
+  <li><code>scripts</code> — <code>npm run x</code> runs with <code>node_modules/.bin</code> on <code>PATH</code>, so <code>"lint": "eslint ."</code> finds the local binary.</li>
+  <li><code>engines</code> + <code>engine-strict=true</code> in <code>.npmrc</code> — fail the install on the wrong Node instead of failing in production.</li>
+</ul>
+<p>A <em>published</em> package adds the entry-point fields the resolver reads: <code>exports</code> (with conditions) replaces the older <code>main</code>.</p>
+<pre><code class="language-json">{
+  "name": "my-lib",
+  "exports": {
+    ".":        { "types": "./dist/index.d.ts", "import": "./dist/index.js", "require": "./dist/index.cjs" },
+    "./server": { "import": "./dist/server.js" }
+  },
+  "files": ["dist"]
+}</code></pre>
+</section>
+
+<section class="block" data-block="concept" id="1i-06">
+<h2><code>peerDependencies</code> — "use the host's copy"</h2>
+<p>A package lists a peer dependency when it needs the <em>host project</em> to provide that package rather than installing its own copy. A React component library lists <code>react</code> as a peer: it needs React, but a second copy would break hooks and context (two <code>React</code> objects, two dispatchers).</p>
+<pre><code class="language-json">{
+  "peerDependencies": { "react": "&gt;=18" },
+  "devDependencies":  { "react": "^19.0.0" }
+}</code></pre>
+<p>Publishing a library: framework deps go in <code>peerDependencies</code> (and in <code>devDependencies</code> so your own tests run). Consuming one: npm ≥ 7 auto-installs missing peers; pnpm warns — either way, declare the peer in your own <code>dependencies</code> so the version is yours to control.</p>
+</section>
+
+<section class="block" data-block="concept" id="1i-03">
+<h2>Semver ranges and lockfiles</h2>
+<ul>
+  <li><code>^1.2.3</code> — <code>&gt;=1.2.3 &lt;2.0.0</code>. The default <code>npm install</code> writes. The first <em>non-zero</em> component is fixed, so <code>^0.2.3</code> means <code>&gt;=0.2.3 &lt;0.3.0</code> — 0.x libraries treat minor as breaking.</li>
+  <li><code>~1.2.3</code> — <code>&gt;=1.2.3 &lt;1.3.0</code>. Patch updates only.</li>
+  <li><code>1.2.3</code> — exact. Rare in apps; the lockfile already pins.</li>
+</ul>
+<p>The range is a <em>policy</em>; the lockfile (<code>package-lock.json</code>, <code>pnpm-lock.yaml</code>) is the <em>decision</em>: the exact version of every package in the tree plus its integrity hash. <strong>Commit it.</strong> Then two commands with different contracts:</p>
+<pre><code class="language-bash">npm install        # resolve ranges; reuse the lock where it still satisfies, otherwise update it
+npm ci             # delete node_modules, install exactly the lock; FAIL if lock and package.json disagree
+pnpm install --frozen-lockfile   # pnpm's npm ci (the default in CI environments)</code></pre>
+</section>
+
+<section class="block" data-block="diagram" id="1i-07">
+<div class="tag">Mechanism</div>
+<script type="application/json">{
+  "direction": "right",
+  "nodes": [
+    { "id": "pkg",      "label": "package.json\nranges: ^3.23.0",      "kind": "box", "row": 0 },
+    { "id": "resolver", "label": "resolver\nregistry metadata",       "kind": "box", "row": 1 },
+    { "id": "lock",     "label": "lockfile\nexact + integrity",       "kind": "cyl", "row": 2 },
+    { "id": "ci",       "label": "npm ci\nlock → tree, no resolving", "kind": "note", "row": 2 },
+    { "id": "nm",       "label": "node_modules\n(or pnpm store links)", "kind": "box", "row": 3 }
+  ],
+  "edges": [
+    { "from": "pkg",      "to": "resolver", "label": "npm install" },
+    { "from": "resolver", "to": "lock",     "label": "writes" },
+    { "from": "lock",     "to": "nm",       "label": "installs" },
+    { "from": "ci",       "to": "nm",       "label": "fails on mismatch", "dashed": true }
+  ]
+}</script>
+<p class="caption"><code>npm install</code> is allowed to change the lockfile; <code>npm ci</code> only reads it. Reproducible builds depend on CI never taking the top path.</p>
+</section>
+
+<section class="block" data-block="playground" id="1i-08" data-lang="js">
+<div class="tag">Try it</div>
+<p>A caret/tilde matcher for the common cases. Try <code>^0.0.3</code> against <code>0.0.4</code>, <code>~1.2.3</code> against <code>1.2.3</code>, and add a <code>&gt;=</code> operator.</p>
+<pre><code class="language-javascript">function parse(v) { return v.split(".").map(Number); }
+function below(got, want) {
+  for (let i = 0; i &lt; 3; i++) { if (got[i] &lt; want[i]) return true; if (got[i] &gt; want[i]) return false; }
+  return false;
+}
+function satisfies(range, version) {
+  const op = range[0] === "^" || range[0] === "~" ? range[0] : "";
+  const want = parse(range.slice(op.length));
+  const got = parse(version);
+  if (below(got, want)) return false;                                   // never below the floor
+  if (op === "") return got.every((n, i) =&gt; n === want[i]);              // exact
+  if (op === "~") return got[0] === want[0] &amp;&amp; got[1] === want[1];       // patch may move
+  const lock = want[0] !== 0 ? 0 : want[1] !== 0 ? 1 : 2;              // caret: first non-zero part is fixed
+  return got.slice(0, lock + 1).every((n, i) =&gt; n === want[i]);
+}
+
+for (const [range, v] of [["^1.2.3", "1.9.0"], ["^1.2.3", "2.0.0"], ["~1.2.3", "1.2.9"], ["~1.2.3", "1.3.0"], ["^0.2.3", "0.2.9"], ["^0.2.3", "0.3.0"]])
+  console.log(range.padEnd(6), v.padEnd(5), satisfies(range, v));</code></pre>
+<output>^1.2.3 1.9.0 true
+^1.2.3 2.0.0 false
+~1.2.3 1.2.9 true
+~1.2.3 1.3.0 false
+^0.2.3 0.2.9 true
+^0.2.3 0.3.0 false</output>
+</section>
+
+<section class="block" data-block="exercise" id="1i-09" data-kind="predict" data-lang="js">
+<div class="tag">Exercise</div>
+<p>A resolver picks the <em>highest</em> published version that satisfies the range. What does this print? One value per line.</p>
+<pre><code class="language-javascript">function parse(v) { return v.split(".").map(Number); }
+function below(got, want) {
+  for (let i = 0; i &lt; 3; i++) { if (got[i] &lt; want[i]) return true; if (got[i] &gt; want[i]) return false; }
+  return false;
+}
+function satisfies(range, version) {
+  const op = range[0] === "^" || range[0] === "~" ? range[0] : "";
+  const want = parse(range.slice(op.length)), got = parse(version);
+  if (below(got, want)) return false;
+  if (op === "") return got.every((n, i) =&gt; n === want[i]);
+  if (op === "~") return got[0] === want[0] &amp;&amp; got[1] === want[1];
+  const lock = want[0] !== 0 ? 0 : want[1] !== 0 ? 1 : 2;
+  return got.slice(0, lock + 1).every((n, i) =&gt; n === want[i]);
+}
+
+const registry = { zod: ["3.22.4", "3.23.8", "3.24.1", "4.0.0"], vite: ["0.9.9", "0.10.0", "0.10.2", "1.0.0"] };
+const pick = (name, range) =&gt; registry[name].filter(v =&gt; satisfies(range, v)).at(-1) ?? "none";
+
+console.log(pick("zod", "^3.23.0"));
+console.log(pick("zod", "~3.23.0"));
+console.log(pick("zod", "3.22.4"));
+console.log(pick("vite", "^0.10.0"));
+console.log(pick("vite", "^0.9.9"));
+console.log(pick("vite", "^2.0.0"));</code></pre>
+<script type="application/json">{
+  "expected": "3.24.1\n3.23.8\n3.22.4\n0.10.2\n0.9.9\nnone",
+  "hints": [
+    "<code>^3.23.0</code> allows anything below 4.0.0; the resolver takes the highest match.",
+    "<code>^0.10.0</code> fixes the minor (first non-zero part): <code>&gt;=0.10.0 &lt;0.11.0</code>. <code>^0.9.9</code> likewise never reaches 0.10.",
+    "Nothing published satisfies <code>^2.0.0</code> for vite — that is an <code>ETARGET</code> error in real npm."
+  ],
+  "explain": "Caret on 0.x is the one people get wrong: <code>^0.9.9</code> is effectively <code>~0.9.9</code>. The lockfile exists so that <code>pick</code> runs once, on the developer's machine, and never again in CI."
+}</script>
+</section>
+
+<section class="block" data-block="exercise" id="1i-13" data-kind="fix" data-lang="js">
+<div class="tag">Exercise</div>
+<p>This toy <code>install</code> ignores the lockfile: it re-resolves every range to the newest version, so each CI run can get a different tree. Give it <code>npm ci</code> semantics. Contract: if the lock has an entry that satisfies the range, use it. Otherwise, with <code>frozen: true</code> throw an <code>Error</code> (lock out of date); without it, resolve the highest match and write it into the returned lock. Tests check all three paths.</p>
+<pre><code class="language-javascript">// --- in-memory registry + helpers (leave as is)
+const registry = { zod: ["3.23.8", "3.24.1", "3.25.0"], pino: ["9.0.0", "9.1.0"], ms: ["2.1.2", "2.1.3"] };
+function parse(v) { return v.split(".").map(Number); }
+function satisfies(range, version) {           // ^ and ~ only, no prereleases
+  const op = range[0] === "^" || range[0] === "~" ? range[0] : "";
+  const want = parse(range.slice(op.length)), got = parse(version);
+  for (let i = 0; i &lt; 3; i++) { if (got[i] &lt; want[i]) return false; if (got[i] &gt; want[i]) break; }
+  if (op === "") return got.every((n, i) =&gt; n === want[i]);
+  if (op === "~") return got[0] === want[0] &amp;&amp; got[1] === want[1];
+  const lock = want[0] !== 0 ? 0 : want[1] !== 0 ? 1 : 2;
+  return got.slice(0, lock + 1).every((n, i) =&gt; n === want[i]);
+}
+const highest = (name, range) =&gt; registry[name].filter(v =&gt; satisfies(range, v)).at(-1);
+
+const pkg  = { dependencies: { zod: "^3.23.0", pino: "^9.0.0" } };
+const lock = { zod: "3.24.1", pino: "9.0.0" };
+
+// --- fix this
+function install(pkg, lock, { frozen = false } = {}) {
+  const tree = {};
+  for (const [name, range] of Object.entries(pkg.dependencies)) {
+    tree[name] = highest(name, range);
+  }
+  return { tree, lock: { ...tree } };
+}</code></pre>
+<script type="application/json">{
+  "tests": "test(\"uses the locked version, not the newest\", () => { const r = install(pkg, lock); assert.equal(r.tree, { zod: \"3.24.1\", pino: \"9.0.0\" }); });\ntest(\"frozen install with a valid lock keeps the lock unchanged\", () => { const r = install(pkg, lock, { frozen: true }); assert.equal(r.lock, lock); assert.equal(r.tree.zod, \"3.24.1\"); });\ntest(\"frozen + out-of-date lock throws\", () => { const bumped = { dependencies: { zod: \"^3.25.0\", pino: \"^9.0.0\" } }; assert.throws(() => install(bumped, lock, { frozen: true })); });\ntest(\"non-frozen resolves missing entries and updates the lock\", () => { const added = { dependencies: { ...pkg.dependencies, ms: \"^2.1.0\" } }; const r = install(added, lock); assert.equal(r.tree.ms, \"2.1.3\"); assert.equal(r.lock, { zod: \"3.24.1\", pino: \"9.0.0\", ms: \"2.1.3\" }); });\ntest(\"does not mutate the input lock\", () => { const copy = { ...lock }; install({ dependencies: { ms: \"^2.1.0\" } }, lock); assert.equal(lock, copy); });",
+  "hints": [
+    "Per dependency, look at <code>lock[name]</code> first: if it exists and <code>satisfies(range, lock[name])</code>, that is the version — do not call <code>highest</code>.",
+    "Only when the lock is missing or stale: <code>if (frozen) throw new Error(...)</code>, else <code>highest(name, range)</code> and record it in a <em>copy</em> of the lock.",
+    "Return <code>{ tree, lock: newLock }</code> where <code>newLock</code> starts as <code>{ ...lock }</code>."
+  ],
+  "solution": "// --- in-memory registry + helpers (leave as is)\nconst registry = { zod: [\"3.23.8\", \"3.24.1\", \"3.25.0\"], pino: [\"9.0.0\", \"9.1.0\"], ms: [\"2.1.2\", \"2.1.3\"] };\nfunction parse(v) { return v.split(\".\").map(Number); }\nfunction satisfies(range, version) {           // ^ and ~ only, no prereleases\n  const op = range[0] === \"^\" || range[0] === \"~\" ? range[0] : \"\";\n  const want = parse(range.slice(op.length)), got = parse(version);\n  for (let i = 0; i < 3; i++) { if (got[i] < want[i]) return false; if (got[i] > want[i]) break; }\n  if (op === \"\") return got.every((n, i) => n === want[i]);\n  if (op === \"~\") return got[0] === want[0] && got[1] === want[1];\n  const lock = want[0] !== 0 ? 0 : want[1] !== 0 ? 1 : 2;\n  return got.slice(0, lock + 1).every((n, i) => n === want[i]);\n}\nconst highest = (name, range) => registry[name].filter(v => satisfies(range, v)).at(-1);\n\nconst pkg  = { dependencies: { zod: \"^3.23.0\", pino: \"^9.0.0\" } };\nconst lock = { zod: \"3.24.1\", pino: \"9.0.0\" };\n\nfunction install(pkg, lock, { frozen = false } = {}) {\n  const tree = {};\n  const newLock = { ...lock };\n  for (const [name, range] of Object.entries(pkg.dependencies)) {\n    const locked = lock[name];\n    if (locked && satisfies(range, locked)) {\n      tree[name] = locked;\n      continue;\n    }\n    if (frozen) throw new Error(`lockfile out of date for ${name}@${range} — run install without --frozen-lockfile`);\n    tree[name] = highest(name, range);\n    newLock[name] = tree[name];\n  }\n  return { tree, lock: newLock };\n}",
+  "explain": "The lockfile is consulted <em>before</em> the registry; the registry is only asked when the lock cannot answer. <code>frozen</code> turns \"cannot answer\" into a hard failure, which is what makes a CI build reproducible: the same lock always yields the same tree, and a stale lock is a visible error rather than a silent upgrade."
+}</script>
+</section>
+
+<section class="block" data-block="concept" id="1i-10">
+<h2>Module resolution — how <code>import "zod"</code> finds a file</h2>
+<p>A specifier is one of three things. Relative (<code>./x.js</code>) and absolute (<code>/x.js</code>, <code>file:</code>, <code>node:fs</code>) resolve directly. A <strong>bare specifier</strong> (<code>"zod"</code>, <code>"@scope/pkg/sub"</code>) triggers the <code>node_modules</code> walk: starting from the importing file's directory, look for <code>node_modules/zod/package.json</code>, and if it is not there, try the parent directory, up to <code>/</code>. The first hit wins — which is why a nested copy shadows the root one.</p>
+<p>Inside the package, <code>exports</code> decides the file. Its <strong>conditions</strong> are matched in order: <code>"import"</code> or <code>"require"</code> depending on how you loaded it, <code>"types"</code> for TypeScript, custom ones like <code>"browser"</code>, <code>"workerd"</code>, <code>"react-server"</code> for bundlers and runtimes, then <code>"default"</code>. No <code>exports</code> → fall back to <code>main</code> → <code>index.js</code>. Subpaths not listed in <code>exports</code> are unreachable (<code>ERR_PACKAGE_PATH_NOT_EXPORTED</code>) — deep imports into <code>dist/</code> are gone on purpose.</p>
+<pre><code class="language-javascript">import { z } from "zod";                 // bare → node_modules walk → exports["."]["import"]
+import { z } from "zod/v4";              // subpath → exports["./v4"]
+import { readFile } from "node:fs";      // built-in, never node_modules
+import { db } from "./db.js";            // relative; the extension is mandatory in ESM</code></pre>
+<div class="callout warn">
+  <div class="tag">Gotcha</div>
+  <p>Bundlers (Vite, Turbopack) and TypeScript (<code>moduleResolution: "bundler"</code>) run their own resolver that mostly agrees with Node, except where it does not: extension-less relative imports, the <code>"browser"</code> condition, and path aliases (<code>@/components</code>) exist only in the bundler. Code that works in Vite and throws <code>ERR_MODULE_NOT_FOUND</code> under plain <code>node</code> is usually one of those.</p>
+</div>
+</section>
+
+<section class="block" data-block="stepper" id="1i-11" data-kind="chain">
+<div class="tag">Step through</div>
+<script type="application/json">{
+  "code": "// /app/packages/api/src/routes/users.js\nimport { z } from \"zod\";",
+  "steps": [
+    { "label": "Bare specifier", "line": 2, "note": "<code>\"zod\"</code> is neither relative nor absolute nor <code>node:</code>, so it is a <em>bare</em> specifier: the resolver starts the <code>node_modules</code> walk from the importing file's directory.",
+      "state": { "nodes": [
+        { "id": "spec", "label": "import \"zod\"", "fields": ["from /app/packages/api/src/routes/"] }
+      ], "edges": [], "active": ["spec"] } },
+    { "label": "Nearest node_modules", "line": 2, "note": "First candidate: a <code>node_modules</code> right next to the file. Nothing there.",
+      "state": { "nodes": [
+        { "id": "spec", "label": "import \"zod\"", "fields": ["from /app/packages/api/src/routes/"] },
+        { "id": "d1", "label": "…/src/routes/node_modules/zod", "fields": ["missing"] }
+      ], "edges": [["spec", "d1", "try"]], "active": ["d1"] } },
+    { "label": "Walk up one", "line": 2, "note": "Parent directory. Still nothing — the walk continues until it hits <code>/</code>.",
+      "state": { "nodes": [
+        { "id": "spec", "label": "import \"zod\"", "fields": ["from /app/packages/api/src/routes/"] },
+        { "id": "d1", "label": "…/src/routes/node_modules/zod", "fields": ["missing"] },
+        { "id": "d2", "label": "…/api/src/node_modules/zod", "fields": ["missing"] }
+      ], "edges": [["spec", "d1", "try"], ["d1", "d2", "parent"]], "active": ["d2"] } },
+    { "label": "Hit: package.json", "line": 2, "note": "<code>/app/packages/api/node_modules/zod/package.json</code> exists — version 3.24.1. The walk <strong>stops here</strong>. The <code>zod@4.0.0</code> at <code>/app/node_modules/zod</code> is never looked at: nearest wins, which is how two versions coexist in one repo.",
+      "state": { "nodes": [
+        { "id": "spec", "label": "import \"zod\"", "fields": ["from /app/packages/api/src/routes/"] },
+        { "id": "d1", "label": "…/src/routes/node_modules/zod", "fields": ["missing"] },
+        { "id": "d2", "label": "…/api/src/node_modules/zod", "fields": ["missing"] },
+        { "id": "d3", "label": "…/api/node_modules/zod", "fields": ["package.json ✓", "version 3.24.1"] }
+      ], "edges": [["spec", "d1", "try"], ["d1", "d2", "parent"], ["d2", "d3", "parent"]], "active": ["d3"] } },
+    { "label": "Match exports conditions", "line": 2, "note": "The importing file is an ES module, so the <code>\"import\"</code> condition matches before <code>\"require\"</code> or <code>\"default\"</code>. A bundler targeting the browser would also try <code>\"browser\"</code> first.",
+      "state": { "nodes": [
+        { "id": "spec", "label": "import \"zod\"", "fields": ["from /app/packages/api/src/routes/"] },
+        { "id": "d1", "label": "…/src/routes/node_modules/zod", "fields": ["missing"] },
+        { "id": "d2", "label": "…/api/src/node_modules/zod", "fields": ["missing"] },
+        { "id": "d3", "label": "…/api/node_modules/zod", "fields": ["package.json ✓", "version 3.24.1"] },
+        { "id": "exp", "label": "exports[\".\"]", "fields": ["import → ./lib/index.js", "require → ./lib/index.cjs"] }
+      ], "edges": [["spec", "d1", "try"], ["d1", "d2", "parent"], ["d2", "d3", "parent"], ["d3", "exp", "read"]], "active": ["exp"] } },
+    { "label": "Resolved URL", "line": 2, "note": "The module is loaded once per resolved <em>URL</em> and cached. If another file resolved to <code>/app/node_modules/zod/…</code>, that would be a second module instance with its own classes — <code>instanceof</code> between the two is <code>false</code> (1g).",
+      "state": { "nodes": [
+        { "id": "spec", "label": "import \"zod\"", "fields": ["from /app/packages/api/src/routes/"] },
+        { "id": "d1", "label": "…/src/routes/node_modules/zod", "fields": ["missing"] },
+        { "id": "d2", "label": "…/api/src/node_modules/zod", "fields": ["missing"] },
+        { "id": "d3", "label": "…/api/node_modules/zod", "fields": ["package.json ✓", "version 3.24.1"] },
+        { "id": "exp", "label": "exports[\".\"]", "fields": ["import → ./lib/index.js", "require → ./lib/index.cjs"] },
+        { "id": "file", "label": "…/api/node_modules/zod/lib/index.js", "fields": ["loaded, cached by URL"] }
+      ], "edges": [["spec", "d1", "try"], ["d1", "d2", "parent"], ["d2", "d3", "parent"], ["d3", "exp", "read"], ["exp", "file", "import"]], "active": ["file"] } }
+  ]
+}</script>
+</section>
+
+<section class="block" data-block="exercise" id="1i-12" data-kind="complete" data-lang="js">
+<div class="tag">Exercise</div>
+<p>Implement the bare-specifier resolver over an in-memory file table. <code>resolveBare(specifier, fromDir)</code> walks up from <code>fromDir</code> looking for <code>&lt;dir&gt;/node_modules/&lt;specifier&gt;/package.json</code>; on a hit it returns the absolute path of <code>exports["."].import</code>, else <code>main</code>, else <code>index.js</code>, resolved against the package directory. If the walk reaches the root without a hit, throw an <code>Error</code> whose message contains <code>Cannot find package '&lt;specifier&gt;'</code>. Tests check nearest-wins, walking up, the <code>main</code> fallback, and the error.</p>
+<pre><code class="language-javascript">// --- in-memory project (leave as is). package.json values are already parsed.
+const files = {
+  "/app/node_modules/zod/package.json":              { name: "zod", version: "4.0.0", exports: { ".": { import: "./dist/index.mjs", require: "./dist/index.cjs" } } },
+  "/app/node_modules/left-pad/package.json":         { name: "left-pad", version: "1.3.0", main: "index.js" },
+  "/app/packages/api/node_modules/zod/package.json": { name: "zod", version: "3.24.1", exports: { ".": { import: "./lib/index.js" } } },
+};
+const parentDir = (dir) =&gt; dir.slice(0, dir.lastIndexOf("/"));   // "/app/src" → "/app" → "" (root)
+
+function resolveBare(specifier, fromDir) {
+  // TODO
+}</code></pre>
+<script type="application/json">{
+  "tests": "test(\"nearest node_modules wins\", () => assert.equal(resolveBare(\"zod\", \"/app/packages/api/src/routes\"), \"/app/packages/api/node_modules/zod/lib/index.js\"));\ntest(\"walks up to the root node_modules\", () => assert.equal(resolveBare(\"zod\", \"/app/src/routes\"), \"/app/node_modules/zod/dist/index.mjs\"));\ntest(\"falls back to main when there is no exports\", () => assert.equal(resolveBare(\"left-pad\", \"/app/packages/api/src\"), \"/app/node_modules/left-pad/index.js\"));\ntest(\"missing package throws\", () => { let msg = \"\"; try { resolveBare(\"nope\", \"/app/src\"); } catch (e) { msg = e.message; } assert(msg.includes(\"Cannot find package 'nope'\"), \"got: \" + msg); });",
+  "hints": [
+    "Loop: <code>for (let dir = fromDir; ; dir = parentDir(dir))</code>, building <code>`${dir}/node_modules/${specifier}`</code> each round. Stop with a throw once <code>dir</code> is <code>\"\"</code> and the root candidate also missed.",
+    "On a hit: <code>const entry = pkg.exports?.[\".\"]?.import ?? pkg.main ?? \"index.js\"</code>.",
+    "Join against the package dir and strip the leading <code>./</code>: <code>`${pkgDir}/${entry.replace(/^\\.\\//, \"\")}`</code>."
+  ],
+  "solution": "// --- in-memory project (leave as is). package.json values are already parsed.\nconst files = {\n  \"/app/node_modules/zod/package.json\":              { name: \"zod\", version: \"4.0.0\", exports: { \".\": { import: \"./dist/index.mjs\", require: \"./dist/index.cjs\" } } },\n  \"/app/node_modules/left-pad/package.json\":         { name: \"left-pad\", version: \"1.3.0\", main: \"index.js\" },\n  \"/app/packages/api/node_modules/zod/package.json\": { name: \"zod\", version: \"3.24.1\", exports: { \".\": { import: \"./lib/index.js\" } } },\n};\nconst parentDir = (dir) => dir.slice(0, dir.lastIndexOf(\"/\"));   // \"/app/src\" → \"/app\" → \"\" (root)\n\nfunction resolveBare(specifier, fromDir) {\n  for (let dir = fromDir; ; dir = parentDir(dir)) {\n    const pkgDir = `${dir}/node_modules/${specifier}`;\n    const pkg = files[`${pkgDir}/package.json`];\n    if (pkg) {\n      const entry = pkg.exports?.[\".\"]?.import ?? pkg.main ?? \"index.js\";\n      return `${pkgDir}/${entry.replace(/^\\.\\//, \"\")}`;\n    }\n    if (dir === \"\") throw new Error(`Cannot find package '${specifier}' imported from ${fromDir}`);\n  }\n}",
+  "explain": "This is the whole algorithm Node runs for every bare import (plus caching and the full condition list). The walk explains pnpm's strictness — it only creates the <code>node_modules/&lt;name&gt;</code> entries you declared, so undeclared imports miss at every level — and why a monorepo package can see a different version than the root."
+}</script>
+</section>
+
+<section class="block" data-block="concept" id="1i-04">
+<h2>Bundlers and transpilers</h2>
+<p>Node runs source files; browsers need a <strong>bundle</strong> (one request instead of hundreds of module loads, tree-shaken, minified) and both need TypeScript and JSX turned into JS. Two separate jobs, often in one tool:</p>
+<ul>
+  <li><strong>Vite</strong> — default for new front-end projects. Dev server serves native ESM and transpiles on demand with esbuild (instant start); production build bundles with Rollup (Rolldown, its Rust successor, is taking over). The runtime for Vitest too.</li>
+  <li><strong>esbuild</strong> — Go, very fast transpile + bundle, few plugins. Embedded in Vite, tsx, and most tools.</li>
+  <li><strong>Turbopack</strong> — Next.js's Rust bundler: default for <code>next dev</code> since 15, production builds in newer releases. Replaces webpack inside Next.</li>
+  <li><strong>webpack</strong> — legacy, widely deployed, slow, infinitely configurable.</li>
+  <li><strong>SWC</strong> / <strong>Babel</strong> — transpilers only (TS/JSX → JS, syntax down-levelling). SWC is Rust and what Next and Vitest use; Babel is the plugin ecosystem (React Compiler ships as a Babel plugin).</li>
+  <li><strong>tsc</strong> — type-checks; emitting JS with it is now the exception. Typical pipeline: <code>tsc --noEmit</code> for types, esbuild/SWC for output, Node's type stripping for scripts.</li>
+</ul>
+<div class="callout warn">
+  <div class="tag">Gotcha</div>
+  <p>Transpilers process one file at a time and never see types. <code>const enum</code>, <code>namespace</code> merging and <code>export type</code> re-exports without <code>type</code> (<code>isolatedModules</code>) break under esbuild/SWC/type stripping. TypeScript's <code>verbatimModuleSyntax: true</code> makes <code>tsc</code> reject the same code, so the problem surfaces in type-check instead of at runtime.</p>
+</div>
+</section>
+
+<section class="block" data-block="review" id="1i-15">
+<div class="tag">Code review</div>
+<ul>
+  <li><strong>CI runs <code>npm install</code>.</strong> It may rewrite the lock and silently resolve newer versions. <code>npm ci</code> / <code>pnpm install --frozen-lockfile</code>, and fail the pipeline if the lock changes.</li>
+  <li><strong>Runtime dependency in <code>devDependencies</code>.</strong> Works locally, crashes in the <code>--omit=dev</code> Docker image with <code>ERR_MODULE_NOT_FOUND</code>. Conversely, a linter or <code>@types/*</code> in <code>dependencies</code> bloats every install.</li>
+  <li><strong>Undeclared (phantom) import.</strong> <code>import "lodash"</code> with no <code>lodash</code> in <code>package.json</code> — works through hoisting until a transitive dep changes. pnpm or <code>eslint-plugin-import</code>'s <code>no-extraneous-dependencies</code> catches it.</li>
+  <li><strong>Unpinned engines and package manager.</strong> No <code>engines</code>, no <code>packageManager</code>, no <code>.nvmrc</code>: lockfile format drift between npm versions, Node API drift between laptops and CI. Pin all three; <code>corepack enable</code>.</li>
+  <li><strong>Deep imports into a package's <code>dist/</code>.</strong> <code>import "pkg/dist/internal.js"</code> bypasses <code>exports</code> and breaks on the next patch release. Use the public subpath or ask for one.</li>
+  <li><strong>Two copies of a singleton package.</strong> Hooks error "Invalid hook call", <code>instanceof</code> failing, duplicated context — check <code>pnpm why react</code> / <code>npm ls react</code>; the fix is a peer dependency or an <code>overrides</code> entry, not a hack.</li>
+  <li><strong>Library published with <code>^</code>-free exact pins.</strong> Forces every consumer into duplicate copies. Apps pin via the lockfile; libraries declare ranges.</li>
+</ul>
+</section>
+
+<section class="block" data-block="exercise" id="1i-16" data-kind="mcq">
+<div class="tag">Check</div>
+<p>A Dockerfile runs <code>npm install</code> rather than <code>npm ci</code> before <code>npm run build</code>. The lockfile is committed. What is the actual risk?</p>
+<script type="application/json">{
+  "options": [
+    "None — both commands read the committed lockfile and produce the same tree.",
+    "When <code>package.json</code> and the lock disagree (a range bumped without re-locking, a merge that touched one but not the other), <code>npm install</code> re-resolves and rewrites the lock inside the image, so the build is no longer reproducible and can differ from what passed locally. <code>npm ci</code> installs exactly the lock and fails loudly on a mismatch.",
+    "<code>npm install</code> skips <code>devDependencies</code> in production images, so the build step cannot find the bundler.",
+    "<code>npm install</code> is only slower; the output tree is guaranteed identical because the lockfile pins every version."
+  ],
+  "answer": 1,
+  "explain": "The lockfile is authoritative only for a command that refuses to change it. <code>npm install</code> treats it as a hint and will update it to satisfy <code>package.json</code>; nothing in the image tells you that happened. C is backwards (<code>--omit=dev</code> is explicit), and A/D assume the lock is always consistent with <code>package.json</code>, which is exactly the case <code>npm ci</code> exists to detect."
+}</script>
+</section>
+
+<section class="block" data-block="recall" id="1i-17">
+<div class="tag">Recall</div>
+<dl>
+  <dt>What do <code>^1.2.3</code>, <code>~1.2.3</code> and <code>^0.2.3</code> allow?</dt>
+  <dd><code>&gt;=1.2.3 &lt;2.0.0</code>; <code>&gt;=1.2.3 &lt;1.3.0</code>; <code>&gt;=0.2.3 &lt;0.3.0</code> — caret fixes the first non-zero component, so on 0.x it behaves like tilde.</dd>
+
+  <dt>What does this print?
+<pre><code class="language-javascript">const registry = ["0.9.9", "0.10.0", "0.10.2", "1.0.0"];
+console.log(highestSatisfying("^0.9.9", registry));
+console.log(highestSatisfying("^0.10.0", registry));</code></pre></dt>
+  <dd><code>0.9.9</code> then <code>0.10.2</code>. <code>^0.9.9</code> cannot reach 0.10.x; <code>^0.10.0</code> stops below 0.11.0 and 1.0.0 is out.</dd>
+
+  <dt><code>npm install</code> vs <code>npm ci</code> — the one-line contract of each?</dt>
+  <dd><code>install</code> resolves ranges and may rewrite the lockfile; <code>ci</code> wipes <code>node_modules</code>, installs exactly the lock, and fails if lock and <code>package.json</code> disagree. CI and Docker use <code>ci</code> (pnpm: <code>--frozen-lockfile</code>).</dd>
+
+  <dt>How does Node resolve <code>import "zod"</code>?</dt>
+  <dd>Bare specifier → walk up from the importing file's directory looking for <code>node_modules/zod/package.json</code>; first hit wins (nearest shadows root). Then <code>exports["."]</code> conditions in order (<code>import</code>/<code>require</code>, custom, <code>default</code>), else <code>main</code>, else <code>index.js</code>.</dd>
+
+  <dt>Why does <code>peerDependencies</code> exist, and when do you use it?</dt>
+  <dd>Because <code>node_modules</code> nests duplicates: a library that needs the host's single copy of React (hooks, context) declares <code>react</code> as a peer instead of installing its own. Use it for framework deps when publishing a library; apps never need it.</dd>
+
+  <dt>What is a phantom dependency and which tool catches it?</dt>
+  <dd>An import of a package you never declared, reachable only because npm/yarn hoisted a transitive dep flat into <code>node_modules</code>. pnpm's strict layout makes the import fail; ESLint's <code>import/no-extraneous-dependencies</code> flags it.</dd>
+
+  <dt>Which TS features break under single-file transpilers (esbuild, SWC, type stripping)?</dt>
+  <dd><code>const enum</code>, <code>namespace</code> merging, re-exporting types without the <code>type</code> keyword — anything needing cross-file type info. <code>isolatedModules</code> / <code>verbatimModuleSyntax</code> make <code>tsc</code> reject them up front.</dd>
+</dl>
+</section>
+</article>
+<script type="module" src="/assets/runtime/boot.js"></script>
+</body>
+</html>

@@ -1,0 +1,530 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>5b. App Router architecture · JS Curriculum</title>
+<link rel="icon" href="/assets/favicon.svg">
+<link rel="stylesheet" href="/assets/vendor/prism.css">
+<link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body data-lesson="5b" data-level="interactive">
+<article class="lesson">
+
+<header>
+  <h1>App Router Architecture</h1>
+</header>
+
+<section class="block" data-block="concept" id="5b-01">
+<p>In the App Router the folder structure <em>is</em> the routing: a URL is matched segment by segment against directories under <code>app/</code>, and each directory contributes a fixed set of special files that nest around the page. Everything later in Part 5 — where data is fetched (5c, 5d), where actions run (5e), which middleware sees a request (5f) — is expressed as "which segment does this file sit in". Pages Router (<code>pages/</code>) still works in Next 15 but is legacy; nothing here applies to it.</p>
+</section>
+
+<section class="block" data-block="concept" id="5b-08">
+<h2>Folder = segment; <code>page.tsx</code> = reachable URL</h2>
+<pre><code class="language-bash">app/
+  layout.tsx            # root shell — must render &lt;html&gt; and &lt;body&gt;
+  page.tsx              # /
+  loading.tsx           # Suspense fallback for this segment
+  error.tsx             # error boundary for this segment ("use client")
+  not-found.tsx         # rendered by notFound() and for unmatched URLs
+  (marketing)/          # route group — not part of the URL
+    layout.tsx          # applies to /about only
+    about/page.tsx      # /about
+  blog/
+    layout.tsx
+    new/page.tsx        # /blog/new     (static segment wins over [slug])
+    [slug]/page.tsx     # /blog/:slug   → params: Promise&lt;{ slug: string }&gt;
+  docs/
+    [...path]/page.tsx  # /docs/a/b     → params.path = ["a", "b"]; needs ≥ 1 segment
+    # [[...path]]/      # optional catch-all: also matches /docs
+  api/
+    users/route.ts      # /api/users — GET/POST handlers; cannot share a segment with page.tsx</code></pre>
+<p>Only a <code>page.tsx</code> (or <code>route.ts</code>) makes a URL exist; a folder with just a <code>layout.tsx</code> is a wrapper, not a route. Precedence when several files could match: static segment &gt; <code>[dynamic]</code> &gt; <code>[...catchAll]</code>. Route groups <code>(name)</code> are invisible to the URL but real to layouts — they are how two sections of a site get different shells under the same root.</p>
+</section>
+
+<section class="block" data-block="stepper" id="5b-09" data-kind="chain">
+<div class="tag">Step through</div>
+<p>Resolving <code>/blog/hello</code>. Each matched segment contributes its special files, nested in a fixed order: <code>layout</code> → <code>template</code> → <code>error</code> → <code>loading</code> → <code>not-found</code> → <code>page</code>.</p>
+<script type="application/json">{
+  "steps": [
+    { "label": "Root segment: app/", "note": "Every URL starts here. <code>app/layout.tsx</code> is the outermost component and owns <code>&lt;html&gt;</code>/<code>&lt;body&gt;</code>; it is rendered once and stays mounted for the life of the tab.",
+      "state": {
+        "nodes": [ { "id": "root", "label": "app/layout.tsx", "fields": ["<html><body>{children}"] } ],
+        "edges": [], "active": ["root"] } },
+    { "label": "app/template.tsx (if present)", "note": "A template sits <em>inside</em> the layout and re-mounts on every navigation — state resets, effects re-run. Same slot in the tree, opposite lifetime.",
+      "state": {
+        "nodes": [ { "id": "root", "label": "app/layout.tsx", "fields": ["<html><body>{children}"] },
+                   { "id": "tmpl", "label": "app/template.tsx", "fields": ["re-mounts per navigation"] } ],
+        "edges": [["root", "tmpl", "children"]], "active": ["tmpl"] } },
+    { "label": "Segment blog/", "note": "The first URL segment matches the directory <code>blog/</code>. Its <code>layout.tsx</code> wraps everything below <code>/blog</code>. No <code>page.tsx</code> here, so <code>/blog</code> itself is 404.",
+      "state": {
+        "nodes": [ { "id": "root", "label": "app/layout.tsx", "fields": ["<html><body>{children}"] },
+                   { "id": "tmpl", "label": "app/template.tsx", "fields": ["re-mounts per navigation"] },
+                   { "id": "blog", "label": "app/blog/layout.tsx", "fields": ["<aside>…</aside>{children}"] } ],
+        "edges": [["root", "tmpl", "children"], ["tmpl", "blog", "children"]], "active": ["blog"] } },
+    { "label": "Segment [slug] = \"hello\"", "note": "No directory is literally <code>hello</code>, so the dynamic segment <code>[slug]</code> matches and binds <code>params = { slug: \"hello\" }</code>. Its <code>error.tsx</code> becomes a React error boundary around everything inside the segment.",
+      "state": {
+        "nodes": [ { "id": "root", "label": "app/layout.tsx", "fields": ["<html><body>{children}"] },
+                   { "id": "tmpl", "label": "app/template.tsx", "fields": ["re-mounts per navigation"] },
+                   { "id": "blog", "label": "app/blog/layout.tsx", "fields": ["<aside>…</aside>{children}"] },
+                   { "id": "err",  "label": "blog/[slug]/error.tsx", "fields": ["<ErrorBoundary>", "\"use client\" — has reset()"] } ],
+        "edges": [["root", "tmpl", "children"], ["tmpl", "blog", "children"], ["blog", "err", "children"]], "active": ["err"] } },
+    { "label": "loading.tsx → Suspense", "note": "Inside the error boundary, <code>loading.tsx</code> becomes <code>&lt;Suspense fallback={&lt;Loading/&gt;}&gt;</code>. This is the boundary that lets the page stream (5a): the layouts above flush immediately while the page awaits.",
+      "state": {
+        "nodes": [ { "id": "root", "label": "app/layout.tsx", "fields": ["<html><body>{children}"] },
+                   { "id": "tmpl", "label": "app/template.tsx", "fields": ["re-mounts per navigation"] },
+                   { "id": "blog", "label": "app/blog/layout.tsx", "fields": ["<aside>…</aside>{children}"] },
+                   { "id": "err",  "label": "blog/[slug]/error.tsx", "fields": ["<ErrorBoundary>", "\"use client\" — has reset()"] },
+                   { "id": "load", "label": "blog/[slug]/loading.tsx", "fields": ["<Suspense fallback>"] } ],
+        "edges": [["root", "tmpl", "children"], ["tmpl", "blog", "children"], ["blog", "err", "children"], ["err", "load", "children"]], "active": ["load"] } },
+    { "label": "page.tsx — the leaf", "note": "The page is the only component that receives <code>searchParams</code>; both it and the layouts get <code>params</code> as a Promise (<code>await params</code>). Throwing <code>notFound()</code> here renders the nearest <code>not-found.tsx</code>.",
+      "state": {
+        "nodes": [ { "id": "root", "label": "app/layout.tsx", "fields": ["<html><body>{children}"] },
+                   { "id": "tmpl", "label": "app/template.tsx", "fields": ["re-mounts per navigation"] },
+                   { "id": "blog", "label": "app/blog/layout.tsx", "fields": ["<aside>…</aside>{children}"] },
+                   { "id": "err",  "label": "blog/[slug]/error.tsx", "fields": ["<ErrorBoundary>", "\"use client\" — has reset()"] },
+                   { "id": "load", "label": "blog/[slug]/loading.tsx", "fields": ["<Suspense fallback>"] },
+                   { "id": "page", "label": "blog/[slug]/page.tsx", "fields": ["await params → { slug: \"hello\" }", "await getPost(slug)"] } ],
+        "edges": [["root", "tmpl", "children"], ["tmpl", "blog", "children"], ["blog", "err", "children"], ["err", "load", "children"], ["load", "page", "children"]], "active": ["page"] } },
+    { "label": "The rendered tree", "note": "<code>&lt;RootLayout&gt;&lt;Template&gt;&lt;BlogLayout&gt;&lt;ErrorBoundary&gt;&lt;Suspense&gt;&lt;Page/&gt;…</code>. Navigating to <code>/blog/other</code> re-renders only from <code>[slug]</code> down; the two layouts keep their instances and state.",
+      "state": {
+        "nodes": [ { "id": "root", "label": "app/layout.tsx", "fields": ["<html><body>{children}"] },
+                   { "id": "tmpl", "label": "app/template.tsx", "fields": ["re-mounts per navigation"] },
+                   { "id": "blog", "label": "app/blog/layout.tsx", "fields": ["<aside>…</aside>{children}"] },
+                   { "id": "err",  "label": "blog/[slug]/error.tsx", "fields": ["<ErrorBoundary>", "\"use client\" — has reset()"] },
+                   { "id": "load", "label": "blog/[slug]/loading.tsx", "fields": ["<Suspense fallback>"] },
+                   { "id": "page", "label": "blog/[slug]/page.tsx", "fields": ["await params → { slug: \"hello\" }", "await getPost(slug)"] } ],
+        "edges": [["root", "tmpl", "children"], ["tmpl", "blog", "children"], ["blog", "err", "children"], ["err", "load", "children"], ["load", "page", "children"]], "active": ["root", "tmpl", "blog", "err", "load", "page"] } }
+  ]
+}</script>
+</section>
+
+<section class="block" data-block="bridge" id="5b-11">
+<div class="tag">Python bridge</div>
+<p>Django's URLconf is explicit — <code>path("blog/&lt;slug:slug&gt;/", views.post)</code> — and <code>include()</code> nests one URLconf under a prefix. Next's file-system routing is the same tree with the names erased: a directory is an <code>include()</code>, <code>[slug]</code> is <code>&lt;slug:slug&gt;</code>, <code>[...path]</code> is <code>&lt;path:rest&gt;</code>. A <code>layout.tsx</code> is <code>{% extends "base.html" %}</code> with <code>{children}</code> as <code>{% block content %}</code> — except a Django base template is re-rendered on every request, whereas a Next layout is a live component that persists across client-side navigations and keeps its state. Route groups, parallel and intercepting routes have no Django equivalent: they exist because the "page" is a long-lived client tree, not a fresh response.</p>
+</section>
+
+<section class="block" data-block="concept" id="5b-02">
+<h2>Layouts — persistent shells</h2>
+<p>A <code>layout.tsx</code> wraps every route in its segment and <strong>persists across navigation</strong>: when the URL changes, only the segments that changed re-render; the layout instance (and any client state inside it) stays mounted. Layouts receive <code>children</code> and <code>params</code>, never <code>searchParams</code> — a persistent component cannot depend on something that changes with every navigation.</p>
+
+<pre><code class="language-tsx">// app/layout.tsx — the root layout is required and owns the document
+export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return (
+    &lt;html lang="en"&gt;
+      &lt;body&gt;
+        &lt;Header /&gt;
+        &lt;main&gt;{children}&lt;/main&gt;
+      &lt;/body&gt;
+    &lt;/html&gt;
+  );
+}
+
+// app/blog/[slug]/layout.tsx — nested layouts get params too (Next 15: a Promise)
+export default async function PostLayout(
+  { children, params }: { children: React.ReactNode; params: Promise&lt;{ slug: string }&gt; }
+) {
+  const { slug } = await params;
+  return &lt;section data-slug={slug}&gt;{children}&lt;/section&gt;;
+}</code></pre>
+</section>
+
+<section class="block" data-block="stepper" id="5b-10" data-kind="timeline">
+<div class="tag">Step through</div>
+<p>Soft navigation: clicking <code>&lt;Link href="/blog/other"&gt;</code> from <code>/blog/hello</code>. No document reload, no layout re-mount.</p>
+<script type="application/json">{
+  "steps": [
+    { "label": "Link enters viewport", "note": "In production <code>&lt;Link&gt;</code> prefetches when visible: static routes in full, dynamic routes down to the nearest <code>loading.tsx</code> boundary. The payload is cached in the router.",
+      "state": { "lanes": [
+        { "name": "Server",  "items": [{ "label": "diff segments", "state": "idle" }, { "label": "render [slug]", "state": "idle" }] },
+        { "name": "Network", "items": [{ "label": "RSC payload", "state": "idle" }] },
+        { "name": "Client",  "items": [{ "label": "prefetch", "state": "active" }, { "label": "click", "state": "idle" }, { "label": "swap [slug]", "state": "idle" }, { "label": "keep layouts", "state": "idle" }, { "label": "interactive", "state": "idle" }] }
+      ] } },
+    { "label": "Click", "note": "The router intercepts the click. It compares the current segment tree with the target: <code>app/</code> and <code>blog/</code> are unchanged; only <code>[slug]</code> differs.",
+      "state": { "lanes": [
+        { "name": "Server",  "items": [{ "label": "diff segments", "state": "idle" }, { "label": "render [slug]", "state": "idle" }] },
+        { "name": "Network", "items": [{ "label": "RSC payload", "state": "idle" }] },
+        { "name": "Client",  "items": [{ "label": "prefetch", "state": "done" }, { "label": "click", "state": "active" }, { "label": "swap [slug]", "state": "idle" }, { "label": "keep layouts", "state": "idle" }, { "label": "interactive", "state": "idle" }] }
+      ] } },
+    { "label": "Request the changed subtree", "note": "The request carries the router state so the server can skip shared layouts. It is an RSC request (<code>RSC: 1</code> header), not a document request — the response is a payload, not HTML.",
+      "state": { "lanes": [
+        { "name": "Server",  "items": [{ "label": "diff segments", "state": "active" }, { "label": "render [slug]", "state": "idle" }] },
+        { "name": "Network", "items": [{ "label": "RSC payload", "state": "active" }] },
+        { "name": "Client",  "items": [{ "label": "prefetch", "state": "done" }, { "label": "click", "state": "done" }, { "label": "swap [slug]", "state": "idle" }, { "label": "keep layouts", "state": "idle" }, { "label": "interactive", "state": "idle" }] }
+      ] } },
+    { "label": "Server renders [slug] only", "note": "<code>page.tsx</code> (and its <code>loading</code>/<code>error</code> wrappers) run for <code>slug = \"other\"</code>. The two layouts above are not re-executed.",
+      "state": { "lanes": [
+        { "name": "Server",  "items": [{ "label": "diff segments", "state": "done" }, { "label": "render [slug]", "state": "active" }] },
+        { "name": "Network", "items": [{ "label": "RSC payload", "state": "active" }] },
+        { "name": "Client",  "items": [{ "label": "prefetch", "state": "done" }, { "label": "click", "state": "done" }, { "label": "swap [slug]", "state": "idle" }, { "label": "keep layouts", "state": "idle" }, { "label": "interactive", "state": "idle" }] }
+      ] } },
+    { "label": "Payload arrives, subtree swapped", "note": "React reconciles the new tree description into the existing one. If the page had a <code>loading.tsx</code>, the fallback showed during the round-trip and the content streams into it.",
+      "state": { "lanes": [
+        { "name": "Server",  "items": [{ "label": "diff segments", "state": "done" }, { "label": "render [slug]", "state": "done" }] },
+        { "name": "Network", "items": [{ "label": "RSC payload", "state": "done" }] },
+        { "name": "Client",  "items": [{ "label": "prefetch", "state": "done" }, { "label": "click", "state": "done" }, { "label": "swap [slug]", "state": "active" }, { "label": "keep layouts", "state": "idle" }, { "label": "interactive", "state": "idle" }] }
+      ] } },
+    { "label": "Layouts untouched", "note": "<code>RootLayout</code> and <code>BlogLayout</code> never unmounted: an open sidebar stays open, a <code>useEffect</code> in a layout does <em>not</em> re-run. A <code>template.tsx</code> would have re-mounted here.",
+      "state": { "lanes": [
+        { "name": "Server",  "items": [{ "label": "diff segments", "state": "done" }, { "label": "render [slug]", "state": "done" }] },
+        { "name": "Network", "items": [{ "label": "RSC payload", "state": "done" }] },
+        { "name": "Client",  "items": [{ "label": "prefetch", "state": "done" }, { "label": "click", "state": "done" }, { "label": "swap [slug]", "state": "done" }, { "label": "keep layouts", "state": "active" }, { "label": "interactive", "state": "idle" }] }
+      ] } },
+    { "label": "Interactive", "note": "No hydration step this time — the client components were already hydrated on the first load; new ones in the payload mount directly. URL and history updated via <code>pushState</code>.",
+      "state": { "lanes": [
+        { "name": "Server",  "items": [{ "label": "diff segments", "state": "done" }, { "label": "render [slug]", "state": "done" }] },
+        { "name": "Network", "items": [{ "label": "RSC payload", "state": "done" }] },
+        { "name": "Client",  "items": [{ "label": "prefetch", "state": "done" }, { "label": "click", "state": "done" }, { "label": "swap [slug]", "state": "done" }, { "label": "keep layouts", "state": "done" }, { "label": "interactive", "state": "done" }] }
+      ] } }
+  ]
+}</script>
+</section>
+
+<section class="block" data-block="concept" id="5b-03">
+<h2>Special files</h2>
+<ul>
+  <li><code>loading.tsx</code> — a Suspense boundary around the segment's page. Shows during the initial stream and during navigation while the page's data is pending.</li>
+  <li><code>error.tsx</code> — an error boundary around the segment. <strong>Must be <code>"use client"</code></strong> (boundaries need client lifecycle). It receives <code>error</code> and <code>reset()</code>. It catches errors from the page and everything below — <em>not</em> from the layout of its own segment; that needs the parent's <code>error.tsx</code>, or <code>global-error.tsx</code> for the root layout.</li>
+  <li><code>template.tsx</code> — like <code>layout.tsx</code> but <strong>re-mounts on every navigation</strong>. Use for effects that must re-run per route (page-view analytics, enter animations) or state that must reset.</li>
+  <li><code>not-found.tsx</code> — rendered when <code>notFound()</code> is thrown in the segment; the root one also serves unmatched URLs.</li>
+  <li><code>default.tsx</code> — fallback for a parallel-route slot on hard navigation (below).</li>
+  <li><code>route.ts</code> — HTTP handlers: <code>export async function GET(req: Request) {…}</code>, returning a <code>Response</code>. Cannot share a segment with <code>page.tsx</code>.</li>
+</ul>
+
+<pre><code class="language-tsx">// app/blog/[slug]/error.tsx
+"use client";
+export default function PostError({ error, reset }: { error: Error &amp; { digest?: string }; reset: () =&gt; void }) {
+  return (
+    &lt;div role="alert"&gt;
+      &lt;p&gt;Could not load this post. ({error.digest})&lt;/p&gt;
+      &lt;button onClick={reset}&gt;Try again&lt;/button&gt;   {/* re-renders the segment */}
+    &lt;/div&gt;
+  );
+}</code></pre>
+
+<div class="callout warn">
+  <div class="tag">Gotcha</div>
+  <p>Forgetting <code>"use client"</code> on <code>error.tsx</code> is a build error, not a silent one. The silent failure is the other direction: an error thrown in <code>app/blog/layout.tsx</code> is <em>not</em> caught by <code>app/blog/error.tsx</code> — the boundary is inside the layout. It propagates to <code>app/error.tsx</code>.</p>
+</div>
+</section>
+
+<section class="block" data-block="playground" id="5b-12" data-lang="js" data-mode="worker">
+<div class="tag">Try it</div>
+<p>A route matcher over a file list, with the real precedence rules. Try: add <code>"app/blog/[...rest]/page.tsx"</code> and match <code>/blog/a/b</code>; wrap <code>new/</code> in a route group (<code>app/blog/(admin)/new/page.tsx</code>) and check <code>/blog/new</code> still resolves; match <code>/docs</code> and then rename the catch-all to <code>[[...path]]</code>.</p>
+<pre><code class="language-javascript">const files = [
+  "app/page.tsx",
+  "app/(marketing)/about/page.tsx",
+  "app/blog/[slug]/page.tsx",
+  "app/blog/new/page.tsx",
+  "app/docs/[...path]/page.tsx",
+];
+
+// "app/(g)/blog/[slug]/page.tsx" → ["blog", "[slug]"]: route groups vanish, page.tsx is implied
+const segmentsOf = (file) =&gt;
+  file.replace(/^app\//, "").replace(/\/?page\.tsx$/, "").split("/").filter((s) =&gt; s &amp;&amp; !/^\(.*\)$/.test(s));
+
+function matchOne(file, pathname) {
+  const segs = segmentsOf(file), parts = pathname.split("/").filter(Boolean), params = {};
+  for (let i = 0; i &lt; segs.length; i++) {
+    const s = segs[i], p = parts[i];
+    const optional = /^\[\[\.\.\.(\w+)\]\]$/.exec(s), rest = /^\[\.\.\.(\w+)\]$/.exec(s), dyn = /^\[(\w+)\]$/.exec(s);
+    if (optional) { params[optional[1]] = parts.slice(i); return params; }
+    if (rest) { if (p === undefined) return null; params[rest[1]] = parts.slice(i); return params; }
+    if (p === undefined) return null;
+    if (dyn) params[dyn[1]] = p;
+    else if (s !== p) return null;
+  }
+  return parts.length === segs.length ? params : null;
+}
+
+// static &lt; dynamic &lt; catch-all: fewer brackets wins
+const specificity = (file) =&gt; (file.match(/\[\.\.\./g) || []).length * 10 + (file.match(/\[/g) || []).length;
+
+function matchRoute(files, pathname) {
+  const hits = files.map((file) =&gt; ({ file, params: matchOne(file, pathname) })).filter((h) =&gt; h.params);
+  hits.sort((a, b) =&gt; specificity(a.file) - specificity(b.file));
+  return hits[0] ?? null;
+}
+
+for (const url of ["/", "/about", "/blog/new", "/blog/hello", "/docs", "/docs/guide/install"]) {
+  const hit = matchRoute(files, url);
+  console.log(url, "→", hit ? `${hit.file} ${JSON.stringify(hit.params)}` : "404");
+}</code></pre>
+<output>/ → app/page.tsx {}
+/about → app/(marketing)/about/page.tsx {}
+/blog/new → app/blog/new/page.tsx {}
+/blog/hello → app/blog/[slug]/page.tsx {"slug":"hello"}
+/docs → 404
+/docs/guide/install → app/docs/[...path]/page.tsx {"path":["guide","install"]}</output>
+</section>
+
+<section class="block" data-block="exercise" id="5b-15" data-kind="predict" data-lang="js" data-mode="worker">
+<div class="tag">Exercise</div>
+<p>Same matcher as the playground (compressed), new file list. What does it print? One line per URL — write <code>404</code> for no match. Format: <code>url → file params</code>.</p>
+<pre><code class="language-javascript">const files = [
+  "app/(shop)/page.tsx",
+  "app/(shop)/products/[id]/page.tsx",
+  "app/(shop)/products/featured/page.tsx",
+  "app/(admin)/admin/[[...path]]/page.tsx",
+  "app/help/[...topic]/page.tsx",
+];
+const segmentsOf = (f) =&gt; f.replace(/^app\//, "").replace(/\/?page\.tsx$/, "").split("/").filter((s) =&gt; s &amp;&amp; !/^\(.*\)$/.test(s));
+function matchOne(file, pathname) {
+  const segs = segmentsOf(file), parts = pathname.split("/").filter(Boolean), params = {};
+  for (let i = 0; i &lt; segs.length; i++) {
+    const s = segs[i], p = parts[i];
+    const opt = /^\[\[\.\.\.(\w+)\]\]$/.exec(s), rest = /^\[\.\.\.(\w+)\]$/.exec(s), dyn = /^\[(\w+)\]$/.exec(s);
+    if (opt) { params[opt[1]] = parts.slice(i); return params; }
+    if (rest) { if (p === undefined) return null; params[rest[1]] = parts.slice(i); return params; }
+    if (p === undefined) return null;
+    if (dyn) params[dyn[1]] = p; else if (s !== p) return null;
+  }
+  return parts.length === segs.length ? params : null;
+}
+const specificity = (f) =&gt; (f.match(/\[\.\.\./g) || []).length * 10 + (f.match(/\[/g) || []).length;
+function matchRoute(files, pathname) {
+  const hits = files.map((file) =&gt; ({ file, params: matchOne(file, pathname) })).filter((h) =&gt; h.params);
+  return hits.sort((a, b) =&gt; specificity(a.file) - specificity(b.file))[0] ?? null;
+}
+for (const url of ["/", "/products/featured", "/products/42", "/admin", "/admin/users/7", "/help", "/shop"]) {
+  const hit = matchRoute(files, url);
+  console.log(url, "→", hit ? `${hit.file} ${JSON.stringify(hit.params)}` : "404");
+}</code></pre>
+<script type="application/json">{
+  "expected": "/ → app/(shop)/page.tsx {}\n/products/featured → app/(shop)/products/featured/page.tsx {}\n/products/42 → app/(shop)/products/[id]/page.tsx {\"id\":\"42\"}\n/admin → app/(admin)/admin/[[...path]]/page.tsx {\"path\":[]}\n/admin/users/7 → app/(admin)/admin/[[...path]]/page.tsx {\"path\":[\"users\",\"7\"]}\n/help → 404\n/shop → 404",
+  "hints": [
+    "Route groups never appear in the URL: <code>/shop</code> matches nothing, <code>/</code> matches the page inside <code>(shop)</code>.",
+    "<code>featured</code> is a static segment, so it beats <code>[id]</code> even though <code>[id]</code> is listed first.",
+    "<code>[[...path]]</code> is optional — it matches <code>/admin</code> with <code>path: []</code>; <code>[...topic]</code> is not, so <code>/help</code> alone is 404."
+  ],
+  "explain": "Three rules decide every line: route groups are stripped before matching; a static segment outranks a dynamic one regardless of file order; a catch-all needs at least one segment unless it is the optional <code>[[...x]]</code> form, which also matches the bare parent URL with an empty array."
+}</script>
+</section>
+
+<section class="block" data-block="exercise" id="5b-13" data-kind="fix" data-lang="js" data-mode="worker">
+<div class="tag">Exercise</div>
+<p>This matcher has two bugs: route groups are treated as literal URL segments, and the first file in the list that matches wins instead of the most specific one. Tests check <code>/about</code> inside a route group, <code>/blog/new</code> against both <code>new/</code> and <code>[slug]/</code>, dynamic params, catch-all params, and a 404.</p>
+<pre><code class="language-javascript">// --- fix this
+const segmentsOf = (file) =&gt;
+  file.replace(/^app\//, "").replace(/\/?page\.tsx$/, "").split("/").filter(Boolean);
+
+function matchOne(file, pathname) {
+  const segs = segmentsOf(file), parts = pathname.split("/").filter(Boolean), params = {};
+  for (let i = 0; i &lt; segs.length; i++) {
+    const s = segs[i], p = parts[i];
+    const rest = /^\[\.\.\.(\w+)\]$/.exec(s), dyn = /^\[(\w+)\]$/.exec(s);
+    if (rest) { if (p === undefined) return null; params[rest[1]] = parts.slice(i); return params; }
+    if (p === undefined) return null;
+    if (dyn) params[dyn[1]] = p;
+    else if (s !== p) return null;
+  }
+  return parts.length === segs.length ? params : null;
+}
+
+function matchRoute(files, pathname) {
+  for (const file of files) {
+    const params = matchOne(file, pathname);
+    if (params) return { file, params };
+  }
+  return null;
+}</code></pre>
+<script type="application/json">{
+  "tests": "const FILES = [\"app/page.tsx\", \"app/(marketing)/about/page.tsx\", \"app/blog/[slug]/page.tsx\", \"app/blog/new/page.tsx\", \"app/docs/[...path]/page.tsx\"];\ntest(\"route group is not part of the URL\", () => assert.equal(matchRoute(FILES, \"/about\"), { file: \"app/(marketing)/about/page.tsx\", params: {} }));\ntest(\"/marketing/about does not exist\", () => assert.equal(matchRoute(FILES, \"/marketing/about\"), null));\ntest(\"static segment beats [slug] regardless of order\", () => assert.equal(matchRoute(FILES, \"/blog/new\").file, \"app/blog/new/page.tsx\"));\ntest(\"dynamic segment binds params\", () => assert.equal(matchRoute(FILES, \"/blog/hello\"), { file: \"app/blog/[slug]/page.tsx\", params: { slug: \"hello\" } }));\ntest(\"catch-all binds an array\", () => assert.equal(matchRoute(FILES, \"/docs/a/b\").params, { path: [\"a\", \"b\"] }));\ntest(\"unknown URL → null\", () => assert.equal(matchRoute(FILES, \"/nope\"), null));",
+  "hints": [
+    "In <code>segmentsOf</code>, drop any segment that looks like <code>(name)</code> — a regex such as <code>/^\\(.*\\)$/</code>.",
+    "Collect <em>all</em> matching files, then pick the one with the fewest dynamic segments. Counting <code>[</code> characters in the file path is a good enough specificity score (give catch-alls a bigger penalty).",
+    "<code>hits.sort((a, b) =&gt; score(a.file) - score(b.file))[0]</code>."
+  ],
+  "solution": "const segmentsOf = (file) =>\n  file.replace(/^app\\//, \"\").replace(/\\/?page\\.tsx$/, \"\").split(\"/\").filter((s) => s && !/^\\(.*\\)$/.test(s));\n\nfunction matchOne(file, pathname) {\n  const segs = segmentsOf(file), parts = pathname.split(\"/\").filter(Boolean), params = {};\n  for (let i = 0; i < segs.length; i++) {\n    const s = segs[i], p = parts[i];\n    const rest = /^\\[\\.\\.\\.(\\w+)\\]$/.exec(s), dyn = /^\\[(\\w+)\\]$/.exec(s);\n    if (rest) { if (p === undefined) return null; params[rest[1]] = parts.slice(i); return params; }\n    if (p === undefined) return null;\n    if (dyn) params[dyn[1]] = p;\n    else if (s !== p) return null;\n  }\n  return parts.length === segs.length ? params : null;\n}\n\nconst specificity = (file) => (file.match(/\\[\\.\\.\\./g) || []).length * 10 + (file.match(/\\[/g) || []).length;\n\nfunction matchRoute(files, pathname) {\n  const hits = files.map((file) => ({ file, params: matchOne(file, pathname) })).filter((h) => h.params);\n  hits.sort((a, b) => specificity(a.file) - specificity(b.file));\n  return hits[0] ?? null;\n}",
+  "explain": "Next resolves routes by specificity, not by any file order — there is no order on a file system. Route groups are the other invisible rule: <code>(marketing)</code> organises layouts, never URLs. Both bugs are exactly the two things a reader of <code>app/</code> cannot see from the URL alone."
+}</script>
+</section>
+
+<section class="block" data-block="exercise" id="5b-14" data-kind="complete" data-lang="js" data-mode="worker">
+<div class="tag">Exercise</div>
+<p>Implement <code>resolveWrappers(files, page)</code>: given every file under <code>app/</code> and the matched <code>page.tsx</code>, return the component chain from the root to the page, in render order. For each directory from <code>app/</code> down to the page's directory, include the special files that exist there in the order <code>ORDER</code>; the page itself is last. Directories outside the page's path contribute nothing. Tests check nesting, the within-segment order, that route-group layouts apply, and that sibling segments are ignored.</p>
+<pre><code class="language-javascript">const ORDER = ["layout.tsx", "template.tsx", "error.tsx", "loading.tsx", "not-found.tsx"];
+
+function resolveWrappers(files, page) {
+  // TODO: e.g. ["app/layout.tsx", "app/blog/layout.tsx", "app/blog/[slug]/loading.tsx", page]
+}</code></pre>
+<script type="application/json">{
+  "tests": "test(\"root layout then page\", () => assert.equal(resolveWrappers([\"app/layout.tsx\", \"app/blog/[slug]/page.tsx\"], \"app/blog/[slug]/page.tsx\"), [\"app/layout.tsx\", \"app/blog/[slug]/page.tsx\"]));\ntest(\"nested layouts, outer first\", () => assert.equal(resolveWrappers([\"app/layout.tsx\", \"app/blog/layout.tsx\", \"app/blog/[slug]/page.tsx\"], \"app/blog/[slug]/page.tsx\"), [\"app/layout.tsx\", \"app/blog/layout.tsx\", \"app/blog/[slug]/page.tsx\"]));\ntest(\"within a segment: layout → template → error → loading → page\", () => assert.equal(resolveWrappers([\"app/layout.tsx\", \"app/blog/[slug]/loading.tsx\", \"app/blog/[slug]/error.tsx\", \"app/blog/[slug]/template.tsx\", \"app/blog/[slug]/layout.tsx\", \"app/blog/[slug]/page.tsx\"], \"app/blog/[slug]/page.tsx\"), [\"app/layout.tsx\", \"app/blog/[slug]/layout.tsx\", \"app/blog/[slug]/template.tsx\", \"app/blog/[slug]/error.tsx\", \"app/blog/[slug]/loading.tsx\", \"app/blog/[slug]/page.tsx\"]));\ntest(\"route-group layout applies to pages inside it\", () => assert.equal(resolveWrappers([\"app/layout.tsx\", \"app/(marketing)/layout.tsx\", \"app/(marketing)/about/page.tsx\"], \"app/(marketing)/about/page.tsx\"), [\"app/layout.tsx\", \"app/(marketing)/layout.tsx\", \"app/(marketing)/about/page.tsx\"]));\ntest(\"sibling segments are ignored\", () => assert.equal(resolveWrappers([\"app/layout.tsx\", \"app/shop/layout.tsx\", \"app/shop/error.tsx\", \"app/blog/page.tsx\"], \"app/blog/page.tsx\"), [\"app/layout.tsx\", \"app/blog/page.tsx\"]));\ntest(\"page appears exactly once, last\", () => { const out = resolveWrappers([\"app/page.tsx\", \"app/layout.tsx\"], \"app/page.tsx\"); assert.equal(out, [\"app/layout.tsx\", \"app/page.tsx\"]); });",
+  "hints": [
+    "Split the page path into directories: <code>app/blog/[slug]/page.tsx</code> → prefixes <code>app</code>, <code>app/blog</code>, <code>app/blog/[slug]</code>.",
+    "For each prefix, for each name in <code>ORDER</code>, push <code>`${prefix}/${name}`</code> if <code>files</code> contains it. A <code>Set</code> makes the lookup cheap.",
+    "Append <code>page</code> at the end. Nothing else about the file list matters — the chain is purely the page's ancestors."
+  ],
+  "solution": "const ORDER = [\"layout.tsx\", \"template.tsx\", \"error.tsx\", \"loading.tsx\", \"not-found.tsx\"];\n\nfunction resolveWrappers(files, page) {\n  const have = new Set(files);\n  const dirs = page.split(\"/\").slice(0, -1);\n  const chain = [];\n  for (let depth = 1; depth <= dirs.length; depth++) {\n    const prefix = dirs.slice(0, depth).join(\"/\");\n    for (const name of ORDER) {\n      const candidate = `${prefix}/${name}`;\n      if (have.has(candidate)) chain.push(candidate);\n    }\n  }\n  chain.push(page);\n  return chain;\n}",
+  "explain": "This is the stepper in 5b-09 as a function: the rendered tree for a URL is the page's ancestor directories, each contributing its special files in a fixed order. It also shows why a route group's <code>layout.tsx</code> applies — it is an ancestor directory even though it is not a URL segment — and why <code>app/shop/error.tsx</code> can never catch a <code>/blog</code> error."
+}</script>
+</section>
+
+<section class="block" data-block="concept" id="5b-04">
+<h2>Parallel routes</h2>
+<p>Render several independent pages in the same layout at once. Each slot is a folder prefixed with <code>@</code>; the layout receives each slot as a prop alongside <code>children</code> (which is the implicit <code>@children</code> slot).</p>
+
+<pre><code class="language-bash">app/dashboard/
+  layout.tsx          # receives { children, team, analytics }
+  page.tsx
+  @team/
+    page.tsx
+    default.tsx       # what to render for this slot when the URL doesn't match it
+  @analytics/
+    page.tsx
+    default.tsx
+    settings/page.tsx # /dashboard/settings fills @analytics; @team falls back to default.tsx</code></pre>
+
+<pre><code class="language-tsx">// app/dashboard/layout.tsx
+export default function DashboardLayout(
+  { children, team, analytics }: { children: React.ReactNode; team: React.ReactNode; analytics: React.ReactNode }
+) {
+  return (
+    &lt;div&gt;
+      {children}
+      &lt;aside&gt;{team}&lt;/aside&gt;
+      &lt;aside&gt;{analytics}&lt;/aside&gt;
+    &lt;/div&gt;
+  );
+}</code></pre>
+
+<p>Each slot has its own <code>loading.tsx</code> / <code>error.tsx</code> and streams independently — a dashboard whose widgets fail or load separately. On a <em>soft</em> navigation an unmatched slot keeps showing what it had; on a <em>hard</em> navigation (reload, direct URL) Next has no previous state and renders the slot's <code>default.tsx</code> — with none, the whole page 404s.</p>
+</section>
+
+<section class="block" data-block="concept" id="5b-05">
+<h2>Intercepting routes</h2>
+<p>Override what a URL renders <em>within the current layout context</em>, without leaving the page. Prefix the segment with <code>(.)</code> (same level), <code>(..)</code> (one segment up), <code>(..)(..)</code> (two up), or <code>(...)</code> (from <code>app/</code> root). The levels count <em>route segments</em>, not folders — route groups and <code>@slots</code> don't count.</p>
+
+<pre><code class="language-bash">app/feed/
+  layout.tsx            # renders {children} and {modal}
+  page.tsx
+  @modal/
+    default.tsx         # null — no modal unless intercepted
+    (.)photo/[id]/
+      page.tsx          # intercepts /photo/[id] when navigated to from /feed
+app/photo/
+  [id]/page.tsx         # direct URL, refresh, or shared link → the full page</code></pre>
+
+<p>The modal-with-shareable-URL pattern: clicking a photo in the feed opens an overlay and the URL becomes <code>/photo/42</code>; reloading that URL shows the standalone photo page. Interception only happens on client-side navigation — which is why it is always paired with a parallel slot that has a <code>default.tsx</code> returning <code>null</code>.</p>
+</section>
+
+<section class="block" data-block="concept" id="5b-06">
+<h2>Static params for dynamic segments</h2>
+<p><code>generateStaticParams</code> lists the dynamic values to prerender at build time — SSG for <code>[slug]</code> routes. Values not in the list are rendered on first request and cached (<code>dynamicParams = true</code>, the default); set <code>export const dynamicParams = false</code> to 404 them instead.</p>
+
+<pre><code class="language-tsx">// app/blog/[slug]/page.tsx
+export async function generateStaticParams() {
+  const posts = await db.posts.findMany({ select: { slug: true } });
+  return posts.map((p) =&gt; ({ slug: p.slug }));   // → /blog/hello-world, /blog/getting-started, … at build
+}
+
+export default async function Post({ params }: { params: Promise&lt;{ slug: string }&gt; }) {
+  const { slug } = await params;                  // same Promise shape whether prerendered or on-demand
+  const post = await db.posts.findBySlug(slug);
+  if (!post) notFound();                          // → nearest not-found.tsx, 404 status
+  return &lt;article&gt;{post.body}&lt;/article&gt;;
+}</code></pre>
+</section>
+
+<section class="block" data-block="concept" id="5b-07">
+<h2>Metadata API</h2>
+<p>Export <code>metadata</code> (static) or <code>generateMetadata</code> (per request, runs on the server) from any <code>page.tsx</code> or <code>layout.tsx</code>; nested exports merge, leaf wins. Next renders the <code>&lt;head&gt;</code> from it — never hand-write <code>&lt;title&gt;</code> in a layout.</p>
+
+<pre><code class="language-tsx">// Static — same for every visitor
+import type { Metadata } from "next";
+export const metadata: Metadata = {
+  title: { template: "%s · My Blog", default: "My Blog" },   // children fill %s
+  description: "Thoughts on software.",
+};
+
+// Dynamic — per request; params is a Promise here too
+export async function generateMetadata(
+  { params }: { params: Promise&lt;{ slug: string }&gt; }
+): Promise&lt;Metadata&gt; {
+  const { slug } = await params;
+  const post = await db.posts.findBySlug(slug);    // deduped with the page's own fetch via React cache()
+  return {
+    title: post.title,
+    openGraph: { images: [post.ogImage] },
+  };
+}</code></pre>
+</section>
+
+<section class="block" data-block="review" id="5b-18">
+<div class="tag">Code review</div>
+<ul>
+  <li><strong>Per-page logic in a layout.</strong> Page-view analytics, scroll reset, "enter" animation in <code>layout.tsx</code> run once and never again, because layouts persist across navigation. Use <code>template.tsx</code>, or key an effect on <code>usePathname()</code>.</li>
+  <li><strong><code>error.tsx</code> expected to catch its own layout.</strong> The boundary sits inside the layout; a throw in <code>app/x/layout.tsx</code> reaches <code>app/error.tsx</code>. Root-layout errors need <code>global-error.tsx</code>, which must render its own <code>&lt;html&gt;</code>.</li>
+  <li><strong>Parallel route without <code>default.tsx</code>.</strong> Works in development clicks, 404s on reload and on every shared link. Every <code>@slot</code> gets a <code>default.tsx</code>, even if it returns <code>null</code>.</li>
+  <li><strong><code>params</code> / <code>searchParams</code> used synchronously.</strong> Next 15 made them Promises; <code>params.slug</code> logs a deprecation warning today and breaks in the next major. <code>await params</code> — and run <code>npx @next/codemod@canary next-async-request-api</code> on old code.</li>
+  <li><strong><code>useSearchParams()</code> in a client component with no <code>&lt;Suspense&gt;</code> above it.</strong> On a statically rendered route this forces the whole page up to the nearest boundary to render on the client (a "bail out"); the build warns. Wrap the component in <code>&lt;Suspense&gt;</code>, or read <code>searchParams</code> in the page on the server.</li>
+  <li><strong><code>generateStaticParams</code> returning the whole table.</strong> 50 000 product pages at build time. Return the hot set; let <code>dynamicParams</code> render the long tail on demand.</li>
+  <li><strong><code>route.ts</code> next to <code>page.tsx</code></strong> in the same directory is a build error — move handlers under <code>api/</code> or a sibling segment.</li>
+</ul>
+</section>
+
+<section class="block" data-block="exercise" id="5b-16" data-kind="mcq">
+<div class="tag">Check</div>
+<p>A client component in <code>app/(app)/layout.tsx</code> calls <code>trackPageView()</code> inside <code>useEffect(() =&gt; {…}, [])</code>. Analytics shows one page view per session no matter how many pages the user visits. Why, and what is the smallest fix?</p>
+<script type="application/json">{
+  "options": [
+    "The effect runs on the server during SSR and never on the client; move the call into a Server Component.",
+    "Layouts persist across client-side navigation, so the effect's mount runs once; move the effect into <code>template.tsx</code> (re-mounts per navigation) or depend on <code>usePathname()</code>.",
+    "React 19's compiler memoised the effect away; disable the compiler for that file.",
+    "<code>&lt;Link&gt;</code> prefetching fires the effect before the navigation and the second run is deduplicated; disable <code>prefetch</code> on the links."
+  ],
+  "answer": 1,
+  "explain": "A layout is a long-lived component instance (5b-10). Navigating between its child routes re-renders only the changed segments, so an empty-deps effect in the layout fires exactly once per hard load. <code>template.tsx</code> exists for precisely this case; <code>usePathname()</code> as a dependency is the other idiom. Effects never run on the server, which rules out option 1; prefetching renders nothing on the client."
+}</script>
+</section>
+
+<section class="block" data-block="exercise" id="5b-17" data-kind="mcq">
+<div class="tag">Check</div>
+<p><code>app/dashboard/layout.tsx</code> renders <code>{children}</code>, <code>{team}</code> and <code>{analytics}</code>. <code>@analytics/settings/page.tsx</code> exists; <code>@team</code> has only <code>page.tsx</code>. Clicking a link to <code>/dashboard/settings</code> works; pressing reload on that URL returns a 404. What is wrong?</p>
+<script type="application/json">{
+  "options": [
+    "<code>@team</code> has no <code>default.tsx</code>. On a hard navigation Next cannot keep the slot's previous content, so an unmatched slot without a default makes the whole route 404.",
+    "<code>settings/page.tsx</code> must also exist under <code>@team</code> and under <code>children</code> — every slot has to match every URL.",
+    "Parallel routes only support client-side navigation; the route needs <code>export const dynamic = \"force-dynamic\"</code> to be server-rendered.",
+    "The layout needs <code>loading.tsx</code> files for each slot so the server can stream the unmatched ones."
+  ],
+  "answer": 0,
+  "explain": "During soft navigation an unmatched slot simply keeps rendering what it showed before. On reload there is no 'before', so Next renders the slot's <code>default.tsx</code> — and with none, the route is a 404 (5b-04). Slots do not all need to match every URL (option 2 is how people end up with dozens of empty pages); add <code>@team/default.tsx</code>."
+}</script>
+</section>
+
+<section class="block" data-block="recall" id="5b-19">
+<div class="tag">Recall</div>
+<dl>
+  <dt>Which file makes a URL publicly reachable in the App Router, and what can it not share a directory with?</dt>
+  <dd><code>page.tsx</code> (or <code>route.ts</code> for handlers). A directory with only <code>layout.tsx</code> is a wrapper, not a route. <code>page.tsx</code> and <code>route.ts</code> in the same segment is a build error.</dd>
+
+  <dt>In what order do a segment's special files nest around the page?</dt>
+  <dd><code>layout</code> → <code>template</code> → <code>error</code> (boundary) → <code>loading</code> (Suspense) → <code>not-found</code> → <code>page</code>. Ancestor directories nest outside, root first.</dd>
+
+  <dt><code>layout.tsx</code> vs <code>template.tsx</code> — the one-line difference?</dt>
+  <dd>A layout persists across navigations (state kept, effects don't re-run); a template re-mounts on every navigation. Same position in the tree.</dd>
+
+  <dt>Why must <code>error.tsx</code> be <code>"use client"</code>, and which error does it <em>not</em> catch?</dt>
+  <dd>Error boundaries need client lifecycle. It wraps the page, not its own segment's layout — a throw in that layout goes to the parent's <code>error.tsx</code>; root-layout errors need <code>global-error.tsx</code>.</dd>
+
+  <dt>Both <code>app/blog/new/page.tsx</code> and <code>app/blog/[slug]/page.tsx</code> exist. Which one serves <code>/blog/new</code>?</dt>
+  <dd>The static segment: <code>new/page.tsx</code>. Precedence is static &gt; <code>[dynamic]</code> &gt; <code>[...catchAll]</code>, independent of any file order.</dd>
+
+  <dt>What does <code>(marketing)/about/page.tsx</code> serve, and what is the group for?</dt>
+  <dd><code>/about</code> — the group is invisible in the URL. It exists so <code>(marketing)/layout.tsx</code> can wrap some routes with a different shell under the same root layout.</dd>
+
+  <dt><code>[...path]</code> vs <code>[[...path]]</code> for <code>/docs</code>?</dt>
+  <dd><code>[...path]</code> needs at least one segment, so <code>/docs</code> is 404; <code>[[...path]]</code> is optional and matches <code>/docs</code> with <code>path: []</code>.</dd>
+
+  <dt>A parallel-route slot has no <code>default.tsx</code>. What happens on reload of a URL the slot does not match?</dt>
+  <dd>404 for the whole route. Soft navigation keeps the slot's previous content; a hard navigation has none, so Next needs <code>default.tsx</code> (often returning <code>null</code>).</dd>
+
+  <dt>How are <code>params</code> and <code>searchParams</code> typed in a Next 15 page, and who receives <code>searchParams</code>?</dt>
+  <dd>Both are Promises — <code>const { slug } = await params</code>. Only pages get <code>searchParams</code>; layouts get <code>params</code> only, because a persistent layout cannot depend on per-navigation query strings.</dd>
+</dl>
+</section>
+</article>
+<script type="module" src="/assets/runtime/boot.js"></script>
+</body>
+</html>

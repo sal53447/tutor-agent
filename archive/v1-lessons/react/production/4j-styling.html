@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>4j. Styling · JS Curriculum</title>
+<link rel="icon" href="/assets/favicon.svg">
+<link rel="stylesheet" href="/assets/vendor/prism.css">
+<link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body data-lesson="4j" data-level="interactive">
+<article class="lesson">
+
+<header>
+  <h1>Styling — Tailwind, CSS Modules, CSS-in-JS</h1>
+</header>
+
+<section class="block" data-block="concept" id="4j-04">
+<p>Styling in React is a question of <em>when</em> a class name becomes a CSS rule: at build time (Tailwind, CSS Modules, zero-runtime CSS-in-JS) or at render time (styled-components, Emotion). That one distinction decides what works in Server Components (5c), what ships as JavaScript, and why a dynamically built class name renders unstyled in production. The rest is conventions: <code>cn()</code>, variant maps, design tokens.</p>
+</section>
+
+<section class="block" data-block="concept" id="4j-01">
+<h2>The landscape</h2>
+<table>
+  <tr><th>Approach</th><th>Resolved</th><th>Status</th></tr>
+  <tr><td><strong>Tailwind CSS v4</strong></td><td>build</td><td>Dominant. Utility classes generated from the strings found in your source. Config lives in CSS (<code>@theme</code>). Ecosystem: shadcn/ui, Radix. Default for new projects.</td></tr>
+  <tr><td><strong>CSS Modules</strong></td><td>build</td><td>Plain CSS, class names rewritten to <code>btn_x7f2a</code> per file. Works everywhere, including Server Components. Zero runtime.</td></tr>
+  <tr><td><strong>Vanilla CSS + cascade layers</strong></td><td>—</td><td>Viable again: native nesting, <code>@layer</code>, <code>:has()</code>, container queries ship in every browser. Small projects need no preprocessor.</td></tr>
+  <tr><td><strong>styled-components / Emotion</strong></td><td>runtime</td><td>Generate CSS during render on the client. Need <code>"use client"</code> and an SSR style registry; impossible inside a Server Component. Avoid in new App Router apps.</td></tr>
+  <tr><td><strong>Vanilla Extract, Panda, StyleX</strong></td><td>build</td><td>Typed, zero-runtime CSS-in-JS: the styles are extracted into static CSS at build. Good TS ergonomics; smaller ecosystems.</td></tr>
+</table>
+
+<pre><code class="language-jsx">// Tailwind: className is just a string; every class in it must exist in the generated stylesheet
+function Button({ variant = "primary", children }) {
+  const base = "rounded-md px-3 py-1.5 text-sm font-medium transition";
+  const styles = {
+    primary:   "bg-indigo-600 text-white hover:bg-indigo-700",
+    secondary: "bg-zinc-100 text-zinc-900 hover:bg-zinc-200",
+  };
+  return &lt;button className={`${base} ${styles[variant]}`}&gt;{children}&lt;/button&gt;;
+}</code></pre>
+</section>
+
+<section class="block" data-block="concept" id="4j-05">
+<h2>Where a class name becomes CSS: build time vs runtime</h2>
+<p><strong>Tailwind</strong> runs a <em>scanner</em> at build: it reads every source file as plain text, collects every token that looks like a utility (<code>px-3</code>, <code>hover:bg-indigo-700</code>, <code>md:grid-cols-2</code>) and emits one rule per token into a static <code>.css</code> file. At runtime nothing happens — React sets a string on <code>class</code>, the browser matches it against a stylesheet that was finished before deploy.</p>
+<p><strong>CSS Modules</strong> are also build-time: the bundler rewrites <code>.btn</code> to <code>.btn_x7f2a</code>, emits the rewritten CSS, and gives the component <code>styles.btn === "btn_x7f2a"</code>. Local by construction — two files can both define <code>.btn</code>.</p>
+<p><strong>Runtime CSS-in-JS</strong> (styled-components, Emotion) serialises the template literal <em>during render</em>, hashes it, and injects a <code>&lt;style&gt;</code> tag. That needs a client-side runtime and React context — which is why it needs <code>"use client"</code>, a registry (<code>useServerInsertedHTML</code>) to get styles into server-rendered HTML, and cannot run in a Server Component at all. Vanilla Extract, Panda and StyleX keep the authoring model but move serialisation to build time.</p>
+<pre><code class="language-jsx">// Scanner sees the token "bg-red-500" → the stylesheet gets .bg-red-500 { … }
+&lt;div className="bg-red-500" /&gt;
+
+// Scanner sees "bg-", "-500" and a template — it emits nothing. Unstyled in production,
+// and it "works" in dev only if some other file happens to contain the full class.
+&lt;div className={`bg-${color}-500`} /&gt;
+
+// Full strings in a lookup: every value appears verbatim in the source
+const tone = { red: "bg-red-500", blue: "bg-blue-500" }[color];
+&lt;div className={tone} /&gt;</code></pre>
+<div class="callout warn">
+  <div class="tag">Gotcha</div>
+  <p>The scanner does not evaluate JavaScript. String concatenation, <code>replace()</code>, props spliced into a class — all invisible. The rule: a utility must appear as one unbroken string somewhere in the scanned files.</p>
+</div>
+</section>
+
+<section class="block" data-block="diagram" id="4j-06">
+<div class="tag">Mechanism</div>
+<script type="application/json">{
+  "direction": "down",
+  "nodes": [
+    { "id": "tw",   "label": "className=\"px-3\"\nTailwind", "kind": "box", "row": 0 },
+    { "id": "mod",  "label": "styles.btn\nCSS Module", "kind": "box", "row": 0 },
+    { "id": "sc",   "label": "styled.button`…`\nruntime CSS-in-JS", "kind": "box", "row": 0 },
+    { "id": "scan", "label": "scanner reads source\n(build)", "kind": "box", "row": 1 },
+    { "id": "hash", "label": "bundler renames .btn\n(build)", "kind": "box", "row": 1 },
+    { "id": "ser",  "label": "serialise + inject <style>\n(each render, client)", "kind": "box", "row": 1 },
+    { "id": "css",  "label": "static .css\ncached, zero JS", "kind": "cyl", "row": 2 },
+    { "id": "rsc",  "label": "needs \"use client\"\n+ SSR style registry", "kind": "note", "row": 2 }
+  ],
+  "edges": [
+    { "from": "tw",   "to": "scan", "label": "verbatim strings" },
+    { "from": "mod",  "to": "hash" },
+    { "from": "sc",   "to": "ser" },
+    { "from": "scan", "to": "css" },
+    { "from": "hash", "to": "css" },
+    { "from": "ser",  "to": "rsc", "dashed": true }
+  ]
+}</script>
+<p class="caption">Two of the three paths finish before deploy and produce a plain stylesheet; the third runs on every render in the browser, which is what makes it incompatible with Server Components.</p>
+</section>
+
+<section class="block" data-block="bridge" id="4j-07">
+<div class="tag">Python bridge</div>
+<p>Tailwind's scanner is Django's <code>makemessages</code>: it greps source text for literal strings and emits an entry for each one it can see. <code>_("Hello")</code> gets a catalogue entry; <code>_(f"Hello {name}")</code> runs fine and ships untranslated. <code>className={`bg-${color}-500`}</code> is the f-string case — valid code, no matching rule. CSS Modules map to module namespaces: <code>styles.btn</code> can't collide with another file's <code>.btn</code> for the same reason <code>a.helper</code> and <code>b.helper</code> don't.</p>
+</section>
+
+<section class="block" data-block="concept" id="4j-02">
+<h2>Conditional classes — clsx + tailwind-merge</h2>
+<p>Template literals get unwieldy fast. <code>clsx</code> flattens its arguments, drops falsy values and joins what's left — nothing more. <code>tailwind-merge</code> (<code>twMerge</code>) knows Tailwind's utility groups and resolves <em>conflicts</em>: <code>twMerge("p-2", "p-4")</code> is <code>"p-4"</code>, because in a plain concatenation both classes apply and the <em>stylesheet order</em> decides, not the order in your string. <code>cn()</code> composes the two; it is the convention in shadcn/ui and most Tailwind codebases.</p>
+<pre><code class="language-jsx">import clsx from "clsx";
+import { twMerge } from "tailwind-merge";
+
+function cn(...inputs) { return twMerge(clsx(...inputs)); }
+
+function Button({ variant = "primary", disabled, className, children, ...props }) {
+  return (
+    &lt;button
+      disabled={disabled}
+      className={cn(
+        "rounded-md px-3 py-1.5 text-sm font-medium transition",
+        variant === "primary" &amp;&amp; "bg-indigo-600 text-white hover:bg-indigo-700",
+        variant === "ghost"   &amp;&amp; "bg-transparent text-zinc-700 hover:bg-zinc-100",
+        disabled              &amp;&amp; "opacity-50 cursor-not-allowed",
+        className              // caller overrides win — twMerge resolves px-3 vs px-6
+      )}
+      {...props}
+    &gt;
+      {children}
+    &lt;/button&gt;
+  );
+}</code></pre>
+<div class="callout bad">
+  <div class="tag">Don't</div>
+  <pre><code class="language-jsx">&lt;button className="btn btn-primary" {...props} /&gt;   // props.className replaces both classes</code></pre>
+</div>
+<div class="callout good">
+  <div class="tag">Do</div>
+  <pre><code class="language-jsx">&lt;button className={cn("btn btn-primary", className)} {...props} /&gt;</code></pre>
+</div>
+</section>
+
+<section class="block" data-block="playground" id="4j-09" data-lang="jsx">
+<div class="tag">Try it</div>
+<p>The sandbox has no Tailwind, so the stylesheet is injected by hand — the same thing a bundler does once at load. <code>cx</code> is <code>clsx</code> in one line. Try: pass <code>className="is-disabled"</code> to the first button; add <code>"btn-primary"</code> to the ghost button and see which rule wins; change the chip to read <code>--hue</code> from a prop instead of state.</p>
+<pre><code class="language-jsx">import { useState } from "react";
+import { createRoot } from "react-dom/client";
+
+document.head.appendChild(Object.assign(document.createElement("style"), { textContent: `
+  .btn { padding: 6px 12px; border-radius: 6px; border: 1px solid #888; background: #eee; color: #111; }
+  .btn-primary { background: #4f46e5; color: #fff; border-color: #4f46e5; }
+  .is-disabled { opacity: .5; cursor: not-allowed; }
+  .chip { display: inline-block; margin-left: 8px; padding: 2px 8px; border-radius: 999px;
+          background: hsl(var(--hue) 70% 45%); color: #fff; }
+` }));
+
+// clsx: flatten, drop falsy, join
+const cx = (...xs) =&gt; xs.flat().filter(Boolean).join(" ");
+
+function Button({ variant = "primary", disabled, className, children, ...props }) {
+  const cls = cx("btn", variant === "primary" &amp;&amp; "btn-primary", disabled &amp;&amp; "is-disabled", className);
+  console.log(cls);
+  return &lt;button className={cls} disabled={disabled} {...props}&gt;{children}&lt;/button&gt;;
+}
+
+function App() {
+  const [hue, setHue] = useState(200);
+  return (
+    &lt;div&gt;
+      &lt;Button onClick={() =&gt; setHue(h =&gt; (h + 40) % 360)}&gt;Shift hue&lt;/Button&gt;
+      &lt;Button variant="ghost" disabled&gt;Ghost&lt;/Button&gt;
+      &lt;span className="chip" style={{ "--hue": hue }}&gt;hue {hue}&lt;/span&gt;
+    &lt;/div&gt;
+  );
+}
+createRoot(document.getElementById("root")).render(&lt;App /&gt;);</code></pre>
+<output>btn btn-primary
+btn is-disabled</output>
+</section>
+
+<section class="block" data-block="exercise" id="4j-10" data-kind="predict" data-lang="js">
+<div class="tag">Exercise</div>
+<p><code>cx</code> is <code>clsx</code>: flatten, drop falsy, join with a space. What does this print? One value per line.</p>
+<pre><code class="language-javascript">const cx = (...xs) =&gt; xs.flat().filter(Boolean).join(" ");
+
+const disabled = false, size = "lg";
+console.log(cx("btn", disabled &amp;&amp; "is-disabled", size === "lg" &amp;&amp; "btn-lg", 0, null, ["a", undefined]));
+
+// Two utilities that set the same property.
+console.log(cx("p-2", "p-4"));
+console.log(cx("p-2", "p-4").split(" ").length);</code></pre>
+<script type="application/json">{
+  "expected": "btn btn-lg a\np-2 p-4\n2",
+  "hints": [
+    "<code>false &amp;&amp; \"x\"</code> is <code>false</code>; <code>true &amp;&amp; \"x\"</code> is <code>\"x\"</code>. <code>filter(Boolean)</code> removes <code>false</code>, <code>0</code>, <code>null</code>, <code>undefined</code>, <code>\"\"</code>.",
+    "<code>flat()</code> unwraps the nested array one level. Nothing in <code>cx</code> looks at what a class <em>means</em>, so <code>p-2</code> and <code>p-4</code> both survive."
+  ],
+  "explain": "<code>clsx</code> is string plumbing: it never knows that <code>p-2</code> and <code>p-4</code> conflict. Both classes end up on the element and the browser applies whichever rule comes <em>later in the stylesheet</em> — not later in your string. Resolving that is <code>tailwind-merge</code>'s job, which is why <code>cn()</code> wraps both."
+}</script>
+</section>
+
+<section class="block" data-block="exercise" id="4j-11" data-kind="fix" data-lang="jsx">
+<div class="tag">Exercise</div>
+<p>Consumers of <code>Button</code> complain that passing <code>className</code> strips the button's own styling. Fix <code>Button</code> so the caller's class is <em>added</em> to <code>btn btn-primary</code>, and every other prop (<code>id</code>, <code>onClick</code>) still passes through. The tests render <code>&lt;App /&gt;</code>, wait for React to commit, and inspect <code>#save</code>.</p>
+<pre><code class="language-jsx">import { createRoot } from "react-dom/client";
+
+const cx = (...xs) =&gt; xs.flat().filter(Boolean).join(" ");
+let clicks = 0; // instrumented — the tests read this
+
+// --- fix this
+function Button({ children, ...props }) {
+  return &lt;button className="btn btn-primary" {...props}&gt;{children}&lt;/button&gt;;
+}
+
+function App() {
+  return &lt;Button id="save" className="wide" onClick={() =&gt; { clicks++; }}&gt;Save&lt;/Button&gt;;
+}
+createRoot(document.getElementById("root")).render(&lt;App /&gt;);</code></pre>
+<script type="application/json">{
+  "tests": "const __el = async () => { await new Promise(r => setTimeout(r, 30)); return document.getElementById(\"save\"); };\ntest(\"keeps the component's own classes\", async () => { const b = await __el(); assert(b, \"no #save button rendered\"); assert(b.classList.contains(\"btn\") && b.classList.contains(\"btn-primary\"), \"got class=\\\"\" + b.className + \"\\\"\"); });\ntest(\"also applies the caller's className\", async () => { const b = await __el(); assert(b.classList.contains(\"wide\"), \"got class=\\\"\" + b.className + \"\\\"\"); });\ntest(\"other props still pass through\", async () => { const b = await __el(); b.click(); await new Promise(r => setTimeout(r, 30)); assert.equal(clicks, 1, \"onClick should have run once\"); });",
+  "hints": [
+    "JSX props are an object literal; <code>{...props}</code> after <code>className=\"…\"</code> overwrites it when <code>props.className</code> exists — same as <code>{ className: \"btn\", ...props }</code>.",
+    "Pull <code>className</code> out of the rest: <code>function Button({ className, children, ...props })</code>, then merge: <code>className={cx(\"btn btn-primary\", className)}</code>."
+  ],
+  "solution": "import { createRoot } from \"react-dom/client\";\n\nconst cx = (...xs) => xs.flat().filter(Boolean).join(\" \");\nlet clicks = 0; // instrumented — the tests read this\n\nfunction Button({ className, children, ...props }) {\n  return <button className={cx(\"btn btn-primary\", className)} {...props}>{children}</button>;\n}\n\nfunction App() {\n  return <Button id=\"save\" className=\"wide\" onClick={() => { clicks++; }}>Save</Button>;\n}\ncreateRoot(document.getElementById(\"root\")).render(<App />);",
+  "explain": "Spread order is object-literal order: the last <code>className</code> wins. Destructuring <code>className</code> out of <code>props</code> and merging it is the whole fix; in a Tailwind codebase the merge is <code>cn()</code> so a caller's <code>px-6</code> also beats the component's <code>px-3</code> instead of colliding with it."
+}</script>
+</section>
+
+<section class="block" data-block="concept" id="4j-08">
+<h2>Dynamic values: CSS variables through <code>style</code>, not class strings</h2>
+<p>Utilities cover a finite set of design decisions. A value computed at runtime — a hue from a colour picker, a progress percentage, a column count from data — is not a class, and no scanner can pre-generate it. Set it as a custom property on <code>style</code> and let one static rule read it:</p>
+<pre><code class="language-jsx">// React sets custom properties with style.setProperty("--pct", …)
+&lt;div className="progress" style={{ "--pct": `${pct}%` }} /&gt;
+
+/* one static rule, any value */
+.progress { width: var(--pct); }
+/* Tailwind v4 equivalent: className="w-(--pct)"  (v3: "w-[var(--pct)]") */</code></pre>
+<div class="callout warn">
+  <div class="tag">Gotcha</div>
+  <p><code>style</code> is fine for a value or two, not as a styling strategy: no pseudo-classes, no media queries, no cascade, and it bypasses design tokens. The pattern is <em>one</em> variable in <code>style</code>, everything else in classes.</p>
+</div>
+</section>
+
+<section class="block" data-block="exercise" id="4j-12" data-kind="complete" data-lang="js">
+<div class="tag">Exercise</div>
+<p>Build the class-name factory that <code>class-variance-authority</code> (<code>cva</code>) provides, used by shadcn/ui. <code>variants(base, { variants, defaults })</code> returns <code>fn(props)</code> producing: <code>base</code>, then one class per variant group — the class for <code>props[group]</code>, else for <code>defaults[group]</code>, else nothing (a value with no entry in the group adds nothing) — then <code>props.className</code> last if given. Single spaces, no trailing space. Tests call <code>button()</code> as defined below.</p>
+<pre><code class="language-javascript">function variants(base, config) {
+  // TODO
+}
+
+const button = variants("btn", {
+  variants: {
+    tone: { primary: "btn-primary", ghost: "btn-ghost" },
+    size: { sm: "btn-sm", lg: "btn-lg" },
+  },
+  defaults: { tone: "primary", size: "sm" },
+});</code></pre>
+<script type="application/json">{
+  "tests": "test(\"defaults when called with nothing\", () => assert.equal(button(), \"btn btn-primary btn-sm\"));\ntest(\"a prop overrides its group's default\", () => assert.equal(button({ tone: \"ghost\" }), \"btn btn-ghost btn-sm\"));\ntest(\"className is appended last\", () => assert.equal(button({ size: \"lg\", className: \"wide\" }), \"btn btn-primary btn-lg wide\"));\ntest(\"unknown value adds nothing for that group\", () => assert.equal(button({ tone: \"nope\" }), \"btn btn-sm\"));\ntest(\"group without a default and without a prop adds nothing\", () => assert.equal(variants(\"x\", { variants: { a: { y: \"a-y\" } } })({}), \"x\"));",
+  "hints": [
+    "Return a function. Inside it, start with <code>[base]</code> and walk <code>Object.entries(config.variants)</code>.",
+    "Per group: <code>const value = props[group] ?? defaults[group]</code>; push <code>options[value]</code> only if it exists.",
+    "Destructure with defaults so a missing <code>defaults</code> object is fine: <code>{ variants = {}, defaults = {} } = {}</code>. Finish with <code>parts.join(\" \")</code>."
+  ],
+  "solution": "function variants(base, { variants = {}, defaults = {} } = {}) {\n  return (props = {}) => {\n    const parts = [base];\n    for (const [group, options] of Object.entries(variants)) {\n      const value = props[group] ?? defaults[group];\n      if (value != null && options[value]) parts.push(options[value]);\n    }\n    if (props.className) parts.push(props.className);\n    return parts.join(\" \");\n  };\n}\n\nconst button = variants(\"btn\", {\n  variants: {\n    tone: { primary: \"btn-primary\", ghost: \"btn-ghost\" },\n    size: { sm: \"btn-sm\", lg: \"btn-lg\" },\n  },\n  defaults: { tone: \"primary\", size: \"sm\" },\n});",
+  "explain": "Every class string lives verbatim in the config object, so Tailwind's scanner finds all of them — this is how a component exposes <code>tone</code>/<code>size</code> props without ever building a class name dynamically. Real <code>cva</code> adds <code>compoundVariants</code> and runs the result through <code>twMerge</code>."
+}</script>
+</section>
+
+<section class="block" data-block="concept" id="4j-03">
+<h2>Tailwind v4 — CSS-first configuration</h2>
+<p>Tailwind v4 replaces <code>tailwind.config.js</code> with an <code>@theme</code> block in your CSS. Tokens are CSS variables, which means they're readable from any rule, any component, and from <code>style</code>.</p>
+<pre><code class="language-css">/* globals.css */
+@import "tailwindcss";
+
+@theme {
+  --color-primary: oklch(55% 0.2 260);
+  --color-surface: oklch(98% 0 0);
+  --font-sans: "Inter", sans-serif;
+}
+
+/* Utilities are generated from the tokens: bg-primary, text-surface, font-sans.
+   Each is also a plain variable: var(--color-primary) */</code></pre>
+<p>Existing v3 projects can keep <code>tailwind.config.js</code> via <code>@config</code>. New projects: CSS-first.</p>
+
+<div class="callout good">
+  <div class="tag">Design tokens</div>
+  <p>Don't spread raw colours through JSX (<code>text-[#1d4ed8]</code>, <code>bg-zinc-100</code> on fifty files). Name decisions in <code>@theme</code> and reference the names: <code>bg-primary</code>, <code>text-body</code>. Rebranding and dark mode become one-file changes.</p>
+</div>
+</section>
+
+<section class="block" data-block="review" id="4j-14">
+<div class="tag">Code review</div>
+<ul>
+  <li><strong>Dynamic class construction.</strong> <code>`bg-${color}-500`</code>, <code>"text-" + size</code>, classes assembled from props. Invisible to the scanner; passes in dev because another file contains the string, breaks in production. Replace with a lookup map of full strings (or <code>cva</code>).</li>
+  <li><strong>Component swallows <code>className</code>.</strong> <code>className="…" {...props}</code> or no <code>className</code> prop at all. Consumers fork the component instead of extending it. Destructure and merge with <code>cn()</code>.</li>
+  <li><strong>Runtime CSS-in-JS in the App Router.</strong> <code>styled.div</code> in a file without <code>"use client"</code> fails at render; with it, every styled component is client JS and needs a <code>useServerInsertedHTML</code> registry for SSR. New code: Tailwind, CSS Modules, or a zero-runtime library.</li>
+  <li><strong>Raw values instead of tokens.</strong> Arbitrary values (<code>w-[137px]</code>, <code>text-[#1d4ed8]</code>) and hex colours in <code>style</code>. Unrebrandable, breaks dark mode. Put the value in <code>@theme</code> or question whether the design needs it.</li>
+  <li><strong>Global CSS imported from a component.</strong> Next.js only accepts global stylesheets in the root layout; everything else must be a CSS Module or Tailwind. A global <code>.card { … }</code> from a leaf component leaks into every route.</li>
+  <li><strong><code>!important</code> to beat a conflict.</strong> Two utilities for the same property both applied — the fix is merging (<code>twMerge</code>) or removing the conflict, not <code>!px-4</code>.</li>
+  <li><strong>A full stylesheet in <code>style={{…}}</code>.</strong> No hover, no breakpoints, no tokens. One custom property for a runtime value is the limit.</li>
+</ul>
+</section>
+
+<section class="block" data-block="exercise" id="4j-13" data-kind="mcq">
+<div class="tag">Check</div>
+<p>In production, <code>&lt;div className={`bg-${color}-500`}&gt;</code> renders with no background, although <code>bg-red-500</code> written literally in another component works. Why?</p>
+<script type="application/json">{
+  "options": [
+    "Tailwind's JIT engine only runs in development; production builds need every class in a <code>safelist</code>.",
+    "Tailwind generates CSS only for class strings it finds <em>verbatim</em> in the scanned source files at build time; <code>bg-${color}-500</code> is never literally <code>bg-blue-500</code>, so no rule exists unless some other file happens to contain it.",
+    "Template literals are evaluated after the stylesheet has loaded, so the browser can't match a class that was added later.",
+    "<code>twMerge</code> drops any class it doesn't recognise as a Tailwind utility, and interpolated classes aren't recognised."
+  ],
+  "answer": 1,
+  "explain": "The scanner is a text pass over source files; it never evaluates code. Option 0 is backwards — JIT runs in both environments, <code>safelist</code> is an escape hatch, not a requirement. Option 2 confuses when a class is <em>applied</em> (any time; the browser re-matches) with when a rule is <em>generated</em> (build). Option 3: <code>twMerge</code> only resolves conflicts between known groups; it passes unknown classes through."
+}</script>
+</section>
+
+<section class="block" data-block="recall" id="4j-15">
+<div class="tag">Recall</div>
+<dl>
+  <dt>When does Tailwind turn <code>px-3</code> into a CSS rule, and what does that imply for <code>`bg-${color}-500`</code>?</dt>
+  <dd>At build time: a scanner reads source files as text and emits a rule per utility string it finds verbatim. An interpolated class is never found, so no rule is generated — unstyled in production. Use a map of full strings.</dd>
+
+  <dt>What does this print?
+<pre><code class="language-javascript">const cx = (...xs) =&gt; xs.flat().filter(Boolean).join(" ");
+console.log(cx("btn", false &amp;&amp; "x", "lg" === "lg" &amp;&amp; "btn-lg", 0, null, ["a", undefined]));
+console.log(cx("p-2", "p-4"));</code></pre></dt>
+  <dd><code>btn btn-lg a</code>, then <code>p-2 p-4</code>. <code>clsx</code> flattens, drops falsy values and joins; it never resolves conflicting utilities — the stylesheet order decides which of <code>p-2</code>/<code>p-4</code> applies.</dd>
+
+  <dt>What does <code>clsx</code> do, what does <code>tailwind-merge</code> do, and what is <code>cn()</code>?</dt>
+  <dd><code>clsx</code>: conditional joining of class strings. <code>twMerge</code>: resolves conflicting Tailwind utilities so the last one wins (<code>"p-2 p-4"</code> → <code>"p-4"</code>). <code>cn = (...a) =&gt; twMerge(clsx(...a))</code>, the shadcn/ui convention.</dd>
+
+  <dt>Why can't styled-components or Emotion be used inside a React Server Component?</dt>
+  <dd>They generate CSS <em>during render</em> on the client and need React context plus a style registry for SSR. Server Components have no client runtime, so those libraries require <code>"use client"</code>; zero-runtime alternatives (CSS Modules, Vanilla Extract, Panda, StyleX, Tailwind) resolve at build and work anywhere.</dd>
+
+  <dt>How do you feed a runtime value (a hue from state, a percentage) into CSS without generating class names?</dt>
+  <dd>Set a custom property on <code>style</code> — <code>style={{ "--pct": `${pct}%` }}</code> — and read it from one static rule: <code>width: var(--pct)</code> (Tailwind v4: <code>w-(--pct)</code>).</dd>
+
+  <dt>What's the bug in <code>&lt;button className="btn" {...props}&gt;</code>, and the fix?</dt>
+  <dd>If <code>props.className</code> exists, the spread overwrites <code>"btn"</code> (last key wins). Destructure <code>className</code> and merge: <code>className={cn("btn", className)} {...props}</code>.</dd>
+
+  <dt>Where does Tailwind v4 configuration live?</dt>
+  <dd>In CSS: <code>@import "tailwindcss";</code> plus an <code>@theme { --color-primary: …; }</code> block. Each token becomes both a utility (<code>bg-primary</code>) and a CSS variable (<code>var(--color-primary)</code>). <code>tailwind.config.js</code> is only for v3 projects via <code>@config</code>.</dd>
+</dl>
+</section>
+</article>
+<script type="module" src="/assets/runtime/boot.js"></script>
+</body>
+</html>

@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>4h. Client state management · JS Curriculum</title>
+<link rel="icon" href="/assets/favicon.svg">
+<link rel="stylesheet" href="/assets/vendor/prism.css">
+<link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body data-lesson="4h" data-level="migrated">
+<article class="lesson">
+
+<header>
+  <h1>Client State Management</h1>
+</header>
+
+<section class="block" data-block="concept" id="4h-01">
+<p>Once you've pushed server state into TanStack Query, what's left as "state"? Form drafts, UI toggles, navigation state, user preferences. For that you rarely need Redux.</p>
+
+<table>
+  <tr><th>Option</th><th>Pick when</th></tr>
+  <tr><td>Local <code>useState</code></td><td>The state belongs to one component (plus close children). Default.</td></tr>
+  <tr><td>Lifted state + props</td><td>Two sibling components need it. Hoist to common parent.</td></tr>
+  <tr><td><strong>Context</strong></td><td>Rarely-changing global data: theme, current user. Never for fast-updating state.</td></tr>
+  <tr><td><strong>Zustand</strong></td><td>Global or cross-cutting state that updates often. Tiny API, no provider needed, hooks-based. <strong>The recommended default for 2026.</strong></td></tr>
+  <tr><td><strong>Redux Toolkit</strong></td><td>Large teams, complex state with time-travel debugging, or existing Redux codebases. Don't pick for a new small app.</td></tr>
+  <tr><td><strong>Jotai / Recoil</strong></td><td>Atom-based model fits your domain better than store-based.</td></tr>
+</table>
+
+<pre><code class="language-jsx">// Zustand
+import { create } from "zustand";
+
+const useCart = create((set) =&gt; ({
+  items: [],
+  add: (item) =&gt; set(s =&gt; ({ items: [...s.items, item] })),
+  remove: (id) =&gt; set(s =&gt; ({ items: s.items.filter(i =&gt; i.id !== id) })),
+}));
+
+function CartCount() {
+  const count = useCart(s =&gt; s.items.length);  // selector → re-render only on length change
+  return &lt;span&gt;{count}&lt;/span&gt;;
+}</code></pre>
+</section>
+
+<section class="block" data-block="concept" id="4h-02">
+<h2>Zustand with Immer middleware — nested updates without spread hell</h2>
+<p>For deeply nested state, spreading every level is error-prone. The <code>immer</code> middleware lets you write mutating code; Immer produces a new immutable object internally.</p>
+<pre><code class="language-jsx">import { create } from "zustand";
+import { immer } from "zustand/middleware/immer";
+
+const useSettings = create(immer((set) =&gt; ({
+  user: { profile: { name: "", bio: "" } },
+  setName: (name) =&gt; set(state =&gt; { state.user.profile.name = name; }),
+  // No spread chain needed — Immer handles immutability
+})));</code></pre>
+</section>
+
+<section class="block" data-block="concept" id="4h-03">
+<h2>URL state — query params as a store</h2>
+<p>Filter values, pagination, selected tabs — anything a user should be able to bookmark or share belongs in the URL, not in <code>useState</code>. In Next.js App Router, use <code>useSearchParams</code> (read) and <code>useRouter</code>/<code>Link</code> (write). In plain React Router, use the <code>useSearchParams</code> hook from <code>react-router-dom</code>.</p>
+<pre><code class="language-jsx">"use client";
+import { useSearchParams, useRouter } from "next/navigation";
+
+function FilterBar() {
+  const params = useSearchParams();
+  const router = useRouter();
+  const status = params.get("status") ?? "all";
+
+  function setStatus(s) {
+    const next = new URLSearchParams(params);
+    next.set("status", s);
+    router.push(`?${next}`);   // updates URL → component re-renders with new params
+  }
+
+  return &lt;select value={status} onChange={e =&gt; setStatus(e.target.value)}&gt;…&lt;/select&gt;;
+}</code></pre>
+<p>URL state survives page refresh, works with the back button, and is shareable — it's a better default than <code>useState</code> for anything navigation-related.</p>
+
+<div class="callout py">
+  <div class="tag">Python bridge</div>
+  <p>Python web apps (Flask, Django) put filter state in query params by default because there's no persistent client memory between requests. React developers often default to <code>useState</code> because it's easy — but that breaks the back button and sharing. Defaulting to URL state is the right instinct if you're coming from a server-rendered background.</p>
+</div>
+</section>
+</article>
+<script type="module" src="/assets/runtime/boot.js"></script>
+</body>
+</html>

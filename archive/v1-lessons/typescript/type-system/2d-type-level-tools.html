@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>2d. Type-level tools · JS Curriculum</title>
+<link rel="icon" href="/assets/favicon.svg">
+<link rel="stylesheet" href="/assets/vendor/prism.css">
+<link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body data-lesson="2d" data-level="migrated">
+<article class="lesson">
+
+<header>
+  <h1>Type-Level Tools</h1>
+</header>
+
+<section class="block" data-block="concept" id="2d-01">
+<p>TS has a small type-level programming language. Most projects need a handful of patterns; only library authors go deep.</p>
+
+<pre><code class="language-typescript">// keyof — get the keys of a type as a union
+type UserKeys = keyof { id: string; name: string };  // "id" | "name"
+
+// typeof — get the TYPE of a VALUE
+const config = { port: 3000, host: "localhost" };
+type Config = typeof config;
+
+// Mapped types — transform all keys
+type Readonly&lt;T&gt; = { readonly [K in keyof T]: T[K] };
+type Partial&lt;T&gt;  = { [K in keyof T]?: T[K] };
+
+// Conditional types + infer — explained below
+type ReturnType&lt;F&gt; = F extends (...args: any[]) =&gt; infer R ? R : never;
+type Async&lt;T&gt; = T extends Promise&lt;infer U&gt; ? U : T;
+
+// Template literals
+type Route = `/${string}`;
+type Event&lt;T extends string&gt; = `on${Capitalize&lt;T&gt;}`;   // onClick, onHover...</code></pre>
+</section>
+
+<section class="block" data-block="concept" id="2d-02">
+<h2>The three utility types you'll use daily</h2>
+<pre><code class="language-typescript">type User = { id: string; name: string; email: string; role: "admin" | "user" };
+
+// Pick — keep only the named keys
+type UserPreview = Pick&lt;User, "id" | "name"&gt;;
+// { id: string; name: string }
+
+// Omit — drop the named keys
+type CreateUserDto = Omit&lt;User, "id"&gt;;
+// { name: string; email: string; role: "admin" | "user" }
+
+// Record — typed dictionary
+type RoleLabel = Record&lt;"admin" | "user", string&gt;;
+// { admin: string; user: string }
+const labels: RoleLabel = { admin: "Administrator", user: "Standard user" };
+
+// Practical: combine Omit + Partial for update payloads
+type UpdateUserDto = Partial&lt;Omit&lt;User, "id"&gt;&gt;;
+// all fields except id become optional</code></pre>
+</section>
+
+<section class="block" data-block="concept" id="2d-03">
+<h2>The <code>infer</code> keyword</h2>
+<p><code>infer</code> lets you <em>extract</em> a type from another type inside a conditional. Read it as: "if this matches, name the captured part <code>R</code> and use it."</p>
+
+<pre><code class="language-typescript">// Extract the element type of any array
+type ElementOf&lt;T&gt; = T extends (infer E)[] ? E : never;
+type A = ElementOf&lt;string[]&gt;;    // string
+type B = ElementOf&lt;number[][]&gt;;  // number[]
+
+// Extract the resolved value of a Promise (same as built-in Awaited&lt;T&gt;)
+type Unwrap&lt;T&gt; = T extends Promise&lt;infer U&gt; ? U : T;
+type C = Unwrap&lt;Promise&lt;User&gt;&gt;;  // User
+type D = Unwrap&lt;string&gt;;         // string (not a Promise, falls to : T)</code></pre>
+</section>
+
+<section class="block" data-block="concept" id="2d-04">
+<h2>More utility types</h2>
+<table>
+  <tr><th>Utility</th><th>Does</th></tr>
+  <tr><td><code>Partial&lt;T&gt;</code></td><td>All fields optional</td></tr>
+  <tr><td><code>Required&lt;T&gt;</code></td><td>All fields required</td></tr>
+  <tr><td><code>Readonly&lt;T&gt;</code></td><td>All fields readonly</td></tr>
+  <tr><td><code>Pick&lt;T, K&gt;</code></td><td>Subset of keys</td></tr>
+  <tr><td><code>Omit&lt;T, K&gt;</code></td><td>Exclude keys</td></tr>
+  <tr><td><code>Record&lt;K, V&gt;</code></td><td>Dict with key and value types</td></tr>
+  <tr><td><code>Exclude&lt;T, U&gt;</code></td><td>Remove members of U from union T</td></tr>
+  <tr><td><code>Extract&lt;T, U&gt;</code></td><td>Keep only members assignable to U</td></tr>
+  <tr><td><code>Parameters&lt;F&gt;</code></td><td>Tuple of a function's parameter types</td></tr>
+  <tr><td><code>ReturnType&lt;F&gt;</code></td><td>Return type of a function</td></tr>
+  <tr><td><code>Awaited&lt;T&gt;</code></td><td>Unwrap a Promise</td></tr>
+  <tr><td><code>NonNullable&lt;T&gt;</code></td><td>Remove null/undefined</td></tr>
+</table>
+
+<pre><code class="language-typescript">// Exclude / Extract
+type Status = "pending" | "active" | "banned";
+type OpenStatus  = Exclude&lt;Status, "banned"&gt;;   // "pending" | "active"
+type ClosedStatus = Extract&lt;Status, "banned"&gt;;   // "banned"
+
+// Parameters — useful for wrapping functions you don't own
+function createUser(name: string, role: "admin" | "user") { /* ... */ }
+type CreateArgs = Parameters&lt;typeof createUser&gt;;   // [string, "admin" | "user"]</code></pre>
+</section>
+
+<section class="block" data-block="concept" id="2d-05">
+<h2><code>satisfies</code> — validate shape without widening</h2>
+<p><code>satisfies</code> checks that a value matches a type but keeps the <em>literal / narrower</em> type for subsequent use. Moved here from idioms because it's a type-level operator — it evaluates entirely at compile time. (See 2f for the assertion functions that complement it.)</p>
+
+<pre><code class="language-typescript">type Config = Record&lt;string, string | number&gt;;
+
+// Without satisfies: port is widened to string | number
+const cfg1: Config = { host: "localhost", port: 3000 };
+cfg1.port.toFixed();   // Error — might be string
+
+// With satisfies: shape is checked AND literals are preserved
+const cfg2 = { host: "localhost", port: 3000 } satisfies Config;
+cfg2.port.toFixed();   // OK — TS knows port: number here
+cfg2.host.toUpperCase(); // OK — TS knows host: string here
+
+// Catches wrong value type while keeping inference
+const routes = {
+  home: "/",
+  about: "/about",
+  blog: 42,   // Error: number is not assignable to `/${string}`
+} satisfies Record&lt;string, `/${string}`&gt;;</code></pre>
+</section>
+</article>
+<script type="module" src="/assets/runtime/boot.js"></script>
+</body>
+</html>

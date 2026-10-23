@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>2b. The type system · JS Curriculum</title>
+<link rel="icon" href="/assets/favicon.svg">
+<link rel="stylesheet" href="/assets/vendor/prism.css">
+<link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body data-lesson="2b" data-level="interactive">
+<article class="lesson">
+
+<header>
+  <h1>The Type System</h1>
+</header>
+
+<section class="block" data-block="concept" id="2b-06">
+<p>TS types are <em>sets of values</em>, and the compiler's job is to track which set a variable is in at every line. Unions widen the set, checks narrow it, <code>unknown</code> and <code>never</code> are the top and bottom. Everything from here on — generics (2c), mapped and conditional types (2d), exhaustive matching (2f), typed <code>req.body</code> (2h) — is built on narrowing a union down to the one case you can act on.</p>
+</section>
+
+<section class="block" data-block="concept" id="2b-01">
+<h2>The building blocks</h2>
+<pre><code class="language-typescript">// Primitives
+let s: string; let n: number; let b: boolean;
+let u: undefined; let nl: null; let big: bigint; let sym: symbol;
+
+// Literal types — a single value is a type
+type Direction = "up" | "down" | "left" | "right";
+type HTTPMethod = "GET" | "POST" | "PUT" | "DELETE";
+
+// Unions — either
+type ID = string | number;
+
+// Intersections — both
+type Named = { name: string };
+type Aged  = { age: number };
+type Person = Named &amp; Aged;    // { name: string; age: number }
+
+// Tuples — fixed-length, positionally typed arrays
+type Point = [number, number];
+type Pair&lt;T, U&gt; = [T, U];</code></pre>
+<p>Literal unions do the work <code>enum</code> does in other languages, with no runtime cost (2b-08). <code>const x = "GET"</code> infers the literal type <code>"GET"</code>; <code>let x = "GET"</code> widens to <code>string</code>.</p>
+</section>
+
+<section class="block" data-block="concept" id="2b-07">
+<h2>Discriminated unions — the workhorse</h2>
+<p>A union of object types that share one literal-typed field (the <strong>discriminant</strong>, conventionally <code>kind</code> or <code>type</code>). Checking that field tells the compiler exactly which member you hold.</p>
+<pre><code class="language-typescript">type Shape =
+  | { kind: "circle"; r: number }
+  | { kind: "square"; side: number };
+
+function area(s: Shape): number {
+  switch (s.kind) {
+    case "circle": return Math.PI * s.r ** 2;   // s: { kind: "circle"; r: number }
+    case "square": return s.side ** 2;          // s: { kind: "square"; side: number }
+    default: return assertNever(s);              // s: never — every case handled
+  }
+}
+function assertNever(x: never): never {
+  throw new Error("unhandled variant: " + JSON.stringify(x));
+}</code></pre>
+<p>Add a third member to <code>Shape</code> and the <code>default</code> stops compiling: <code>s</code> is no longer <code>never</code> there. That is the whole value of the pattern — the compiler finds every <code>switch</code> you forgot to update. 2f goes deeper on exhaustiveness.</p>
+</section>
+
+<section class="block" data-block="playground" id="2b-09" data-lang="ts">
+<div class="tag">Try it</div>
+<p>Add <code>{ kind: "rect"; w: number; h: number }</code> to <code>Shape</code> and a matching case. Then delete the <code>"square"</code> case: it still runs here (types are stripped) but <code>tsc</code> would flag the <code>default</code>. Pass <code>{ kind: "hexagon" } as any</code> to see <code>assertNever</code> do its runtime job.</p>
+<pre><code class="language-typescript">type Shape =
+  | { kind: "circle"; r: number }
+  | { kind: "square"; side: number };
+
+function assertNever(x: never): never {
+  throw new Error("unhandled variant: " + JSON.stringify(x));
+}
+
+function area(s: Shape): number {
+  switch (s.kind) {
+    case "circle": return Math.PI * s.r ** 2;
+    case "square": return s.side ** 2;
+    default: return assertNever(s);
+  }
+}
+
+console.log(area({ kind: "circle", r: 1 }).toFixed(2));
+console.log(area({ kind: "square", side: 3 }));</code></pre>
+<output>3.14
+9</output>
+</section>
+
+<section class="block" data-block="concept" id="2b-02">
+<h2>Narrowing — how TS tracks type flow</h2>
+<p>TypeScript performs <strong>control flow analysis</strong>: every check you write narrows the type of the checked variable inside that branch. No casts; you check, and the compiler knows.</p>
+
+<pre><code class="language-typescript">// typeof narrowing
+function format(x: string | number) {
+  if (typeof x === "string") return x.toUpperCase();  // x: string here
+  return x.toFixed(2);                                // x: number here
+}
+
+// instanceof narrowing
+function handle(err: Date | Error) {
+  if (err instanceof Error) return err.message;       // err: Error
+  return err.toISOString();                           // err: Date
+}
+
+// in narrowing — property presence
+type Circle = { kind: "circle"; r: number };
+type Rect   = { kind: "rect"; w: number; h: number };
+function area2(s: Circle | Rect) {
+  if ("r" in s) return Math.PI * s.r ** 2;           // s: Circle
+  return s.w * s.h;                                   // s: Rect
+}
+
+// Truthiness narrowing
+function greet(name: string | null) {
+  if (!name) return "Hello, stranger";
+  return `Hello, ${name}`;                            // name: string (null excluded)
+}
+
+// Equality narrowing + early return: the rest of the function is narrowed
+function len(x: string | null) {
+  if (x === null) return 0;
+  return x.length;                                    // x: string
+}</code></pre>
+
+<div class="callout warn">
+  <div class="tag">Truthiness narrows too much</div>
+  <p><code>if (!name)</code> excludes <code>null</code> — and also <code>""</code>. <code>if (!count)</code> excludes <code>0</code>. When the empty value is legitimate, narrow on <code>=== null</code> / <code>== null</code> instead.</p>
+</div>
+
+<p>Since TS 5.5, a function whose body is a narrowing check gets an <strong>inferred type predicate</strong> — no <code>x is string</code> annotation needed:</p>
+<pre><code class="language-typescript">const isString = (x: unknown) =&gt; typeof x === "string";   // inferred: (x: unknown) =&gt; x is string
+const strs = ["a", 1, "b", null].filter(isString);          // string[]
+const nonNull = [1, null, 2].filter(x =&gt; x !== null);       // number[] (also 5.5+)</code></pre>
+</section>
+
+<section class="block" data-block="diagram" id="2b-08">
+<div class="tag">Mechanism</div>
+<script type="application/json">{
+  "direction": "down",
+  "nodes": [
+    { "id": "start", "label": "x: string | number | null", "kind": "pill" },
+    { "id": "q1", "label": "typeof x === \"string\"?", "kind": "note" },
+    { "id": "str", "label": "x: string", "kind": "pill" },
+    { "id": "rest", "label": "x: number | null", "kind": "pill" },
+    { "id": "q2", "label": "x === null?", "kind": "note" },
+    { "id": "nul", "label": "x: null", "kind": "pill" },
+    { "id": "num", "label": "x: number", "kind": "pill" }
+  ],
+  "edges": [
+    { "from": "start", "to": "q1" },
+    { "from": "q1", "to": "str", "label": "true" },
+    { "from": "q1", "to": "rest", "label": "false" },
+    { "from": "rest", "to": "q2" },
+    { "from": "q2", "to": "nul", "label": "true" },
+    { "from": "q2", "to": "num", "label": "false" }
+  ]
+}</script>
+<p class="caption">Each check splits the union into the members that pass and the members that don't; the <em>false</em> branch is narrowed just as much as the <em>true</em> one. After an early <code>return</code>, the rest of the function lives on the false edge.</p>
+</section>
+
+<section class="block" data-block="bridge" id="2b-10">
+<div class="tag">Python bridge</div>
+<p>mypy narrows on <code>isinstance(x, str)</code>, <code>x is None</code>, and <code>match</code> with class patterns; TS narrows on <code>typeof</code>, <code>instanceof</code>, <code>in</code>, <code>===</code> and a <code>switch</code> on a discriminant. The mapping of shapes: <code>Union[A, B]</code> / <code>A | B</code> is the same idea; a <code>Literal["GET", "POST"]</code> is a TS literal union; a discriminated union is a <code>match</code> over <code>TypedDict</code>s with a <code>Literal</code> tag field. The difference is habit, not capability: Python code reaches for class hierarchies where TS code reaches for a tagged union plus a <code>switch</code> — and <code>assertNever</code> is <code>typing.assert_never</code>, which Python added in 3.11 for exactly this reason.</p>
+</section>
+
+<section class="block" data-block="playground" id="2b-11" data-lang="ts">
+<div class="tag">Try it</div>
+<p>Every narrowing form from above, running. Try <code>greet("")</code> and <code>len("")</code> to see truthiness vs equality narrowing diverge; make <code>handle</code> receive a plain object to see <code>instanceof</code> fall through.</p>
+<pre><code class="language-typescript">function format(x: string | number) {
+  if (typeof x === "string") return x.toUpperCase();
+  return x.toFixed(2);
+}
+function handle(err: Date | Error) {
+  if (err instanceof Error) return err.message;
+  return err.toISOString().slice(0, 4);
+}
+function greet(name: string | null) {
+  if (!name) return "Hello, stranger";
+  return `Hello, ${name}`;
+}
+function len(x: string | null) {
+  if (x === null) return 0;
+  return x.length;
+}
+
+console.log(format("abc"), format(2));
+console.log(handle(new Error("boom")), handle(new Date("2026-01-01")));
+console.log(greet(null), "|", greet("Ada"));
+console.log(len(null), len("four"));</code></pre>
+<output>ABC 2.00
+boom 2026
+Hello, stranger | Hello, Ada
+0 4</output>
+</section>
+
+<section class="block" data-block="exercise" id="2b-12" data-kind="predict" data-lang="ts">
+<div class="tag">Exercise</div>
+<p>What does this print, one value per line?</p>
+<pre><code class="language-typescript">type Msg = { type: "text"; body: string } | { type: "ping" };
+
+function describe(m: Msg | string | null) {
+  if (m === null) return "nothing";
+  if (typeof m === "string") return m.length;
+  switch (m.type) {
+    case "text": return m.body.length;
+    case "ping": return 0;
+  }
+}
+function greet(name: string | null) {
+  if (!name) return "stranger";
+  return name.toUpperCase();
+}
+
+console.log(describe(null));
+console.log(describe("hello"));
+console.log(describe({ type: "text", body: "hi" }));
+console.log(greet(""));
+console.log(greet("ada"));</code></pre>
+<script type="application/json">{
+  "expected": "nothing\n5\n2\nstranger\nADA",
+  "hints": [
+    "Walk each call through the checks in order: <code>=== null</code>, then <code>typeof</code>, then the discriminant.",
+    "<code>!name</code> is true for <code>null</code> <em>and</em> for the empty string."
+  ],
+  "explain": "The checks are the same at runtime as in the type system — that's the point of narrowing. The one trap is truthiness: <code>\"\"</code> is falsy, so <code>greet(\"\")</code> takes the <code>stranger</code> branch even though it is a <code>string</code>."
+}</script>
+</section>
+
+<section class="block" data-block="concept" id="2b-03">
+<h2><code>any</code>, <code>unknown</code>, and <code>never</code></h2>
+<pre><code class="language-typescript">// any — disables type checking. Poisons anything it touches. Avoid.
+function bad(x: any) { return x.whatever(); }   // no error — TS gave up
+
+// unknown — safe top type. Every value is assignable TO it;
+// it is assignable to nothing until you narrow.
+function parse(raw: unknown) {
+  if (typeof raw === "string") return raw.toUpperCase();  // ok after check
+  throw new Error("not a string");
+}
+
+// never — the empty type. Assignable to everything; nothing is assignable to it.
+// A value of type never means "this code path is unreachable" —
+// the default branch of an exhaustive switch (2b-07), a function that always throws.
+function fail(msg: string): never { throw new Error(msg); }</code></pre>
+
+<div class="callout good">
+  <div class="tag">Rule</div>
+  <p>When a function can receive "anything", reach for <code>unknown</code>, not <code>any</code>. <code>unknown</code> forces you to narrow once, at the boundary; <code>any</code> silently bypasses every check downstream — and every value derived from an <code>any</code> is <code>any</code> too.</p>
+</div>
+</section>
+
+<section class="block" data-block="diagram" id="2b-13">
+<div class="tag">Mechanism</div>
+<script type="application/json">{
+  "direction": "down",
+  "nodes": [
+    { "id": "unknown", "label": "unknown\n(top: everything)", "kind": "pill", "row": 0 },
+    { "id": "any", "label": "any: off the lattice,\nassignable both ways", "kind": "note", "row": 0 },
+    { "id": "union", "label": "string | number", "kind": "pill", "row": 1 },
+    { "id": "string", "label": "string", "kind": "pill", "row": 2 },
+    { "id": "number", "label": "number", "kind": "pill", "row": 2 },
+    { "id": "lit", "label": "\"GET\"", "kind": "pill", "row": 3 },
+    { "id": "never", "label": "never\n(bottom: nothing)", "kind": "pill", "row": 4 }
+  ],
+  "edges": [
+    { "from": "union", "to": "unknown", "label": "assignable to" },
+    { "from": "string", "to": "union", "label": "assignable to" },
+    { "from": "number", "to": "union" },
+    { "from": "lit", "to": "string", "label": "literal ⊂ string" },
+    { "from": "never", "to": "lit", "label": "assignable to" },
+    { "from": "never", "to": "number" },
+    { "from": "any", "to": "union", "label": "no check", "dashed": true }
+  ]
+}</script>
+<p class="caption">Arrows mean "is assignable to". Narrowing walks <em>down</em> this lattice; widening walks up. <code>never</code> is what's left when every member of a union has been eliminated; <code>any</code> short-circuits the whole picture in both directions.</p>
+</section>
+
+<section class="block" data-block="exercise" id="2b-14" data-kind="fix" data-lang="ts">
+<div class="tag">Exercise</div>
+<p><code>area</code> was written with casts instead of narrowing, and the <code>"rect"</code> variant was added to <code>Shape</code> later without anyone noticing — the compiler couldn't help because of the <code>as any</code>. Rewrite it as a <code>switch</code> on <code>kind</code> with <code>assertNever</code> in the <code>default</code>. Tests check all three shapes and that an unknown variant <em>throws</em> instead of returning <code>NaN</code>.</p>
+<pre><code class="language-typescript">type Shape =
+  | { kind: "circle"; r: number }
+  | { kind: "square"; side: number }
+  | { kind: "rect"; w: number; h: number };
+
+function assertNever(x: never): never {
+  throw new Error("unhandled variant: " + JSON.stringify(x));
+}
+
+// --- fix this
+function area(s: Shape): number {
+  if ((s as any).r !== undefined) return Math.PI * (s as any).r ** 2;
+  return (s as any).side ** 2;
+}</code></pre>
+<script type="application/json">{
+  "tests": "test(\"circle\", () => assert.equal(area({ kind: \"circle\", r: 1 }).toFixed(2), \"3.14\"));\ntest(\"square\", () => assert.equal(area({ kind: \"square\", side: 3 }), 9));\ntest(\"rect\", () => assert.equal(area({ kind: \"rect\", w: 2, h: 5 }), 10));\ntest(\"unknown variant throws instead of NaN\", () => assert.throws(() => area({ kind: \"hexagon\" } as any)));",
+  "hints": [
+    "Switch on <code>s.kind</code>; inside each <code>case</code> the compiler already knows which fields exist.",
+    "The <code>default</code> branch should be <code>return assertNever(s)</code> — it throws for any variant you didn't list, and stops compiling the moment someone extends <code>Shape</code> again."
+  ],
+  "solution": "type Shape =\n  | { kind: \"circle\"; r: number }\n  | { kind: \"square\"; side: number }\n  | { kind: \"rect\"; w: number; h: number };\n\nfunction assertNever(x: never): never {\n  throw new Error(\"unhandled variant: \" + JSON.stringify(x));\n}\n\nfunction area(s: Shape): number {\n  switch (s.kind) {\n    case \"circle\": return Math.PI * s.r ** 2;\n    case \"square\": return s.side ** 2;\n    case \"rect\": return s.w * s.h;\n    default: return assertNever(s);\n  }\n}",
+  "explain": "The cast version returned <code>undefined ** 2 = NaN</code> for rects and for anything else, silently. Narrowing on the discriminant makes each branch's fields known without casts, and <code>assertNever</code> turns \"forgot a case\" into both a compile error (when <code>Shape</code> grows) and a loud runtime error (when bad data arrives)."
+}</script>
+</section>
+
+<section class="block" data-block="exercise" id="2b-15" data-kind="complete" data-lang="ts">
+<div class="tag">Exercise</div>
+<p>A literal union has no runtime form, so checking that an <code>unknown</code> value is a valid <code>HTTPMethod</code> needs a runtime list. The <code>as const</code> array is both the type's source and the runtime check. Implement <code>isMethod</code> (exact, case-sensitive match) and make <code>route</code> throw a <code>TypeError</code> for anything else. Tests cover valid methods, lowercase, non-strings, and the thrown error.</p>
+<pre><code class="language-typescript">const METHODS = ["GET", "POST", "PUT", "DELETE"] as const;
+type HTTPMethod = typeof METHODS[number];   // "GET" | "POST" | "PUT" | "DELETE"
+
+function isMethod(x: unknown): x is HTTPMethod {
+  return false; // TODO
+}
+
+function route(method: unknown, path: string): string {
+  // TODO: throw a TypeError unless method is an HTTPMethod
+  return `${method} ${path}`;
+}</code></pre>
+<script type="application/json">{
+  "tests": "test(\"accepts every member\", () => { for (const m of [\"GET\", \"POST\", \"PUT\", \"DELETE\"]) assert.equal(isMethod(m), true, m); });\ntest(\"rejects lowercase and non-strings\", () => { assert.equal(isMethod(\"get\"), false); assert.equal(isMethod(42), false); assert.equal(isMethod(null), false); assert.equal(isMethod([\"GET\"]), false); });\ntest(\"route formats valid methods\", () => assert.equal(route(\"POST\", \"/users\"), \"POST /users\"));\ntest(\"route throws TypeError otherwise\", () => { let err; try { route(\"PATCH\", \"/x\"); } catch (e) { err = e; } assert.ok(err instanceof TypeError, \"should throw a TypeError\"); });",
+  "hints": [
+    "<code>METHODS.includes(x)</code> won't type-check with <code>x: unknown</code> — narrow to <code>string</code> first, then widen the array: <code>(METHODS as readonly string[]).includes(x)</code>.",
+    "In <code>route</code>, <code>if (!isMethod(method)) throw new TypeError(...)</code>; after that line <code>method</code> is narrowed to <code>HTTPMethod</code>."
+  ],
+  "solution": "const METHODS = [\"GET\", \"POST\", \"PUT\", \"DELETE\"] as const;\ntype HTTPMethod = typeof METHODS[number];\n\nfunction isMethod(x: unknown): x is HTTPMethod {\n  return typeof x === \"string\" && (METHODS as readonly string[]).includes(x);\n}\n\nfunction route(method: unknown, path: string): string {\n  if (!isMethod(method)) throw new TypeError(`unsupported method: ${String(method)}`);\n  return `${method} ${path}`;\n}",
+  "explain": "This is the standard way to give a literal union a runtime: one <code>as const</code> array, the type derived from it with <code>typeof METHODS[number]</code>, and a guard that checks membership. The guard's <code>x is HTTPMethod</code> lets the compiler narrow after the <code>throw</code>, so the rest of <code>route</code> needs no cast."
+}</script>
+</section>
+
+<section class="block" data-block="concept" id="2b-04">
+<h2>Function types and type aliases</h2>
+<pre><code class="language-typescript">// Function type alias
+type Handler = (req: Request, res: Response) =&gt; void;
+type Predicate&lt;T&gt; = (item: T) =&gt; boolean;
+type Transform&lt;A, B&gt; = (input: A) =&gt; B;
+
+// Inline function type
+function run(fn: (x: number) =&gt; string) { return fn(42); }
+
+// Type aliases are compile-time only — erased at runtime.
+// typeof SomeTypeAlias does NOT exist in JS output.
+type UserId = string;   // gone at runtime — purely a TS construct</code></pre>
+<p>Parameters are checked <em>bivariantly</em> for methods and <em>contravariantly</em> for function-typed properties under <code>strictFunctionTypes</code>: a callback that accepts <em>less</em> than the declared parameter type is rejected, one that accepts <em>more</em> is fine. Return types are covariant. In practice: declare callbacks with the property syntax (<code>on: (e: Event) =&gt; void</code>) rather than method syntax to get the strict check.</p>
+</section>
+
+<section class="block" data-block="concept" id="2b-05">
+<h2>Interfaces vs type aliases</h2>
+<ul>
+  <li><strong>Type aliases</strong> (<code>type</code>) — any shape: unions, tuples, mapped and conditional types, primitives. Preferred default.</li>
+  <li><strong>Interfaces</strong> — object shapes only. Open to <em>declaration merging</em>, which is how you augment library types (<code>declare module "express" { interface Request { user?: User } }</code>). Marginally faster to check in very large codebases because they're cached by name.</li>
+</ul>
+<p>Rule of thumb: <code>interface</code> for public API contracts and anything consumers may need to augment; <code>type</code> for everything else. Pick one per codebase and lint it (<code>@typescript-eslint/consistent-type-definitions</code>).</p>
+</section>
+
+<section class="block" data-block="concept" id="2b-16">
+<h2><code>enum</code> vs <code>as const</code></h2>
+<div class="callout bad">
+  <div class="tag">Avoid</div>
+  <p><code>enum</code>. It is one of the few TS constructs that <em>emits runtime code</em> (2a): an object with reverse mappings for numeric members, built by an IIFE that bundlers can't tree-shake. It is also rejected by Node's type stripping and by <code>--erasableSyntaxOnly</code> (TS 5.8). Use literal unions, or an <code>as const</code> object when you need the values at runtime.</p>
+</div>
+
+<pre><code class="language-typescript">// Instead of enum:
+const Role = { Admin: "admin", User: "user" } as const;
+type Role = typeof Role[keyof typeof Role];  // "admin" | "user"
+
+// Both namespaces at once: Role the value (runtime object), Role the type (literal union).
+function can(role: Role) { return role === Role.Admin; }</code></pre>
+</section>
+
+<section class="block" data-block="playground" id="2b-17" data-lang="ts">
+<div class="tag">Try it</div>
+<p>The runtime shape of both. Note the reverse mapping (<code>Status[0] === "Active"</code>) and the four keys of a two-member numeric enum. Try a string enum (<code>enum S { A = "a" }</code>) — no reverse mapping, but still an emitted object. Then try <code>Object.values(Role)</code> as a validation list.</p>
+<pre><code class="language-typescript">enum Status { Active, Banned }
+console.log(Status.Active, Status[0]);
+console.log(Object.keys(Status));
+
+const Role = { Admin: "admin", User: "user" } as const;
+type Role = typeof Role[keyof typeof Role];
+const r: Role = "admin";
+console.log(Object.values(Role), r === Role.Admin);</code></pre>
+<output>0 Active
+[ "0", "1", "Active", "Banned" ]
+[ "admin", "user" ] true</output>
+</section>
+
+<section class="block" data-block="review" id="2b-18">
+<div class="tag">Code review</div>
+<ul>
+  <li><strong><code>as</code> to reach a union member.</strong> A cast to access <code>s.r</code> means the union has no usable discriminant, or the author skipped narrowing. Add a <code>kind</code> field and <code>switch</code> on it; casts are where <code>NaN</code> and <code>undefined is not a function</code> come from.</li>
+  <li><strong>Non-exhaustive <code>switch</code> without <code>assertNever</code>.</strong> The next variant added to the union silently falls through. <code>default: assertNever(x)</code> plus <code>@typescript-eslint/switch-exhaustiveness-check</code>.</li>
+  <li><strong><code>any</code> at a boundary.</strong> <code>function handle(payload: any)</code> turns off checking for every line that touches <code>payload</code>. Take <code>unknown</code>, narrow once (or parse with a schema), and the rest of the function is typed. <code>@typescript-eslint/no-explicit-any</code>.</li>
+  <li><strong>Truthiness narrowing on strings and numbers.</strong> <code>if (!value)</code> treats <code>""</code> and <code>0</code> as missing. Use <code>== null</code> when those are real values.</li>
+  <li><strong>Literal unions without a runtime list.</strong> A type like <code>"GET" | "POST"</code> can't validate input. Keep one <code>as const</code> array and derive the type from it (2b-15), so the guard and the type can't drift.</li>
+  <li><strong><code>enum</code> in new code.</strong> Emits code, breaks type stripping, numeric enums accept any number. Literal union or <code>as const</code> object.</li>
+</ul>
+</section>
+
+<section class="block" data-block="exercise" id="2b-19" data-kind="mcq">
+<div class="tag">Check</div>
+<p>To silence errors from a webhook handler, a developer changes <code>function handle(payload: unknown)</code> to <code>function handle(payload: any)</code>. The handler extracts <code>payload.user.email</code> and passes it to five other functions. What changed?</p>
+<script type="application/json">{
+  "options": [
+    "Nothing at runtime, and the compiler now infers the right types from how <code>payload</code> is used.",
+    "Nothing at runtime; but <code>payload.user.email</code> and everything derived from it is now <code>any</code>, so those five call sites are unchecked too — and a missing <code>user</code> becomes a <code>TypeError</code> in production instead of a compile error forcing a check.",
+    "<code>any</code> adds a runtime check that throws a descriptive error if <code>payload.user</code> is missing.",
+    "The functions receiving <code>email</code> will fail to compile, because <code>any</code> is not assignable to <code>string</code>."
+  ],
+  "answer": 1,
+  "explain": "<code>any</code> is assignable to and from everything, and it propagates: every property access on an <code>any</code> is <code>any</code>. <code>unknown</code> would have forced one narrowing step (<code>typeof payload === \"object\" &amp;&amp; …</code> or a schema parse) at the boundary, after which every downstream line is checked. Nothing about either choice exists at runtime."
+}</script>
+</section>
+
+<section class="block" data-block="recall" id="2b-20">
+<div class="tag">Recall</div>
+<dl>
+  <dt>What is a discriminated union, and what does <code>default: assertNever(s)</code> buy you?</dt>
+  <dd>A union of object types sharing a literal-typed field (<code>kind</code>). Switching on it narrows each branch. <code>assertNever(x: never)</code> fails to compile when a variant is unhandled and throws at runtime for unexpected data.</dd>
+
+  <dt>Name five narrowing forms TS understands.</dt>
+  <dd><code>typeof</code>, <code>instanceof</code>, <code>in</code>, equality (<code>=== null</code>), truthiness, a <code>switch</code> on a discriminant — plus user-defined type guards (<code>x is T</code>, inferred since TS 5.5).</dd>
+
+  <dt>What does this print?
+<pre><code class="language-typescript">function greet(name: string | null) {
+  if (!name) return "stranger";
+  return name.toUpperCase();
+}
+console.log(greet(""), greet("ada"));</code></pre></dt>
+  <dd><code>stranger ADA</code>. Truthiness narrowing excludes <code>null</code> and also <code>""</code>; use <code>=== null</code> when the empty string is a real value.</dd>
+
+  <dt><code>unknown</code> vs <code>any</code> — the one-sentence difference.</dt>
+  <dd>Both accept every value; <code>unknown</code> can't be used until narrowed, <code>any</code> can be used as anything and turns off checking for everything derived from it.</dd>
+
+  <dt>Where does <code>never</code> sit in the assignability lattice, and when does a value have that type?</dt>
+  <dd>At the bottom: assignable to everything, nothing assignable to it. A variable is <code>never</code> when every union member has been narrowed away (exhausted switch) or a function can't return (always throws).</dd>
+
+  <dt>How do you give a literal union like <code>"GET" | "POST"</code> a runtime check?</dt>
+  <dd>One <code>as const</code> array (<code>METHODS</code>), the type as <code>typeof METHODS[number]</code>, and a guard <code>typeof x === "string" &amp;&amp; (METHODS as readonly string[]).includes(x)</code>.</dd>
+
+  <dt>Why avoid <code>enum</code>, and what replaces it?</dt>
+  <dd>It emits runtime code (an IIFE with reverse mappings), isn't tree-shakeable, and breaks under type stripping / <code>--erasableSyntaxOnly</code>. Use a literal union, or an <code>as const</code> object with <code>typeof Role[keyof typeof Role]</code>.</dd>
+
+  <dt>When must you use <code>interface</code> instead of <code>type</code>?</dt>
+  <dd>When the shape needs declaration merging — augmenting a library's types (<code>declare module "express" { interface Request { … } }</code>). Otherwise it's a consistency choice.</dd>
+</dl>
+</section>
+</article>
+<script type="module" src="/assets/runtime/boot.js"></script>
+</body>
+</html>

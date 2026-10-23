@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>4d. useEffect properly · JS Curriculum</title>
+<link rel="icon" href="/assets/favicon.svg">
+<link rel="stylesheet" href="/assets/vendor/prism.css">
+<link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body data-lesson="4d" data-level="migrated">
+<article class="lesson">
+
+<header>
+  <h1><code>useEffect</code> Properly</h1>
+</header>
+
+<section class="block" data-block="concept" id="4d-01">
+<p>The most misused hook. The React team has written essays titled "You might not need an Effect." Read this section twice.</p>
+</section>
+
+<section class="block" data-block="concept" id="4d-02">
+<h2>The real mental model</h2>
+<p><code>useEffect</code> is for <em>synchronizing with an external system</em> — a DOM API, subscription, timer, network. It's not "do something after render." If your effect doesn't interact with anything outside React, you probably don't need it.</p>
+
+<pre><code class="language-jsx">useEffect(() =&gt; {
+  const ctrl = new AbortController();
+  setIsLoading(true);
+  fetch(url, { signal: ctrl.signal })
+    .then(r =&gt; r.json())
+    .then(data =&gt; { setData(data); setIsLoading(false); })
+    .catch(err =&gt; {
+      if (err.name !== "AbortError") { setError(err); setIsLoading(false); }
+    });
+
+  return () =&gt; ctrl.abort();          // cleanup
+}, [url]);                            // re-runs when url changes</code></pre>
+</section>
+
+<section class="block" data-block="concept" id="4d-03">
+<h2>Things most people reach for <code>useEffect</code> for — and shouldn't</h2>
+<ul>
+  <li>"Compute derived state from props" — just compute inline or with <code>useMemo</code>. Don't mirror into useState + effect.</li>
+  <li>"Reset state when prop changes" — use <code>key</code> to remount.</li>
+  <li>"Call a function on a button click" — put it in the event handler.</li>
+  <li>"Fetch data" — use TanStack Query / SWR / the framework's data-fetching primitives (covered in 4g).</li>
+</ul>
+
+<div class="callout good">
+  <div class="tag">Next.js bridge</div>
+  <p>In Next.js App Router you won't use <code>useEffect</code> for fetching at all — Server Components fetch directly in the component body (no hooks, just <code>await fetch()</code>). <code>useEffect</code> fetches are a client-only, pre-RSC pattern. If you're building on Next.js, this whole section is about the small category of genuinely external synchronization (WebSockets, analytics, DOM measurements), not data loading.</p>
+</div>
+
+<div class="callout warn">
+  <div class="tag">Strict Mode double-invocation</div>
+  <p>In dev, React intentionally runs effects twice to surface cleanup bugs. If your effect "stops working" in dev but not prod, you're missing a cleanup. This isn't a bug in React; it's a lint for your effect.</p>
+</div>
+</section>
+
+<section class="block" data-block="concept" id="4d-04">
+<h2>useLayoutEffect — the synchronous sibling</h2>
+<p><code>useLayoutEffect</code> fires synchronously after DOM mutations but before the browser paints. Use it <em>only</em> for DOM measurements (reading element size/position to reposition a tooltip, for example). Everything else: use <code>useEffect</code>. <code>useLayoutEffect</code> blocks painting — it will hurt perceived performance if misused, and it throws on the server (SSR), so Next.js Server Components will error if it's imported server-side.</p>
+<pre><code class="language-jsx">const ref = useRef(null);
+const [height, setHeight] = useState(0);
+useLayoutEffect(() =&gt; {
+  // runs after DOM update, before paint — safe to read layout
+  setHeight(ref.current.getBoundingClientRect().height);
+}, []);</code></pre>
+
+<div class="callout review">
+  <div class="tag">Review flags</div>
+  <ul>
+    <li>Missing dependencies in the deps array. <code>react-hooks/exhaustive-deps</code> rule — never suppress without a reason comment.</li>
+    <li>Effect with an empty deps array that captures a prop. Almost always a stale closure bug.</li>
+    <li>Missing cleanup on subscriptions, timers, event listeners, aborts.</li>
+    <li>Effect that mutates state every render. Infinite loop.</li>
+    <li><code>isLoading</code> never set to <code>false</code> on the error path — spinner runs forever.</li>
+  </ul>
+</div>
+</section>
+</article>
+<script type="module" src="/assets/runtime/boot.js"></script>
+</body>
+</html>

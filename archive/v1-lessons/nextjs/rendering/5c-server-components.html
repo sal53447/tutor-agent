@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>5c. React Server Components · JS Curriculum</title>
+<link rel="icon" href="/assets/favicon.svg">
+<link rel="stylesheet" href="/assets/vendor/prism.css">
+<link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body data-lesson="5c" data-level="migrated">
+<article class="lesson">
+
+<header>
+  <h1>React Server Components — the new mental model</h1>
+</header>
+
+<section class="block" data-block="concept" id="5c-01">
+<p>RSC is the biggest React shift in a decade. Components are <strong>server by default</strong>. They render on the server, can be <code>async</code>, talk to your DB directly, and ship <em>zero JS</em> to the client (just their rendered output).</p>
+
+<pre><code class="language-jsx">// app/users/[id]/page.tsx — a server component (default)
+// params is a Promise in Next 15 — must be awaited
+import { db } from "@/lib/db";
+
+export default async function UserPage({ params }: { params: Promise&lt;{ id: string }&gt; }) {
+  const { id } = await params;                       // Next 15: await params
+  const user = await db.users.findById(id);          // direct DB access!
+  return &lt;h1&gt;{user.name}&lt;/h1&gt;;
+}</code></pre>
+</section>
+
+<section class="block" data-block="concept" id="5c-02">
+<h2>The client / server boundary</h2>
+<p>Interactivity (useState, useEffect, onClick) requires a <strong>Client Component</strong>. Mark it with <code>"use client"</code> at the top of the file. Client components can be imported into server components, but not vice versa — the boundary is one-way.</p>
+
+<pre><code class="language-jsx">// app/like-button.tsx
+"use client";
+import { useState } from "react";
+
+export function LikeButton() {
+  const [liked, setLiked] = useState(false);
+  return &lt;button onClick={() =&gt; setLiked(v =&gt; !v)}&gt;{liked ? "♥" : "♡"}&lt;/button&gt;;
+}</code></pre>
+
+<div class="callout good">
+  <div class="tag">The key pattern</div>
+  <p>Keep the server shell as server components (fetch, render, no JS cost). Drop client components as "islands" where interactivity is needed. Pass server-fetched data to them via props. This is the opposite of a traditional SPA: by default, no JS ships.</p>
+</div>
+</section>
+
+<section class="block" data-block="concept" id="5c-03">
+<h2>The <code>"use client"</code> waterfall problem</h2>
+<p><code>"use client"</code> is a <strong>file-level boundary</strong>. Every module that a client component imports also becomes part of the client bundle — recursively. One misplaced directive pulls everything below it into the browser.</p>
+
+<div class="callout bad">
+  <div class="tag">Rule</div>
+  <p>Never put <code>"use client"</code> on a file that imports DB clients, ORMs, secret env vars, or any heavy server-side library. If that file is ever imported by a client component, those libraries ship to the browser and your secrets leak into the bundle.</p>
+</div>
+
+<pre><code class="language-jsx">// BAD — "use client" placed too high, pulls db into the browser bundle
+"use client";
+import { db } from "@/lib/db";         // DB client now in the browser!
+import { useState } from "react";
+
+export function UserCard({ id }) {
+  const [open, setOpen] = useState(false);
+  // db import was pointless here anyway — can't call it in the browser
+}</code></pre>
+
+<pre><code class="language-jsx">// GOOD — keep the boundary as narrow as possible
+// app/user-card.tsx (server component — no directive)
+import { db } from "@/lib/db";
+import { ExpandButton } from "./expand-button"; // only this is "use client"
+
+export async function UserCard({ id }) {
+  const user = await db.users.findById(id);
+  return (
+    &lt;div&gt;
+      &lt;h2&gt;{user.name}&lt;/h2&gt;
+      &lt;ExpandButton label="Details" /&gt;  {/* client island */}
+    &lt;/div&gt;
+  );
+}</code></pre>
+</section>
+
+<section class="block" data-block="concept" id="5c-04">
+<h2>Server component as children — the escape hatch</h2>
+<p>A client component <em>cannot</em> directly import a server component (the import would pull it into the client bundle). But it <em>can</em> receive one as <code>children</code> or a prop — because the server component was already rendered by a server component parent before it reaches the client.</p>
+
+<pre><code class="language-jsx">// BAD — client component importing a server component directly
+"use client";
+import { UserData } from "./user-data";  // server component — BREAKS
+
+export function Shell() {
+  return &lt;div&gt;&lt;UserData /&gt;&lt;/div&gt;;       // Next throws a build error
+}</code></pre>
+
+<pre><code class="language-jsx">// GOOD — server component passes SC as children to the client component
+// app/page.tsx  (server component)
+import { Shell } from "./shell";           // client component
+import { UserData } from "./user-data";   // server component
+
+export default function Page() {
+  return (
+    &lt;Shell&gt;
+      &lt;UserData /&gt;  {/* rendered server-side, passed as an opaque prop */}
+    &lt;/Shell&gt;
+  );
+}
+
+// app/shell.tsx
+"use client";
+export function Shell({ children }) {
+  // children is already server-rendered RSC output — no client bundle cost
+  return &lt;div className="shell"&gt;{children}&lt;/div&gt;;
+}</code></pre>
+</section>
+
+<section class="block" data-block="concept" id="5c-05">
+<h2>Server action interop hooks</h2>
+<p>Two React 19 hooks bridge client components and server actions (covered in depth in 4e/4i):</p>
+<ul>
+  <li><code>useFormStatus()</code> — reads the pending state of the nearest parent <code>&lt;form&gt;</code> action. Use inside a submit button to show a spinner without lifting state.</li>
+  <li><code>useOptimistic(state, updateFn)</code> — applies a local optimistic update immediately, then settles once the server action resolves or rejects.</li>
+</ul>
+
+<pre><code class="language-jsx">// Spinner button — reads form's pending state from server action
+"use client";
+import { useFormStatus } from "react-dom";
+
+export function SubmitButton() {
+  const { pending } = useFormStatus();
+  return &lt;button disabled={pending}&gt;{pending ? "Saving…" : "Save"}&lt;/button&gt;;
+}</code></pre>
+</section>
+
+<section class="block" data-block="concept" id="5c-06">
+<h2>Serialization rules</h2>
+<ul>
+  <li>Props crossing from server → client must be serializable (JSON-like). No functions, classes, Symbols. Dates work via Next's serializer.</li>
+  <li><code>children</code> is special — you can pass JSX from a server component into a client component. The server-rendered tree is embedded in the client's render.</li>
+</ul>
+
+<div class="callout py">
+  <div class="tag">Python bridge</div>
+  <p>In Django, a view function is always "server-side" — there's no concept of the same function running in the browser. RSC makes this explicit for the React world: most components should stay server-side, touching the DB and shipping zero JS. Only reach for <code>"use client"</code> when you genuinely need browser APIs or local state — just as you'd only add Django's JS-heavy frontend tooling when the template engine isn't enough.</p>
+</div>
+</section>
+
+<section class="block" data-block="recall" id="5c-07">
+<dl>
+  <dt>Self-check</dt>
+  <dd><ol>
+    <li>You add <code>"use client"</code> to a component that imports your Prisma client. What breaks?</li>
+    <li>You have a <code>Modal</code> client component that needs to display server-fetched content. How do you pass that content without breaking the server/client boundary?</li>
+    <li>What is <code>useFormStatus</code> for, and why must it live in a client component?</li>
+  </ol>
+  <p><strong>Expected answers:</strong> (1) Prisma ships into the browser bundle — build may fail or secrets/DB credentials leak. (2) Render the server component in a server parent and pass it as <code>children</code> to the Modal. (3) It reads the pending state of the enclosing form's server action; it requires <code>"use client"</code> because it uses React's client-side hook system.</p></dd>
+</dl>
+</section>
+</article>
+<script type="module" src="/assets/runtime/boot.js"></script>
+</body>
+</html>

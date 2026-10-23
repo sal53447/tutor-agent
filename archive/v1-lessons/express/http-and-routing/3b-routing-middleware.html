@@ -1,0 +1,567 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>3b. Express routing &amp; middleware · JS Curriculum</title>
+<link rel="icon" href="/assets/favicon.svg">
+<link rel="stylesheet" href="/assets/vendor/prism.css">
+<link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body data-lesson="3b" data-level="interactive">
+<article class="lesson">
+
+<header>
+  <h1>Express Core — Routing &amp; Middleware</h1>
+</header>
+
+<section class="block" data-block="concept" id="3b-10">
+<p>Express is one mechanism: an ordered list of functions, each handed <code>(req, res, next)</code>, each choosing to respond, pass on, or fail. Routing, body parsing, auth, error mapping, logging — all of it is that list. Everything in 3c–3g (where code lives, validation, auth, observability) is a question of what goes in the list and in which order. Baseline is <strong>Express 5</strong> (<code>npm i express</code> since 2025): async handlers are first-class, which removes a whole category of Express 4 bugs — noted where it matters.</p>
+</section>
+
+<section class="block" data-block="concept" id="3b-01">
+<h2>The hello world, then the real structure</h2>
+<pre><code class="language-javascript">import express from "express";
+const app = express();
+
+app.use(express.json());                    // parses JSON bodies into req.body
+
+app.get("/users/:id", async (req, res) =&gt; {
+  const user = await db.users.findById(req.params.id);
+  if (!user) return res.status(404).json({ error: "not_found" });
+  res.json(user);
+});
+
+app.listen(3000);</code></pre>
+<p>Four things to see: <code>app.use</code> registers something for every request; <code>app.get(path, handler)</code> registers for one method + path; <code>:id</code> becomes <code>req.params.id</code> (always a string); and the <code>return</code> before <code>res.status(404)</code> is load-bearing — without it the function continues to <code>res.json(user)</code> and Node throws <code>ERR_HTTP_HEADERS_SENT</code>.</p>
+</section>
+
+<section class="block" data-block="concept" id="3b-02">
+<h2>Middleware — the signature pattern of Express</h2>
+<p>Every handler is a <strong>middleware</strong>: <code>(req, res, next) =&gt; void</code>. The app holds them in registration order and walks the list per request, skipping entries whose path/method don't match. Each one has exactly three ways out:</p>
+<ul>
+  <li><strong>Respond</strong> — <code>res.json()</code>, <code>res.send()</code>, <code>res.end()</code>, <code>res.redirect()</code>. The chain stops; later middleware never sees this request.</li>
+  <li><strong><code>next()</code></strong> — continue to the next matching entry. Mutate <code>req</code> (<code>req.user</code>, <code>req.body</code>) or <code>res.locals</code> first if later layers need something.</li>
+  <li><strong><code>next(err)</code></strong> or <code>throw</code> — skip every ordinary entry and jump to the next <em>error</em> middleware (below).</li>
+</ul>
+<p>Do none of the three and the request hangs until the client gives up. That is the first thing to check when an endpoint "never responds".</p>
+
+<pre><code class="language-javascript">// Log every request
+app.use((req, res, next) =&gt; {
+  console.log(`${req.method} ${req.url}`);
+  next();
+});
+
+// Auth on a subtree: app.use(path) is a *prefix* match — /admin, /admin/users, /admin/x/y
+app.use("/admin", requireAdmin);
+
+// Several handlers on one route run left to right; each must call next() to reach the next
+app.post("/users", validate(CreateUser), requireAuth, createUser);</code></pre>
+
+<div class="callout warn">
+  <div class="tag">Order is everything</div>
+  <p>The list is walked top to bottom <em>as registered</em>. <code>express.json()</code> mounted after the routes parses nothing; a logger after the routes only sees requests nothing answered; <code>cors()</code> after the routers means the preflight <code>OPTIONS</code> hits a 404. Put cross-cutting middleware first, routers next, the 404 and error handlers last.</p>
+</div>
+</section>
+
+<section class="block" data-block="stepper" id="3b-11" data-kind="timeline">
+<div class="tag">Step through</div>
+<script type="application/json">{
+  "code": "app.use(requestId);\napp.use(express.json());\napp.use(\"/users\", requireAuth);\napp.post(\"/users\", validate(CreateUser), createUser);\napp.use(errorHandler);   // (err, req, res, next)",
+  "steps": [
+    { "label": "POST /users arrives", "line": 1, "note": "Node has parsed the request line and headers; the body is still a stream. Express starts walking the list from the top.",
+      "state": { "lanes": [
+        { "name": "Request",    "items": [{ "label": "POST /users", "state": "active" }, { "label": "raw body", "state": "idle" }, { "label": "req.body {…}", "state": "idle" }, { "label": "req.user", "state": "idle" }] },
+        { "name": "Middleware", "items": [{ "label": "requestId", "state": "idle" }, { "label": "express.json", "state": "idle" }, { "label": "requireAuth", "state": "idle" }, { "label": "validate", "state": "idle" }, { "label": "errorHandler", "state": "idle" }] },
+        { "name": "Handler",    "items": [{ "label": "createUser", "state": "idle" }, { "label": "await db", "state": "idle" }, { "label": "201 json", "state": "idle" }] },
+        { "name": "Response",   "items": [{ "label": "headers sent", "state": "idle" }, { "label": "body sent", "state": "idle" }] }
+      ] } },
+    { "label": "requestId runs", "line": 1, "note": "Matches everything (no path). It sets <code>res.set(\"X-Request-Id\", id)</code> — allowed now because nothing has been sent — stores the id on <code>res.locals</code>, and calls <code>next()</code>.",
+      "state": { "lanes": [
+        { "name": "Request",    "items": [{ "label": "POST /users", "state": "done" }, { "label": "raw body", "state": "idle" }, { "label": "req.body {…}", "state": "idle" }, { "label": "req.user", "state": "idle" }] },
+        { "name": "Middleware", "items": [{ "label": "requestId", "state": "active" }, { "label": "express.json", "state": "idle" }, { "label": "requireAuth", "state": "idle" }, { "label": "validate", "state": "idle" }, { "label": "errorHandler", "state": "idle" }] },
+        { "name": "Handler",    "items": [{ "label": "createUser", "state": "idle" }, { "label": "await db", "state": "idle" }, { "label": "201 json", "state": "idle" }] },
+        { "name": "Response",   "items": [{ "label": "headers sent", "state": "idle" }, { "label": "body sent", "state": "idle" }] }
+      ] } },
+    { "label": "express.json reads the stream", "line": 2, "note": "<code>Content-Type: application/json</code> matches, so the parser consumes the body stream (up to its <code>limit</code>, 100 kb by default). Until this layer ran, <code>req.body</code> was <code>undefined</code>.",
+      "state": { "lanes": [
+        { "name": "Request",    "items": [{ "label": "POST /users", "state": "done" }, { "label": "raw body", "state": "active" }, { "label": "req.body {…}", "state": "idle" }, { "label": "req.user", "state": "idle" }] },
+        { "name": "Middleware", "items": [{ "label": "requestId", "state": "done" }, { "label": "express.json", "state": "active" }, { "label": "requireAuth", "state": "idle" }, { "label": "validate", "state": "idle" }, { "label": "errorHandler", "state": "idle" }] },
+        { "name": "Handler",    "items": [{ "label": "createUser", "state": "idle" }, { "label": "await db", "state": "idle" }, { "label": "201 json", "state": "idle" }] },
+        { "name": "Response",   "items": [{ "label": "headers sent", "state": "idle" }, { "label": "body sent", "state": "idle" }] }
+      ] } },
+    { "label": "req.body is an object", "line": 2, "note": "Parsed and assigned; <code>next()</code>. Malformed JSON would have been <code>next(err)</code> with <code>err.status = 400</code> — jumping straight to <code>errorHandler</code>.",
+      "state": { "lanes": [
+        { "name": "Request",    "items": [{ "label": "POST /users", "state": "done" }, { "label": "raw body", "state": "done" }, { "label": "req.body {…}", "state": "done" }, { "label": "req.user", "state": "idle" }] },
+        { "name": "Middleware", "items": [{ "label": "requestId", "state": "done" }, { "label": "express.json", "state": "done" }, { "label": "requireAuth", "state": "idle" }, { "label": "validate", "state": "idle" }, { "label": "errorHandler", "state": "idle" }] },
+        { "name": "Handler",    "items": [{ "label": "createUser", "state": "idle" }, { "label": "await db", "state": "idle" }, { "label": "201 json", "state": "idle" }] },
+        { "name": "Response",   "items": [{ "label": "headers sent", "state": "idle" }, { "label": "body sent", "state": "idle" }] }
+      ] } },
+    { "label": "requireAuth matches /users", "line": 3, "note": "<code>app.use(\"/users\", …)</code> is a prefix match, so it runs. It reads <code>Authorization</code>. No token → <code>res.status(401).json(…)</code> and <em>no</em> <code>next()</code>: the walk would end here and the handler would never run.",
+      "state": { "lanes": [
+        { "name": "Request",    "items": [{ "label": "POST /users", "state": "done" }, { "label": "raw body", "state": "done" }, { "label": "req.body {…}", "state": "done" }, { "label": "req.user", "state": "idle" }] },
+        { "name": "Middleware", "items": [{ "label": "requestId", "state": "done" }, { "label": "express.json", "state": "done" }, { "label": "requireAuth", "state": "active" }, { "label": "validate", "state": "idle" }, { "label": "errorHandler", "state": "idle" }] },
+        { "name": "Handler",    "items": [{ "label": "createUser", "state": "idle" }, { "label": "await db", "state": "idle" }, { "label": "201 json", "state": "idle" }] },
+        { "name": "Response",   "items": [{ "label": "headers sent", "state": "idle" }, { "label": "body sent", "state": "idle" }] }
+      ] } },
+    { "label": "req.user attached", "line": 3, "note": "Token valid: the middleware writes <code>req.user</code> and calls <code>next()</code>. Mutating <code>req</code> is the only channel between layers — there is no return value.",
+      "state": { "lanes": [
+        { "name": "Request",    "items": [{ "label": "POST /users", "state": "done" }, { "label": "raw body", "state": "done" }, { "label": "req.body {…}", "state": "done" }, { "label": "req.user", "state": "done" }] },
+        { "name": "Middleware", "items": [{ "label": "requestId", "state": "done" }, { "label": "express.json", "state": "done" }, { "label": "requireAuth", "state": "done" }, { "label": "validate", "state": "idle" }, { "label": "errorHandler", "state": "idle" }] },
+        { "name": "Handler",    "items": [{ "label": "createUser", "state": "idle" }, { "label": "await db", "state": "idle" }, { "label": "201 json", "state": "idle" }] },
+        { "name": "Response",   "items": [{ "label": "headers sent", "state": "idle" }, { "label": "body sent", "state": "idle" }] }
+      ] } },
+    { "label": "Route matches: validate", "line": 4, "note": "Method POST + exact path <code>/users</code> match. The route's own handlers run left to right; <code>validate</code> checks <code>req.body</code> against the schema and replaces it with the parsed, typed value (3d).",
+      "state": { "lanes": [
+        { "name": "Request",    "items": [{ "label": "POST /users", "state": "done" }, { "label": "raw body", "state": "done" }, { "label": "req.body {…}", "state": "done" }, { "label": "req.user", "state": "done" }] },
+        { "name": "Middleware", "items": [{ "label": "requestId", "state": "done" }, { "label": "express.json", "state": "done" }, { "label": "requireAuth", "state": "done" }, { "label": "validate", "state": "active" }, { "label": "errorHandler", "state": "idle" }] },
+        { "name": "Handler",    "items": [{ "label": "createUser", "state": "idle" }, { "label": "await db", "state": "idle" }, { "label": "201 json", "state": "idle" }] },
+        { "name": "Response",   "items": [{ "label": "headers sent", "state": "idle" }, { "label": "body sent", "state": "idle" }] }
+      ] } },
+    { "label": "createUser starts", "line": 4, "note": "The last function on the route. It is <code>async</code>; Express 5 holds on to the returned promise so a rejection becomes <code>next(err)</code> automatically.",
+      "state": { "lanes": [
+        { "name": "Request",    "items": [{ "label": "POST /users", "state": "done" }, { "label": "raw body", "state": "done" }, { "label": "req.body {…}", "state": "done" }, { "label": "req.user", "state": "done" }] },
+        { "name": "Middleware", "items": [{ "label": "requestId", "state": "done" }, { "label": "express.json", "state": "done" }, { "label": "requireAuth", "state": "done" }, { "label": "validate", "state": "done" }, { "label": "errorHandler", "state": "idle" }] },
+        { "name": "Handler",    "items": [{ "label": "createUser", "state": "active" }, { "label": "await db", "state": "idle" }, { "label": "201 json", "state": "idle" }] },
+        { "name": "Response",   "items": [{ "label": "headers sent", "state": "idle" }, { "label": "body sent", "state": "idle" }] }
+      ] } },
+    { "label": "await db.insert", "line": 4, "note": "The handler suspends; the event loop serves other requests meanwhile (1f). This request's state is the closure, not a thread.",
+      "state": { "lanes": [
+        { "name": "Request",    "items": [{ "label": "POST /users", "state": "done" }, { "label": "raw body", "state": "done" }, { "label": "req.body {…}", "state": "done" }, { "label": "req.user", "state": "done" }] },
+        { "name": "Middleware", "items": [{ "label": "requestId", "state": "done" }, { "label": "express.json", "state": "done" }, { "label": "requireAuth", "state": "done" }, { "label": "validate", "state": "done" }, { "label": "errorHandler", "state": "idle" }] },
+        { "name": "Handler",    "items": [{ "label": "createUser", "state": "done" }, { "label": "await db", "state": "active" }, { "label": "201 json", "state": "idle" }] },
+        { "name": "Response",   "items": [{ "label": "headers sent", "state": "idle" }, { "label": "body sent", "state": "idle" }] }
+      ] } },
+    { "label": "res.status(201).json(user)", "line": 4, "note": "Status line and headers (including the <code>X-Request-Id</code> set in step 2) go out first, then the serialised body. From here <code>res.headersSent</code> is true and any further <code>res.set</code>/<code>res.json</code> throws.",
+      "state": { "lanes": [
+        { "name": "Request",    "items": [{ "label": "POST /users", "state": "done" }, { "label": "raw body", "state": "done" }, { "label": "req.body {…}", "state": "done" }, { "label": "req.user", "state": "done" }] },
+        { "name": "Middleware", "items": [{ "label": "requestId", "state": "done" }, { "label": "express.json", "state": "done" }, { "label": "requireAuth", "state": "done" }, { "label": "validate", "state": "done" }, { "label": "errorHandler", "state": "idle" }] },
+        { "name": "Handler",    "items": [{ "label": "createUser", "state": "done" }, { "label": "await db", "state": "done" }, { "label": "201 json", "state": "active" }] },
+        { "name": "Response",   "items": [{ "label": "headers sent", "state": "active" }, { "label": "body sent", "state": "idle" }] }
+      ] } },
+    { "label": "Response complete", "line": 5, "note": "The handler returned without <code>next()</code>, so the walk ends. <code>errorHandler</code> stayed idle: error middleware is only entered via <code>next(err)</code> or a throw — never on the happy path.",
+      "state": { "lanes": [
+        { "name": "Request",    "items": [{ "label": "POST /users", "state": "done" }, { "label": "raw body", "state": "done" }, { "label": "req.body {…}", "state": "done" }, { "label": "req.user", "state": "done" }] },
+        { "name": "Middleware", "items": [{ "label": "requestId", "state": "done" }, { "label": "express.json", "state": "done" }, { "label": "requireAuth", "state": "done" }, { "label": "validate", "state": "done" }, { "label": "errorHandler", "state": "idle" }] },
+        { "name": "Handler",    "items": [{ "label": "createUser", "state": "done" }, { "label": "await db", "state": "done" }, { "label": "201 json", "state": "done" }] },
+        { "name": "Response",   "items": [{ "label": "headers sent", "state": "done" }, { "label": "body sent", "state": "done" }] }
+      ] } }
+  ]
+}</script>
+</section>
+
+<section class="block" data-block="bridge" id="3b-12">
+<div class="tag">Python bridge</div>
+<p>Starlette/FastAPI middleware is an <em>onion</em>: <code>async def mw(request, call_next): resp = await call_next(request); resp.headers[...] = ...; return resp</code> — you get the response back and can post-process it. Express's <code>next()</code> is a continuation with no useful return value, so "after the response" logic is <code>res.on("finish", …)</code> or a wrapped <code>res.json</code>; the "before" half maps directly. Flask's <code>@app.before_request</code> returning a value short-circuits ≈ responding without calling <code>next()</code>. <code>Depends(get_current_user)</code> ≈ a <code>requireAuth</code> middleware that writes <code>req.user</code> — Express has no DI, so the request object is the carrier. <code>APIRouter(prefix="/users")</code> + <code>app.include_router</code> ≈ <code>express.Router()</code> + <code>app.use("/users", router)</code>. <code>raise HTTPException(409)</code> ≈ <code>throw new AppError(409, …)</code> from an async handler (Express 5) — except there is no built-in JSON error response: the 4-arity error middleware you write is <code>@app.exception_handler</code>. WSGI middleware (a callable wrapping the app) is the onion model again, one level lower.</p>
+</section>
+
+<section class="block" data-block="playground" id="3b-13" data-lang="js">
+<div class="tag">Try it</div>
+<p>Four requests through one list; <code>log</code> records which entries ran. Try: (1) move the <code>after-routes</code> middleware to the top — it now runs for every request; (2) delete the <code>return</code> in the admin guard and watch request 2 hit <code>stats</code> anyway (the 403 is already sent; <code>next()</code> after a response is a bug Express can't stop); (3) change <code>app.use("/admin", …)</code> to <code>app.use("/admin/stats", …)</code> and see prefix matching still catch the route.</p>
+<pre><code class="language-javascript">const app = express();
+const log = [];
+
+app.use((req, res, next) =&gt; { log.push("logger"); next(); });
+app.use("/admin", (req, res, next) =&gt; {
+  log.push("admin-guard");
+  if (req.get("x-role") !== "admin") return res.status(403).json({ error: "forbidden" });
+  next();
+});
+app.get("/admin/stats", (req, res) =&gt; { log.push("stats"); res.json({ users: 3 }); });
+app.get("/health", (req, res) =&gt; { log.push("health"); res.send("ok"); });
+app.use((req, res, next) =&gt; { log.push("after-routes"); next(); });
+
+const calls = [["/health", {}], ["/admin/stats", {}], ["/admin/stats", { "x-role": "admin" }], ["/nope", {}]];
+for (const [path, headers] of calls) {
+  log.length = 0;
+  const r = await request(app, { path, headers });
+  console.log(r.status, log.join(" → "));
+}</code></pre>
+<output>200 logger → health
+403 logger → admin-guard
+200 logger → admin-guard → stats
+404 logger → after-routes</output>
+</section>
+
+<section class="block" data-block="concept" id="3b-15">
+<h2>Route matching: first match wins, params are strings</h2>
+<p>A route is <code>method + path pattern</code>. Patterns are compared in registration order and the <strong>first</strong> match handles the request (unless it calls <code>next()</code>, which resumes the walk at the next entry). <code>:name</code> captures one path segment into <code>req.params.name</code> — always a string, so <code>Number(req.params.id)</code> or a schema (3d) before using it. The query string is parsed into <code>req.query</code> (also strings). No route matched → Express's built-in 404.</p>
+<pre><code class="language-javascript">app.get("/users/me", meHandler);       // must come first…
+app.get("/users/:id", userHandler);    // …or :id captures "me"
+
+app.get("/search", (req, res) =&gt; {
+  const { q = "", page = "1" } = req.query;   // GET /search?q=ada&amp;page=2 → "ada", "2"
+  res.json({ q, page: Number(page) });
+});
+
+app.all("/legacy/*rest", (req, res) =&gt; res.status(410).end());   // Express 5: wildcards are named</code></pre>
+
+<div class="callout warn">
+  <div class="tag">Express 5 path syntax</div>
+  <p>Express 5 upgraded <code>path-to-regexp</code>: a bare <code>*</code> is a syntax error (<code>/files/*path</code>), optional segments are <code>{/:id}</code> not <code>/:id?</code>, and regex characters in string paths are rejected — pass a <code>RegExp</code> instead. Snippets copied from Express 4 tutorials fail at startup, which is at least loud.</p>
+</div>
+</section>
+
+<section class="block" data-block="exercise" id="3b-14" data-kind="predict" data-lang="js">
+<div class="tag">Exercise</div>
+<p>Three requests; <code>seen</code> records every entry that ran. The <code>:id</code> route is registered before <code>/users/me</code>, and it calls <code>next()</code> when it realises the id is <code>"me"</code>. What single line does this print?</p>
+<pre><code class="language-javascript">const app = express();
+const seen = [];
+
+app.use((req, res, next) =&gt; { seen.push("A"); next(); });
+app.get("/users/:id", (req, res, next) =&gt; {
+  seen.push("B:" + req.params.id);
+  if (req.params.id === "me") return next();
+  res.json({});
+});
+app.get("/users/me", (req, res) =&gt; { seen.push("C"); res.json({}); });
+app.use((req, res, next) =&gt; { seen.push("D"); next(); });
+
+await request(app, { path: "/users/42" });
+await request(app, { path: "/users/me" });
+await request(app, { path: "/users/me/avatar" });
+console.log(seen.join(" "));</code></pre>
+<script type="application/json">{
+  "expected": "A B:42 A B:me C A D",
+  "hints": [
+    "Walk the list top to bottom per request; an entry runs only if its method and path match.",
+    "<code>/users/me</code> matches <code>/users/:id</code> first (registration order) — <code>B</code> runs with <code>id = \"me\"</code>, then <code>next()</code> resumes the walk and <code>C</code> matches.",
+    "<code>/users/me/avatar</code> has two segments after <code>/users</code>: neither route matches, so only the path-less middlewares run, then the built-in 404."
+  ],
+  "explain": "First match wins, and <code>:id</code> happily captures <code>me</code> — the usual fix is to register the literal route first, not to call <code>next()</code> from inside the generic one. <code>D</code> runs only for the third request: for the first two the route responded and the walk stopped. The third request ends in Express's default 404 after <code>D</code> calls <code>next()</code> into an empty list."
+}</script>
+</section>
+
+<section class="block" data-block="concept" id="3b-03">
+<h2>Body parsers</h2>
+<pre><code class="language-typescript">app.use(express.json({ limit: "100kb" }));        // Content-Type: application/json (100kb is the default)
+app.use(express.urlencoded({ extended: true }));  // Content-Type: application/x-www-form-urlencoded
+// extended: true uses the qs library (nested objects); false uses querystring (flat only)
+
+// Webhooks that verify a signature need the raw bytes — on that route only
+app.post("/webhooks/stripe", express.raw({ type: "application/json" }), stripeWebhook);</code></pre>
+<p>Both are needed if your API accepts HTML form POSTs or OAuth callbacks as well as JSON clients. Each parser checks <code>Content-Type</code> and skips silently when it doesn't match — a client that forgets the header gets <code>req.body === undefined</code> (Express 5; Express 4 gave <code>{}</code>) and a confusing validation error, not a 415. Parsing happens where the parser is mounted: a parser after the routes parses nothing.</p>
+</section>
+
+<section class="block" data-block="playground" id="3b-16" data-lang="js">
+<div class="tag">Try it</div>
+<p>The same JSON string sent to an app without and with <code>express.json()</code>, then a malformed body. Try: (1) move <code>parsed.use(express.json())</code> below the route and watch line 2 turn back into <code>string undefined</code>; (2) send <code>body: { name: "Ada" }</code> (already an object, as a test client would) — the parser passes it through.</p>
+<pre><code class="language-javascript">const raw = '{"name":"Ada"}';
+
+const bare = express();
+bare.post("/echo", (req, res) =&gt; res.json({ type: typeof req.body, body: req.body }));
+
+const parsed = express();
+parsed.use(express.json());
+parsed.post("/echo", (req, res) =&gt; res.json({ type: typeof req.body, body: req.body }));
+
+let r = await request(bare, { method: "POST", path: "/echo", body: raw });
+console.log(r.body.type, r.body.body.name);
+r = await request(parsed, { method: "POST", path: "/echo", body: raw });
+console.log(r.body.type, r.body.body.name);
+r = await request(parsed, { method: "POST", path: "/echo", body: "{oops" });
+console.log(r.status);</code></pre>
+<output>string undefined
+object Ada
+400</output>
+</section>
+
+<section class="block" data-block="concept" id="3b-04">
+<h2>Splitting routes into files with express.Router()</h2>
+<pre><code class="language-typescript">// routes/users.routes.ts
+import { Router } from "express";
+import { requireAuth } from "../middleware/auth";
+import * as ctrl from "../controllers/users.controller";
+
+export const usersRouter = Router();
+
+usersRouter.post("/",        validate(CreateUser), ctrl.createUser);
+usersRouter.get("/:id",      requireAuth,          ctrl.getUser);
+usersRouter.patch("/:id",    requireAuth,          ctrl.updateUser);
+usersRouter.delete("/:id",   requireAuth,          ctrl.deleteUser);
+
+// app.ts — mount the router
+import { usersRouter } from "./routes/users.routes";
+app.use("/users", usersRouter);     // → /users, /users/:id, etc.</code></pre>
+<p>A <code>Router</code> is a mini-app: its own ordered list, its own <code>router.use()</code> middleware that only runs for requests that reach it. Mounting strips the prefix — inside <code>usersRouter</code>, <code>req.path</code> is <code>/42</code> while <code>req.originalUrl</code> is still <code>/users/42</code> (log the latter). Each resource gets its own file; <code>app.ts</code> becomes a list of <code>app.use()</code> mounts — nothing more. Params from the mount path (<code>app.use("/teams/:teamId", teamRouter)</code>) are only visible inside with <code>Router({ mergeParams: true })</code>.</p>
+</section>
+
+<section class="block" data-block="concept" id="3b-17">
+<h2>Error middleware: <code>next(err)</code> and the four-argument rule</h2>
+<p>Express distinguishes error handlers from everything else by <strong>arity</strong>: a function declared with four parameters <code>(err, req, res, next)</code> is an error handler; with three it is ordinary middleware. Nothing else marks it — not its name, not where it is registered. When any layer calls <code>next(err)</code> (or throws, or rejects — below), the walk skips every ordinary entry and resumes at the next four-arity one. Register them <strong>last</strong>: the walk never goes backwards, so an error handler above the route that failed is never reached.</p>
+<pre><code class="language-javascript">// Error middleware — exactly FOUR parameters, even if next is unused
+app.use((err, req, res, _next) =&gt; {
+  if (res.headersSent) return _next(err);               // response already streaming: let Node close it
+  const status = err.status ?? 500;
+  if (status &gt;= 500) console.error(err);               // log the real thing…
+  res.status(status).json({ error: status &gt;= 500 ? "internal_error" : err.message });  // …never send it
+});</code></pre>
+<p>An error handler has the same three exits: respond, <code>next(err)</code> to the next error handler, or hang. Without any of yours, Express's default one answers with <code>err.status || 500</code> and — in development — the stack trace in the body.</p>
+
+<div class="callout warn">
+  <div class="tag">Gotcha</div>
+  <p><code>app.use((err, req, res) =&gt; …)</code> — three parameters because <code>next</code> was "unused" — is silently a normal middleware. It runs on every request with <code>err = req</code>, <code>req = res</code>, <code>res = next</code>, and real errors sail past it to the default handler. Keep the fourth parameter; name it <code>_next</code> for the linter.</p>
+</div>
+</section>
+
+<section class="block" data-block="diagram" id="3b-18">
+<div class="tag">Mechanism</div>
+<script type="application/json">{
+  "direction": "right",
+  "nodes": [
+    { "id": "req",   "label": "request",                   "kind": "box",  "row": 0 },
+    { "id": "mw",    "label": "middleware\n(req, res, next)", "kind": "box",  "row": 1 },
+    { "id": "route", "label": "route handler",             "kind": "box",  "row": 2 },
+    { "id": "nf",    "label": "404 fallback",              "kind": "note", "row": 2 },
+    { "id": "err",   "label": "error handler\n(err, req, res, next)", "kind": "box", "row": 3 },
+    { "id": "res",   "label": "response",                  "kind": "pill", "row": 4 }
+  ],
+  "edges": [
+    { "from": "req",   "to": "mw",    "label": "in order" },
+    { "from": "mw",    "to": "route", "label": "next()" },
+    { "from": "mw",    "to": "nf",    "label": "no match", "dashed": true },
+    { "from": "mw",    "to": "err",   "label": "next(err)" },
+    { "from": "route", "to": "res",   "label": "res.json()" },
+    { "from": "route", "to": "err",   "label": "throw / reject" },
+    { "from": "nf",    "to": "res",   "label": "404", "dashed": true },
+    { "from": "err",   "to": "res",   "label": "res.status(…)" }
+  ]
+}</script>
+<p class="caption">Two tracks through one list. Ordinary entries are walked via <code>next()</code>; <code>next(err)</code>, a throw, or a rejected async handler (Express 5) jumps over every remaining ordinary entry to the next four-arity one. Nothing matched at all → the built-in 404.</p>
+</section>
+
+<section class="block" data-block="concept" id="3b-05">
+<h2>Typed AppError</h2>
+<pre><code class="language-typescript">// errors/AppError.ts
+export class AppError extends Error {
+  constructor(
+    public readonly status: number,
+    message: string,
+    public readonly code?: string,
+  ) {
+    super(message);
+    this.name = "AppError";
+  }
+}
+
+// Usage — anywhere in a handler or service; Express 5 routes the rejection to error middleware
+throw new AppError(404, "User not found", "USER_NOT_FOUND");
+throw new AppError(409, "Email already registered", "EMAIL_CONFLICT");
+
+// Error middleware picks it up
+app.use((err: unknown, req: Request, res: Response, _next: NextFunction) =&gt; {
+  if (err instanceof AppError) {
+    return res.status(err.status).json({ error: err.message, code: err.code });
+  }
+  log.error({ err }, "unhandled error");
+  res.status(500).json({ error: "internal_error" });
+});</code></pre>
+<p>One class, two fields the boundary needs: <code>status</code> to pick the response, <code>code</code> for clients to branch on (never the message — 1g). Anything that is <em>not</em> an <code>AppError</code> is by definition unexpected: log it with the request id, send a generic 500.</p>
+</section>
+
+<section class="block" data-block="exercise" id="3b-19" data-kind="fix" data-lang="js">
+<div class="tag">Exercise</div>
+<p>The error middleware never runs: a missing user comes back without its <code>code</code>, and a database failure leaks <code>"connection reset"</code> to the client. Nothing is wrong with the handler or the <code>AppError</code>. Tests check <code>GET /users/7</code> → 404 <code>{ error: "User not found", code: "USER_NOT_FOUND" }</code>, <code>GET /users/boom</code> → 500 <code>{ error: "internal_error" }</code>, and <code>GET /users/1</code> → 200.</p>
+<pre><code class="language-javascript">class AppError extends Error {
+  constructor(status, message, code) { super(message); this.status = status; this.code = code; }
+}
+
+// --- fake db (leave as is)
+const db = {
+  async findUser(id) {
+    if (id === "boom") throw new Error("connection reset");
+    return id === "1" ? { id: "1", name: "alice" } : null;
+  },
+};
+
+const app = express();
+
+app.get("/users/:id", async (req, res) =&gt; {
+  const user = await db.findUser(req.params.id);
+  if (!user) throw new AppError(404, "User not found", "USER_NOT_FOUND");
+  res.json(user);
+});
+
+// --- fix this
+app.use((err, req, res) =&gt; {
+  if (err instanceof AppError) return res.status(err.status).json({ error: err.message, code: err.code });
+  res.status(500).json({ error: "internal_error" });
+});</code></pre>
+<script type="application/json">{
+  "tests": "test(\"AppError → its status, message and code\", async () => {\n  const r = await request(app, { path: \"/users/7\" });\n  assert.equal(r.status, 404);\n  assert.equal(r.body, { error: \"User not found\", code: \"USER_NOT_FOUND\" });\n});\ntest(\"unknown error → generic 500, message not leaked\", async () => {\n  const r = await request(app, { path: \"/users/boom\" });\n  assert.equal(r.status, 500);\n  assert.equal(r.body, { error: \"internal_error\" });\n});\ntest(\"happy path untouched\", async () => {\n  const r = await request(app, { path: \"/users/1\" });\n  assert.equal(r.status, 200);\n  assert.equal(r.body, { id: \"1\", name: \"alice\" });\n});",
+  "hints": [
+    "Express decides what an error handler is by counting its parameters — not by its position or its name.",
+    "Three parameters means \"ordinary middleware\"; when an error is in flight ordinary middleware is skipped, so the default handler answers instead.",
+    "Declare it as <code>(err, req, res, _next) =&gt; { … }</code>. The fourth parameter can be unused; it must exist."
+  ],
+  "solution": "class AppError extends Error {\n  constructor(status, message, code) { super(message); this.status = status; this.code = code; }\n}\n\n// --- fake db (leave as is)\nconst db = {\n  async findUser(id) {\n    if (id === \"boom\") throw new Error(\"connection reset\");\n    return id === \"1\" ? { id: \"1\", name: \"alice\" } : null;\n  },\n};\n\nconst app = express();\n\napp.get(\"/users/:id\", async (req, res) => {\n  const user = await db.findUser(req.params.id);\n  if (!user) throw new AppError(404, \"User not found\", \"USER_NOT_FOUND\");\n  res.json(user);\n});\n\napp.use((err, req, res, _next) => {\n  if (err instanceof AppError) return res.status(err.status).json({ error: err.message, code: err.code });\n  res.status(500).json({ error: \"internal_error\" });\n});",
+  "explain": "<code>fn.length</code> is the whole contract (3b-17). With three parameters the function is ordinary middleware, skipped while an error is in flight, and Express's default handler answers with <code>err.status || 500</code> and <code>err.message</code> — which is exactly what the tests saw: a 404 without <code>code</code>, and a 500 that leaked the driver's message. The async handler's <code>throw</code> reached the error path at all only because this is Express 5 (3b-08)."
+}</script>
+</section>
+
+<section class="block" data-block="concept" id="3b-08">
+<h2>Async handlers: Express 5 vs 4</h2>
+<p>In <strong>Express 5</strong> a handler that returns a promise is awaited by the router; a rejection is passed to <code>next(err)</code>. <code>throw new AppError(…)</code> inside an <code>async</code> handler, or an <code>await db.query()</code> that rejects, lands in your error middleware with no wrapper. That is the baseline for every snippet in Part 3.</p>
+<pre><code class="language-javascript">// Express 5 — this is complete
+app.get("/x", async (req, res) =&gt; {
+  res.json(await mightThrow());       // rejection → next(err) → error middleware
+});
+
+// Express 4 — the same code was a bug: the rejection reached nobody (unhandledRejection, 1g-11),
+// the client hung until timeout. Every codebase grew one of these:
+const asyncHandler = (fn) =&gt; (req, res, next) =&gt; Promise.resolve(fn(req, res, next)).catch(next);
+app.get("/x", asyncHandler(async (req, res) =&gt; res.json(await mightThrow())));
+// …or `import "express-async-errors"` patched Router.prototype to do the same.</code></pre>
+<p>Still <em>not</em> covered in Express 5 — the "nowhere" channel from 1g-23: a throw inside a callback the handler registered (<code>setTimeout</code>, a stream's <code>"data"</code> event, an <code>EventEmitter</code>) runs on an empty stack after the handler has returned. Express never sees it. Wrap such code in a promise you <code>await</code>, or handle inside the callback.</p>
+
+<div class="callout review">
+  <div class="tag">Migrating</div>
+  <p>On Express 5, <code>asyncHandler</code> wrappers and <code>express-async-errors</code> are dead weight: delete them. Keep the test that proves a rejected handler produces a mapped error response — it is what guarantees the behaviour either way.</p>
+</div>
+</section>
+
+<section class="block" data-block="concept" id="3b-06">
+<h2>Request-ID middleware</h2>
+<pre><code class="language-typescript">// middleware/requestId.ts
+import { randomUUID } from "node:crypto";
+
+export function requestId(req: Request, res: Response, next: NextFunction) {
+  const id = req.get("x-request-id") ?? randomUUID();   // honour the proxy's id if it sent one
+  res.locals.requestId = id;
+  res.set("X-Request-Id", id);
+  // Attach a child logger so every log line from this request carries the id
+  res.locals.log = log.child({ requestId: id });
+  next();
+}
+
+// app.ts — mount before all routes
+app.use(requestId);</code></pre>
+<p><code>res.locals</code> is the per-request scratch space Express gives you: an object that lives exactly as long as this request, visible to every later layer and to the error handler. Put the request id, the child logger and the authenticated user there (or on <code>req</code> — both work; pick one convention). The header must be set before anything responds, which is why this is the first middleware.</p>
+</section>
+
+<section class="block" data-block="playground" id="3b-20" data-lang="js">
+<div class="tag">Try it</div>
+<p>The request id travels two ways: out to the client as a header, and down the stack via <code>res.locals</code>. Try: (1) move <code>app.use(requestId)</code> below the route — the header disappears and <code>handledAs</code> is <code>undefined</code>; (2) make the handler throw and add a 4-arity error handler that includes <code>res.locals.requestId</code> in its JSON — the id survives into the error path.</p>
+<pre><code class="language-javascript">let seq = 0;
+function requestId(req, res, next) {
+  const id = req.get("x-request-id") ?? `req-${++seq}`;
+  res.locals.requestId = id;
+  res.set("X-Request-Id", id);
+  next();
+}
+
+const app = express();
+app.use(requestId);
+app.get("/", (req, res) =&gt; res.json({ handledAs: res.locals.requestId }));
+
+let r = await request(app, { path: "/" });
+console.log(r.headers["x-request-id"], r.body.handledAs);
+r = await request(app, { path: "/", headers: { "x-request-id": "abc-123" } });
+console.log(r.headers["x-request-id"], r.body.handledAs);</code></pre>
+<output>req-1 req-1
+abc-123 abc-123</output>
+</section>
+
+<section class="block" data-block="concept" id="3b-07">
+<h2>Rate limiting</h2>
+<pre><code class="language-typescript">import rateLimit from "express-rate-limit";
+
+// Global limiter — blunt instrument, protects against runaway clients. Mount BEFORE body parsing.
+app.use(rateLimit({ windowMs: 60_000, limit: 100 }));
+
+// Tighter on auth endpoints
+app.use("/auth", rateLimit({
+  windowMs: 15 * 60_000,   // 15 minutes
+  limit: 10,
+  message: { error: "too_many_requests" },
+  standardHeaders: "draft-7",   // RateLimit / RateLimit-Policy headers
+  legacyHeaders: false,         // no X-RateLimit-*
+}));</code></pre>
+<p>The mechanism is a counter per key (client IP by default) per window; over the limit → <strong>429</strong> with <code>Retry-After</code>. Two production details: the key must be the real client IP, which behind a proxy means <code>app.set("trust proxy", 1)</code> so <code>req.ip</code> reads <code>X-Forwarded-For</code> (otherwise every user shares the load balancer's address); and an in-memory store resets on deploy and is per-instance — use the Redis store once you run more than one process.</p>
+</section>
+
+<section class="block" data-block="exercise" id="3b-21" data-kind="complete" data-lang="js">
+<div class="tag">Exercise</div>
+<p>Implement the limiter. <code>rateLimit({ windowMs, max, now, key })</code> returns a middleware. Per key (default <code>req.ip</code>): keep <code>{ count, resetAt }</code>; when there is no entry or <code>now() &gt;= resetAt</code>, start a fresh window (<code>resetAt = now() + windowMs</code>, count 0). Count the request. Set <code>RateLimit-Remaining</code> to <code>max − count</code> (floor at 0). If <code>count &gt; max</code>: set <code>Retry-After</code> to the whole seconds until <code>resetAt</code> (round up), respond <strong>429</strong> <code>{ error: "too_many_requests" }</code>, and do not call <code>next()</code>. Otherwise <code>next()</code>. Tests use the injected <code>now</code> so time is deterministic.</p>
+<pre><code class="language-javascript">function rateLimit({ windowMs, max, now = () =&gt; Date.now(), key = (req) =&gt; req.ip }) {
+  const hits = new Map();   // key → { count, resetAt }
+  return (req, res, next) =&gt; {
+    // TODO
+    next();
+  };
+}
+
+let clock = 0;
+const app = express();
+app.use(rateLimit({ windowMs: 1000, max: 3, now: () =&gt; clock }));
+app.get("/", (req, res) =&gt; res.json({ ok: true }));</code></pre>
+<script type="application/json">{
+  "tests": "test(\"first `max` requests pass, remaining counts down\", async () => {\n  clock = 0;\n  const remaining = [];\n  for (let i = 0; i < 3; i++) {\n    const r = await request(app, { path: \"/\" });\n    assert.equal(r.status, 200);\n    remaining.push(r.headers[\"ratelimit-remaining\"]);\n  }\n  assert.equal(remaining, [\"2\", \"1\", \"0\"]);\n});\ntest(\"request max+1 is 429 with Retry-After and the handler does not run\", async () => {\n  const r = await request(app, { path: \"/\" });\n  assert.equal(r.status, 429);\n  assert.equal(r.body, { error: \"too_many_requests\" });\n  assert.equal(r.headers[\"retry-after\"], \"1\");\n});\ntest(\"window expires: allowed again\", async () => {\n  clock = 1000;\n  const r = await request(app, { path: \"/\" });\n  assert.equal(r.status, 200);\n  assert.equal(r.headers[\"ratelimit-remaining\"], \"2\");\n});\ntest(\"keys are independent\", async () => {\n  const byUser = express();\n  byUser.use(rateLimit({ windowMs: 1000, max: 1, now: () => 0, key: (req) => req.get(\"x-user\") }));\n  byUser.get(\"/\", (req, res) => res.json({ ok: true }));\n  assert.equal((await request(byUser, { path: \"/\", headers: { \"x-user\": \"a\" } })).status, 200);\n  assert.equal((await request(byUser, { path: \"/\", headers: { \"x-user\": \"a\" } })).status, 429);\n  assert.equal((await request(byUser, { path: \"/\", headers: { \"x-user\": \"b\" } })).status, 200);\n});",
+  "hints": [
+    "<code>const k = key(req); let e = hits.get(k); if (!e || now() &gt;= e.resetAt) { e = { count: 0, resetAt: now() + windowMs }; hits.set(k, e); }</code>",
+    "Increment, then <code>res.set(\"RateLimit-Remaining\", String(Math.max(0, max - e.count)))</code> — headers before any response.",
+    "Over the limit: <code>res.set(\"Retry-After\", String(Math.ceil((e.resetAt - now()) / 1000))); return res.status(429).json({ error: \"too_many_requests\" });</code> — the <code>return</code> is what keeps <code>next()</code> from running."
+  ],
+  "solution": "function rateLimit({ windowMs, max, now = () => Date.now(), key = (req) => req.ip }) {\n  const hits = new Map();   // key → { count, resetAt }\n  return (req, res, next) => {\n    const k = key(req);\n    let e = hits.get(k);\n    if (!e || now() >= e.resetAt) {\n      e = { count: 0, resetAt: now() + windowMs };\n      hits.set(k, e);\n    }\n    e.count++;\n    res.set(\"RateLimit-Remaining\", String(Math.max(0, max - e.count)));\n    if (e.count > max) {\n      res.set(\"Retry-After\", String(Math.ceil((e.resetAt - now()) / 1000)));\n      return res.status(429).json({ error: \"too_many_requests\" });\n    }\n    next();\n  };\n}\n\nlet clock = 0;\nconst app = express();\napp.use(rateLimit({ windowMs: 1000, max: 3, now: () => clock }));\napp.get(\"/\", (req, res) => res.json({ ok: true }));",
+  "explain": "This is <code>express-rate-limit</code>'s memory store in twelve lines: state in a closure, a key function, a fixed window. The two decisions that matter in production are outside the TODO — what <code>key</code> returns behind a proxy (<code>trust proxy</code>), and that a <code>Map</code> in one process is not shared with the other replicas. Injecting <code>now</code> is what makes the window testable without sleeping."
+}</script>
+</section>
+
+<section class="block" data-block="review" id="3b-22">
+<div class="tag">Code review</div>
+<ul>
+  <li><strong>Error handler with three parameters, or registered before the routes.</strong> Both make it unreachable; errors fall through to Express's default handler, which leaks <code>err.message</code> (and the stack in development). Four parameters, mounted last, with a test that a thrown <code>AppError</code> produces the mapped JSON.</li>
+  <li><strong>Missing <code>return</code> before an early <code>res.status(4xx).json()</code>.</strong> The function continues to the success branch → <code>ERR_HTTP_HEADERS_SENT</code> in the logs and a half-written response. Also: <code>next()</code> after a response.</li>
+  <li><strong><code>/users/:id</code> registered above <code>/users/me</code>.</strong> First match wins; literal routes before parametric ones.</li>
+  <li><strong>Body parsing mounted before rate limiting</strong>, or globally when one route needs raw bytes (webhook signatures). Limiter first, parsers next, <code>express.raw()</code> on the one route that needs it.</li>
+  <li><strong><code>asyncHandler</code> / <code>express-async-errors</code> on Express 5.</strong> Dead weight that hides what the framework does. Remove; keep the test.</li>
+  <li><strong>Rate limiter / IP logging without <code>trust proxy</code>.</strong> Behind a load balancer <code>req.ip</code> is the balancer, so one bucket is shared by every user. <code>app.set("trust proxy", 1)</code> — exactly one hop, never <code>true</code> on an internet-facing box.</li>
+  <li><strong>500 responses that include <code>err.message</code>.</strong> Driver errors contain table names, hosts, sometimes query fragments. Generic body, full detail in the log under the request id.</li>
+</ul>
+</section>
+
+<section class="block" data-block="exercise" id="3b-23" data-kind="mcq">
+<div class="tag">Check</div>
+<p>An app mounts, in this order: (1) <code>express.json()</code>, (2) <code>requestId</code>, (3) <code>rateLimit</code>, (4) <code>validate(CreateUser)</code>, (5) the handler. During a flood of 5 MB POSTs the process runs out of memory before most requests are rejected. Which change fixes that?</p>
+<script type="application/json">{
+  "options": [
+    "None needed — middleware order only matters for error handlers; the limiter rejects the request either way.",
+    "Move <code>rateLimit</code> to position 1: a request must be counted and rejected <em>before</em> its body is read into memory by the parser.",
+    "Move <code>validate</code> to position 1 so malformed bodies are rejected before parsing.",
+    "Move <code>requestId</code> to the end so the id reflects which handler finally ran."
+  ],
+  "answer": 1,
+  "explain": "The list runs top to bottom per request. With the parser first, every flooding request allocates its full body before the limiter ever sees it. Limiter → request id → parsers → validation → handler. Option C cannot work: <code>validate</code> reads <code>req.body</code>, which only exists after the parser. Option D breaks the request id's one job — being set before anything can respond."
+}</script>
+</section>
+
+<section class="block" data-block="recall" id="3b-09">
+<div class="tag">Recall</div>
+<dl>
+  <dt>You mount <code>app.use("/api", authMiddleware, apiRouter)</code>. A route inside <code>apiRouter</code> calls <code>next("route")</code> instead of <code>next()</code>. What happens?</dt>
+  <dd><p><code>next("route")</code> skips the remaining handlers in the current route stack and moves to the next matching route. It does <em>not</em> skip the entire middleware chain — <code>authMiddleware</code> has already run. Use <code>next("route")</code> carefully; in most cases <code>next()</code> or returning a response is clearer.</p></dd>
+  <dt>Express receives <code>POST /users</code>. Middleware order: (1) <code>express.json()</code>, (2) <code>requestId</code>, (3) <code>rateLimit</code>, (4) <code>validate(CreateUser)</code>, (5) <code>ctrl.createUser</code>. What is the correct production order, and why does rate limiting move earlier?</dt>
+  <dd><p>Rate limiting first. Parsing the body allocates memory; a flood of large requests can exhaust memory before the limiter fires. Correct order: rate limiting → request id → body parsing → validation → handler.</p></dd>
+  <dt>How does Express tell an error handler apart from ordinary middleware?</dt>
+  <dd><p>By arity only: a function with four parameters <code>(err, req, res, next)</code> is an error handler. Three parameters — even if the first is named <code>err</code> — is ordinary middleware and is skipped while an error is in flight.</p></dd>
+  <dt>What are the three legal ways out of a middleware, and what happens if it does none of them?</dt>
+  <dd><p>Respond (<code>res.json</code>/<code>send</code>/<code>end</code>), <code>next()</code> to continue, or <code>next(err)</code>/throw to jump to the error handlers. Doing none leaves the request hanging until the client times out.</p></dd>
+  <dt>What single line does this print? <pre><code class="language-javascript">app.get("/users/:id", (req, res, next) =&gt; { seen.push("B:" + req.params.id); if (req.params.id === "me") return next(); res.json({}); });
+app.get("/users/me", (req, res) =&gt; { seen.push("C"); res.json({}); });
+await request(app, { path: "/users/me" });
+console.log(seen.join(" "));</code></pre></dt>
+  <dd><p><code>B:me C</code>. Registration order decides: <code>:id</code> captures <code>"me"</code> first; its <code>next()</code> resumes the walk and the literal route matches second. Register literal routes before parametric ones.</p></dd>
+  <dt>An <code>async</code> route handler rejects. Where does the error go in Express 5, and where did it go in Express 4?</dt>
+  <dd><p>Express 5 awaits the returned promise and passes a rejection to <code>next(err)</code> → your error middleware. Express 4 ignored the promise: an unhandled rejection and a client that hung — hence <code>asyncHandler</code> wrappers and <code>express-async-errors</code>, now unnecessary.</p></dd>
+  <dt>What kind of throw does Express 5 still not catch?</dt>
+  <dd><p>A throw inside a callback registered by the handler — <code>setTimeout</code>, a stream <code>"data"</code> listener, an event emitter. It runs on an empty stack after the handler returned; wrap it in a promise you <code>await</code> or handle inside the callback.</p></dd>
+  <dt>Inside a router mounted with <code>app.use("/users", usersRouter)</code>, what are <code>req.path</code> and <code>req.originalUrl</code> for <code>GET /users/42</code>?</dt>
+  <dd><p><code>req.path</code> is <code>/42</code> (the mount prefix is stripped); <code>req.originalUrl</code> is <code>/users/42</code>. Log <code>originalUrl</code>.</p></dd>
+  <dt>What does <code>req.body</code> hold on a POST when no body-parsing middleware ran before the route?</dt>
+  <dd><p><code>undefined</code> in Express 5 (Express 4 gave <code>{}</code>). The parser must be mounted above the route and the request's <code>Content-Type</code> must match the parser.</p></dd>
+</dl>
+</section>
+</article>
+<script type="module" src="/assets/runtime/boot.js"></script>
+</body>
+</html>

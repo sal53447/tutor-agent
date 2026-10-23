@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>5g. Auth in Next.js · JS Curriculum</title>
+<link rel="icon" href="/assets/favicon.svg">
+<link rel="stylesheet" href="/assets/vendor/prism.css">
+<link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body data-lesson="5g" data-level="interactive">
+<article class="lesson">
+
+<header>
+  <h1>Auth in Next.js — Sessions, Cookies &amp; Where the Check Runs</h1>
+</header>
+
+<section class="block" data-block="concept" id="5g-01">
+<p>Auth in the App Router is three questions, not one: <em>what proves identity</em> (a cookie carrying a signed JWT or an opaque session id), <em>where the check runs</em> (middleware on the edge, a layout or page on the server, the server action that mutates), and <em>what each location can know</em> (the edge sees only the cookie; the server can hit the DB). Getting one of them wrong is the most common security bug in Next apps, and 5i's production architecture assumes you can place a check at the right layer without thinking.</p>
+</section>
+
+<section class="block" data-block="concept" id="5g-06">
+<h2>Auth.js v5 — one config, four exports</h2>
+<p>The ecosystem default is <strong>Auth.js</strong> (NextAuth v5). One file exports everything: <code>auth()</code> reads the session anywhere on the server, <code>handlers</code> mount the OAuth / credentials endpoints, <code>signIn</code> / <code>signOut</code> are callable from server actions.</p>
+
+<pre><code class="language-typescript">// auth.ts
+import NextAuth from "next-auth";
+import Google from "next-auth/providers/google";
+
+export const { auth, handlers, signIn, signOut } = NextAuth({
+  providers: [Google],
+  session: { strategy: "jwt" },            // default; "database" needs an adapter
+  callbacks: {
+    jwt({ token, user }) { if (user) token.role = user.role; return token; },
+    session({ session, token }) {
+      session.user.id = token.sub!;
+      session.user.role = token.role as string;
+      return session;
+    },
+  },
+});
+
+// app/api/auth/[...nextauth]/route.ts
+import { handlers } from "@/auth";
+export const { GET, POST } = handlers;
+
+// anywhere server-side: layout, page, server action, route handler
+import { auth } from "@/auth";
+const session = await auth();
+if (!session) redirect("/login");</code></pre>
+
+<p>Config comes from env: <code>AUTH_SECRET</code> (signs and encrypts the session JWT), <code>AUTH_GOOGLE_ID</code> / <code>AUTH_GOOGLE_SECRET</code> (providers pick these up by name). <code>AUTH_URL</code> is only needed when the host can't be inferred; behind a proxy set <code>AUTH_TRUST_HOST=true</code>. The v4 names (<code>NEXTAUTH_SECRET</code>, <code>NEXTAUTH_URL</code>) are stale.</p>
+
+<div class="callout warn">
+  <div class="tag">Middleware is Edge by default</div>
+  <p><code>middleware.ts</code> runs on the Edge runtime unless you opt into Node (<code>export const config = { runtime: "nodejs" }</code>, Next 15.5+). A database adapter (Prisma, Drizzle) can't be imported there. Auth.js's answer is the split config: <code>auth.config.ts</code> holds providers and callbacks only and is what middleware imports; <code>auth.ts</code> spreads it and adds the adapter.</p>
+</div>
+</section>
+
+<section class="block" data-block="stepper" id="5g-07" data-kind="timeline">
+<div class="tag">Step through</div>
+<script type="application/json">{
+  "steps": [
+    { "label": "User submits login", "note": "The browser POSTs credentials (or finishes the OAuth dance) to <code>/api/auth/callback/…</code>. No cookie exists yet, so middleware has nothing to check — the auth routes are excluded from the matcher.",
+      "state": { "lanes": [
+        { "name": "Browser", "items": [{ "label": "POST /login", "state": "active" }, { "label": "store cookie", "state": "idle" }, { "label": "GET /dashboard", "state": "idle" }, { "label": "paint page", "state": "idle" }] },
+        { "name": "Edge", "items": [{ "label": "match route", "state": "idle" }, { "label": "read cookie", "state": "idle" }, { "label": "verify JWT", "state": "idle" }, { "label": "allow / redirect", "state": "idle" }] },
+        { "name": "Server", "items": [{ "label": "verify login", "state": "idle" }, { "label": "sign JWT", "state": "idle" }, { "label": "auth() in page", "state": "idle" }, { "label": "render RSC", "state": "idle" }] },
+        { "name": "DB", "items": [{ "label": "find user", "state": "idle" }, { "label": "load role", "state": "idle" }] }
+      ] } },
+    { "label": "Server checks the DB", "note": "The handler looks the user up. This is the <em>only</em> step in the login flow that must touch the database — everything after runs off what the token carries.",
+      "state": { "lanes": [
+        { "name": "Browser", "items": [{ "label": "POST /login", "state": "active" }, { "label": "store cookie", "state": "idle" }, { "label": "GET /dashboard", "state": "idle" }, { "label": "paint page", "state": "idle" }] },
+        { "name": "Edge", "items": [{ "label": "match route", "state": "idle" }, { "label": "read cookie", "state": "idle" }, { "label": "verify JWT", "state": "idle" }, { "label": "allow / redirect", "state": "idle" }] },
+        { "name": "Server", "items": [{ "label": "verify login", "state": "active" }, { "label": "sign JWT", "state": "idle" }, { "label": "auth() in page", "state": "idle" }, { "label": "render RSC", "state": "idle" }] },
+        { "name": "DB", "items": [{ "label": "find user", "state": "active" }, { "label": "load role", "state": "idle" }] }
+      ] } },
+    { "label": "JWT signed and encrypted", "note": "The <code>jwt</code> callback runs once with <code>user</code> set; whatever you copy onto <code>token</code> here (id, role) is what middleware will later see <em>without</em> a DB read. Auth.js encrypts the token (JWE) with <code>AUTH_SECRET</code>.",
+      "state": { "lanes": [
+        { "name": "Browser", "items": [{ "label": "POST /login", "state": "active" }, { "label": "store cookie", "state": "idle" }, { "label": "GET /dashboard", "state": "idle" }, { "label": "paint page", "state": "idle" }] },
+        { "name": "Edge", "items": [{ "label": "match route", "state": "idle" }, { "label": "read cookie", "state": "idle" }, { "label": "verify JWT", "state": "idle" }, { "label": "allow / redirect", "state": "idle" }] },
+        { "name": "Server", "items": [{ "label": "verify login", "state": "done" }, { "label": "sign JWT", "state": "active" }, { "label": "auth() in page", "state": "idle" }, { "label": "render RSC", "state": "idle" }] },
+        { "name": "DB", "items": [{ "label": "find user", "state": "done" }, { "label": "load role", "state": "idle" }] }
+      ] } },
+    { "label": "Set-Cookie stored", "note": "The response carries <code>Set-Cookie: __Secure-authjs.session-token=…; HttpOnly; Secure; SameSite=Lax; Path=/</code>. <code>HttpOnly</code> means no script on the page can read it; the browser will attach it to every same-site request automatically.",
+      "state": { "lanes": [
+        { "name": "Browser", "items": [{ "label": "POST /login", "state": "done" }, { "label": "store cookie", "state": "active" }, { "label": "GET /dashboard", "state": "idle" }, { "label": "paint page", "state": "idle" }] },
+        { "name": "Edge", "items": [{ "label": "match route", "state": "idle" }, { "label": "read cookie", "state": "idle" }, { "label": "verify JWT", "state": "idle" }, { "label": "allow / redirect", "state": "idle" }] },
+        { "name": "Server", "items": [{ "label": "verify login", "state": "done" }, { "label": "sign JWT", "state": "done" }, { "label": "auth() in page", "state": "idle" }, { "label": "render RSC", "state": "idle" }] },
+        { "name": "DB", "items": [{ "label": "find user", "state": "done" }, { "label": "load role", "state": "idle" }] }
+      ] } },
+    { "label": "Protected request", "note": "The user navigates to <code>/dashboard</code>. The cookie rides along. The request hits the edge <em>before</em> any of your app code.",
+      "state": { "lanes": [
+        { "name": "Browser", "items": [{ "label": "POST /login", "state": "done" }, { "label": "store cookie", "state": "done" }, { "label": "GET /dashboard", "state": "active" }, { "label": "paint page", "state": "idle" }] },
+        { "name": "Edge", "items": [{ "label": "match route", "state": "active" }, { "label": "read cookie", "state": "idle" }, { "label": "verify JWT", "state": "idle" }, { "label": "allow / redirect", "state": "idle" }] },
+        { "name": "Server", "items": [{ "label": "verify login", "state": "done" }, { "label": "sign JWT", "state": "done" }, { "label": "auth() in page", "state": "idle" }, { "label": "render RSC", "state": "idle" }] },
+        { "name": "DB", "items": [{ "label": "find user", "state": "done" }, { "label": "load role", "state": "idle" }] }
+      ] } },
+    { "label": "Middleware reads the cookie", "note": "<code>config.matcher</code> decided this path is in scope. Middleware has the request headers and nothing else — no DB, no session store, just the cookie bytes.",
+      "state": { "lanes": [
+        { "name": "Browser", "items": [{ "label": "POST /login", "state": "done" }, { "label": "store cookie", "state": "done" }, { "label": "GET /dashboard", "state": "active" }, { "label": "paint page", "state": "idle" }] },
+        { "name": "Edge", "items": [{ "label": "match route", "state": "done" }, { "label": "read cookie", "state": "active" }, { "label": "verify JWT", "state": "idle" }, { "label": "allow / redirect", "state": "idle" }] },
+        { "name": "Server", "items": [{ "label": "verify login", "state": "done" }, { "label": "sign JWT", "state": "done" }, { "label": "auth() in page", "state": "idle" }, { "label": "render RSC", "state": "idle" }] },
+        { "name": "DB", "items": [{ "label": "find user", "state": "done" }, { "label": "load role", "state": "idle" }] }
+      ] } },
+    { "label": "Verify signature, not DB", "note": "Decrypt + verify with <code>AUTH_SECRET</code>; check <code>exp</code>. Fast and stateless — which is also why a revoked user still passes here until the token expires (5g-03).",
+      "state": { "lanes": [
+        { "name": "Browser", "items": [{ "label": "POST /login", "state": "done" }, { "label": "store cookie", "state": "done" }, { "label": "GET /dashboard", "state": "active" }, { "label": "paint page", "state": "idle" }] },
+        { "name": "Edge", "items": [{ "label": "match route", "state": "done" }, { "label": "read cookie", "state": "done" }, { "label": "verify JWT", "state": "active" }, { "label": "allow / redirect", "state": "idle" }] },
+        { "name": "Server", "items": [{ "label": "verify login", "state": "done" }, { "label": "sign JWT", "state": "done" }, { "label": "auth() in page", "state": "idle" }, { "label": "render RSC", "state": "idle" }] },
+        { "name": "DB", "items": [{ "label": "find user", "state": "done" }, { "label": "load role", "state": "idle" }] }
+      ] } },
+    { "label": "Allow (or 307 to /login)", "note": "Valid token → <code>NextResponse.next()</code>. Missing or expired → <code>NextResponse.redirect</code> with a <code>callbackUrl</code>. The redirect happens before a single server component renders — that's the whole point of this layer.",
+      "state": { "lanes": [
+        { "name": "Browser", "items": [{ "label": "POST /login", "state": "done" }, { "label": "store cookie", "state": "done" }, { "label": "GET /dashboard", "state": "active" }, { "label": "paint page", "state": "idle" }] },
+        { "name": "Edge", "items": [{ "label": "match route", "state": "done" }, { "label": "read cookie", "state": "done" }, { "label": "verify JWT", "state": "done" }, { "label": "allow / redirect", "state": "active" }] },
+        { "name": "Server", "items": [{ "label": "verify login", "state": "done" }, { "label": "sign JWT", "state": "done" }, { "label": "auth() in page", "state": "idle" }, { "label": "render RSC", "state": "idle" }] },
+        { "name": "DB", "items": [{ "label": "find user", "state": "done" }, { "label": "load role", "state": "idle" }] }
+      ] } },
+    { "label": "Page calls auth() again", "note": "The server component doesn't trust that middleware ran (matchers drift; routes get added). <code>await auth()</code> reads the same cookie; fine-grained checks can now hit the DB for the current role or plan.",
+      "state": { "lanes": [
+        { "name": "Browser", "items": [{ "label": "POST /login", "state": "done" }, { "label": "store cookie", "state": "done" }, { "label": "GET /dashboard", "state": "active" }, { "label": "paint page", "state": "idle" }] },
+        { "name": "Edge", "items": [{ "label": "match route", "state": "done" }, { "label": "read cookie", "state": "done" }, { "label": "verify JWT", "state": "done" }, { "label": "allow / redirect", "state": "done" }] },
+        { "name": "Server", "items": [{ "label": "verify login", "state": "done" }, { "label": "sign JWT", "state": "done" }, { "label": "auth() in page", "state": "active" }, { "label": "render RSC", "state": "idle" }] },
+        { "name": "DB", "items": [{ "label": "find user", "state": "done" }, { "label": "load role", "state": "active" }] }
+      ] } },
+    { "label": "Render and paint", "note": "RSC payload streams back; the browser paints. Two checks ran (edge: cheap and coarse; server: exact), one DB read happened, and the client never saw the token's contents.",
+      "state": { "lanes": [
+        { "name": "Browser", "items": [{ "label": "POST /login", "state": "done" }, { "label": "store cookie", "state": "done" }, { "label": "GET /dashboard", "state": "done" }, { "label": "paint page", "state": "done" }] },
+        { "name": "Edge", "items": [{ "label": "match route", "state": "done" }, { "label": "read cookie", "state": "done" }, { "label": "verify JWT", "state": "done" }, { "label": "allow / redirect", "state": "done" }] },
+        { "name": "Server", "items": [{ "label": "verify login", "state": "done" }, { "label": "sign JWT", "state": "done" }, { "label": "auth() in page", "state": "done" }, { "label": "render RSC", "state": "done" }] },
+        { "name": "DB", "items": [{ "label": "find user", "state": "done" }, { "label": "load role", "state": "done" }] }
+      ] } }
+  ]
+}</script>
+</section>
+
+<section class="block" data-block="bridge" id="5g-11">
+<div class="tag">Python bridge</div>
+<p>Django has the same three layers under different names. <code>LoginRequiredMiddleware</code> (Django 5.1) / a hand-written middleware is the <em>middleware</em> layer: it sees the cookie, resolves the session, and bounces anonymous users before any view runs. <code>@login_required</code> and <code>@permission_required("app.change_post")</code> on a view are the <em>layout / page</em> layer: they run per view with the full <code>request.user</code> loaded from the DB. The ownership check inside the view body — <code>if post.author != request.user: raise PermissionDenied</code> — is the <em>server action</em> layer: per operation, per object. What differs: Django's session is always DB-backed (an opaque id in <code>sessionid</code>), so revocation is instant by default; Auth.js defaults to a self-contained JWT and makes you choose.</p>
+</section>
+
+<section class="block" data-block="concept" id="5g-02">
+<h2>Three-layer defense — each layer has a different job</h2>
+<ul>
+  <li><strong>Middleware</strong> — coarse, stateless, cookie-based. Blocks unauthenticated requests before they reach the app. Fast; no DB. Cannot check fine-grained roles beyond what's in the token, and only covers paths the <code>matcher</code> names.</li>
+  <li><strong>Layout / page (server component)</strong> — fine-grained. Has the session; can query the DB for the user's actual role or plan. Redirect or render fallback UI here. Prefer the <em>page</em> or a data-access function over a layout: layouts don't re-render on client-side navigation between sibling routes, so a layout-only check can be skipped.</li>
+  <li><strong>Server action / route handler</strong> — always re-authorize. A user can POST to an action directly with any arguments; the action must verify permission for <em>that specific operation</em> regardless of what the UI rendered.</li>
+</ul>
+
+<pre><code class="language-typescript">// middleware.ts — layer 1: has the cookie, nothing else
+import { auth } from "@/auth.config";       // providers + callbacks only, Edge-safe
+
+export default auth((req) =&gt; {
+  if (!req.auth) {
+    const url = new URL("/login", req.nextUrl.origin);
+    url.searchParams.set("callbackUrl", req.nextUrl.pathname);
+    return Response.redirect(url);
+  }
+});
+export const config = { matcher: ["/dashboard/:path*", "/settings/:path*"] };
+
+// lib/dal.ts — layer 2: one place every page/action asks
+import "server-only";
+import { cache } from "react";
+
+export const verifySession = cache(async () =&gt; {
+  const session = await auth();
+  if (!session?.user) redirect("/login");
+  return session;                           // cached per request, not per call
+});
+
+// app/actions.ts — layer 3: re-check for this operation
+"use server";
+export async function deletePost(postId: string) {
+  const { user } = await verifySession();
+  const post = await db.post.findUnique({ where: { id: postId } });
+  if (post?.authorId !== user.id) throw new Error("Forbidden");
+  await db.post.delete({ where: { id: postId } });
+  revalidatePath("/posts");
+}</code></pre>
+
+<div class="callout warn">
+  <div class="tag"><code>redirect()</code> throws</div>
+  <p><code>redirect()</code> and <code>notFound()</code> work by throwing a special error that Next catches. Call them inside your own <code>try { … } catch {}</code> and you'll swallow the redirect and keep rendering — a protected page that silently renders for a logged-out user. Keep the check outside the <code>try</code>, or rethrow after <code>isRedirectError(err)</code>.</p>
+</div>
+</section>
+
+<section class="block" data-block="diagram" id="5g-08">
+<div class="tag">Mechanism</div>
+<script type="application/json">{
+  "direction": "right",
+  "nodes": [
+    { "id": "req",    "label": "request\n+ cookie",           "kind": "pill" },
+    { "id": "mw",     "label": "middleware\nhas: cookie only", "kind": "box" },
+    { "id": "login",  "label": "307 /login",                  "kind": "pill" },
+    { "id": "page",   "label": "page / layout\nhas: session + DB", "kind": "box" },
+    { "id": "action", "label": "server action\nhas: session + args", "kind": "box" },
+    { "id": "db",     "label": "DB",                          "kind": "cyl" },
+    { "id": "deny",   "label": "403 / error",                 "kind": "pill" }
+  ],
+  "edges": [
+    { "from": "req",    "to": "mw",     "label": "matcher hit" },
+    { "from": "mw",     "to": "login",  "label": "no token", "dashed": true },
+    { "from": "mw",     "to": "page",   "label": "token ok" },
+    { "from": "page",   "to": "db",     "label": "role / plan" },
+    { "from": "page",   "to": "action", "label": "form POST" },
+    { "from": "action", "to": "db",     "label": "owns it?" },
+    { "from": "action", "to": "deny",   "label": "not owner", "dashed": true }
+  ]
+}</script>
+<p class="caption">Each layer answers a cheaper question than the next: "is there a valid token?" → "may this user see this page?" → "may this user do this to this row?". Only the last one can be trusted for a mutation.</p>
+</section>
+
+<section class="block" data-block="exercise" id="5g-12" data-kind="predict" data-lang="js">
+<div class="tag">Exercise</div>
+<p>Two session strategies, one "log out everywhere". <code>now</code> is fixed. What does this print? One line per <code>console.log</code>, values separated by a space.</p>
+<pre><code class="language-javascript">const now = 1000;
+const dbSessions = new Map();                       // id → { userId }
+
+function loginJwt(userId) { return { userId, exp: now + 3600 }; }    // the cookie IS the session
+function loginDb(userId)  { dbSessions.set("s1", { userId }); return "s1"; }  // opaque id in cookie
+
+function checkJwt(token) { return token.exp &gt; now ? token.userId : null; }
+function checkDb(id)     { return dbSessions.get(id)?.userId ?? null; }
+
+const jwtCookie = loginJwt("u1");
+const dbCookie  = loginDb("u1");
+console.log(checkJwt(jwtCookie), checkDb(dbCookie));
+
+dbSessions.clear();                                 // "log out everywhere"
+console.log(checkJwt(jwtCookie), checkDb(dbCookie));
+
+console.log(checkJwt({ ...jwtCookie, exp: now }));  // same token, an hour later</code></pre>
+<script type="application/json">{
+  "expected": "u1 u1\nu1 null\nnull",
+  "hints": [
+    "A JWT carries its own validity: nothing on the server remembers it, so nothing on the server can forget it.",
+    "The DB session is a row; <code>clear()</code> deletes the row and the next lookup returns <code>undefined</code> → <code>null</code>.",
+    "Only <code>exp</code> ends a JWT session — <code>exp &gt; now</code> is false when they're equal."
+  ],
+  "explain": "Both strategies authenticate the first request. After \"logout everywhere\" the DB strategy returns <code>null</code> immediately because its row is gone; the JWT keeps passing until <code>exp</code> because verifying it needs only the secret. That's the revocation trade-off in 5g-03 in six lines."
+}</script>
+</section>
+
+<section class="block" data-block="concept" id="5g-03">
+<h2>Session cookies — JWT vs DB session</h2>
+<ul>
+  <li><strong><code>strategy: "jwt"</code></strong> (Auth.js default) — the cookie holds an encrypted, signed token with the claims you put in it. No DB lookup per request; works in Edge middleware. Revocation is impossible without a blocklist or short expiry — a disabled user keeps a valid token until <code>exp</code>. Roles copied into the token at login go stale the same way.</li>
+  <li><strong><code>strategy: "database"</code></strong> (Auth.js with an adapter, Better-Auth) — the cookie holds an opaque session id; the session row lives in the DB. Instant revocation and live roles; costs a DB read per request, and middleware can only check "a cookie exists" unless it can reach the store.</li>
+</ul>
+<p>Rule of thumb: JWT when sessions are long-lived and revocation can wait minutes (set <code>session.maxAge</code> short and let Auth.js rotate); DB sessions when "log out everywhere", role changes, or admin bans must take effect on the next request.</p>
+
+<div class="callout warn">
+  <div class="tag">Payload ≠ secret</div>
+  <p>A plain JWT (<code>header.payload.signature</code>) is base64url, not encryption — anyone holding it can read the claims. Auth.js wraps its session token in a JWE, so the cookie's contents are opaque; a token you mint yourself with <code>jose</code>'s <code>SignJWT</code> is not. Never put anything in a signed-only token you wouldn't show the user.</p>
+</div>
+</section>
+
+<section class="block" data-block="concept" id="5g-09">
+<h2>The cookie itself — attributes that do the work</h2>
+<p>Whatever the strategy, the browser is the storage and the <code>Set-Cookie</code> attributes are the security model. Auth.js sets these for you; hand-rolled sessions (route handler + <code>cookies().set()</code>) must set them explicitly.</p>
+<pre><code class="language-http">Set-Cookie: __Secure-authjs.session-token=eyJ…; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=2592000</code></pre>
+<ul>
+  <li><strong><code>HttpOnly</code></strong> — invisible to <code>document.cookie</code>. An XSS can still <em>use</em> the session (it's attached automatically) but can't exfiltrate it.</li>
+  <li><strong><code>Secure</code></strong> — HTTPS only. The <code>__Secure-</code> / <code>__Host-</code> name prefixes make the browser refuse the cookie if it's missing.</li>
+  <li><strong><code>SameSite=Lax</code></strong> — not sent on cross-site POSTs, which is the baseline CSRF defence; still sent on top-level GET navigations so links from elsewhere stay logged in. <code>Strict</code> breaks "click a link in an email, land logged in". <code>None</code> requires <code>Secure</code> and reopens CSRF — only for cross-site embedding.</li>
+  <li><strong><code>Path=/</code>, <code>Max-Age</code></strong> — scope and lifetime. No <code>Max-Age</code> / <code>Expires</code> = session cookie, gone when the browser closes (not when the tab does).</li>
+</ul>
+<pre><code class="language-typescript">// Hand-rolled: a route handler or server action setting its own session cookie
+import { cookies } from "next/headers";
+
+const jar = await cookies();                      // async in Next 15
+jar.set("session", sessionId, {
+  httpOnly: true, secure: process.env.NODE_ENV === "production",
+  sameSite: "lax", path: "/", maxAge: 60 * 60 * 24 * 7,
+});</code></pre>
+</section>
+
+<section class="block" data-block="playground" id="5g-18" data-lang="js" data-mode="worker">
+<div class="tag">Try it</div>
+<p>A signed-only JWT, decoded with nothing but <code>atob</code>. Change <code>exp</code> to make it expired, add a claim to the payload, then try to change the role without the secret — the signature check (simulated with a fixed <code>sig</code>) catches the tampered payload.</p>
+<pre><code class="language-javascript">const b64url = s =&gt; btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+const fromB64url = s =&gt; atob(s.replace(/-/g, "+").replace(/_/g, "/"));
+
+const header  = { alg: "HS256", typ: "JWT" };
+const payload = { sub: "42", role: "user", exp: 1700000000 };
+const secret  = "dev-secret";
+// a real HMAC would go here; a stand-in that still depends on every byte + the secret
+const sign = (data) =&gt; [...data + secret].reduce((h, c) =&gt; (h * 31 + c.charCodeAt(0)) &gt;&gt;&gt; 0, 7).toString(16);
+
+const data = b64url(JSON.stringify(header)) + "." + b64url(JSON.stringify(payload));
+const token = data + "." + sign(data);
+
+// Anyone can read it:
+console.log(JSON.parse(fromB64url(token.split(".")[1])));
+
+// Only the secret holder can verify it:
+const verify = t =&gt; { const [h, p, s] = t.split("."); return sign(h + "." + p) === s; };
+console.log("valid:", verify(token));
+
+// Tamper with the role → signature no longer matches
+const forged = token.split(".")[0] + "." + b64url(JSON.stringify({ ...payload, role: "admin" })) + "." + token.split(".")[2];
+console.log("forged valid:", verify(forged));
+console.log("expired:", payload.exp &lt; 1700000001);</code></pre>
+<output>{ sub: "42", role: "user", exp: 1700000000 }
+valid: true
+forged valid: false
+expired: true</output>
+</section>
+
+<section class="block" data-block="exercise" id="5g-13" data-kind="fix" data-lang="js">
+<div class="tag">Exercise</div>
+<p><code>sessionCookie</code> builds the <code>Set-Cookie</code> header for a hand-rolled session on an HTTPS site. It's missing two attributes a reviewer would block the PR for: the cookie is readable from JavaScript and is sent on cross-site POSTs. Add them. In local dev (<code>secure: false</code>, plain http) the cookie must still be protected from scripts and cross-site POSTs — only <code>Secure</code> is conditional. Tests parse the header with <code>parseSetCookie</code>.</p>
+<pre><code class="language-javascript">// --- helper (leave as is)
+function parseSetCookie(header) {
+  const [pair, ...attrs] = header.split(";").map(s =&gt; s.trim());
+  const [name, value] = pair.split("=");
+  const out = { name, value, attrs: {} };
+  for (const a of attrs) { const [k, v = true] = a.split("="); out.attrs[k.toLowerCase()] = v; }
+  return out;
+}
+
+// --- fix this
+function sessionCookie(token, { secure = true } = {}) {
+  const parts = [`session=${token}`, "Path=/", `Max-Age=${60 * 60 * 24 * 7}`];
+  if (secure) parts.push("Secure");
+  return parts.join("; ");
+}</code></pre>
+<script type="application/json">{
+  "tests": "test(\"not readable from JS\", () => { const c = parseSetCookie(sessionCookie(\"abc\")); assert(c.attrs.httponly === true, \"HttpOnly missing\"); });\ntest(\"not sent on cross-site POSTs\", () => { const c = parseSetCookie(sessionCookie(\"abc\")); assert(/^(lax|strict)$/i.test(String(c.attrs.samesite)), \"SameSite must be Lax or Strict\"); });\ntest(\"https only in production\", () => { const c = parseSetCookie(sessionCookie(\"abc\")); assert(c.attrs.secure === true, \"Secure missing\"); assert.equal(c.attrs.path, \"/\"); assert.equal(c.attrs[\"max-age\"], String(60 * 60 * 24 * 7)); });\ntest(\"dev mode keeps HttpOnly + SameSite, drops Secure\", () => { const c = parseSetCookie(sessionCookie(\"abc\", { secure: false })); assert(c.attrs.httponly === true, \"HttpOnly missing in dev\"); assert(/^(lax|strict)$/i.test(String(c.attrs.samesite)), \"SameSite missing in dev\"); assert(c.attrs.secure !== true, \"Secure must be off for plain-http dev\"); });\ntest(\"name and value untouched\", () => { const c = parseSetCookie(sessionCookie(\"t0k\")); assert.equal(c.name, \"session\"); assert.equal(c.value, \"t0k\"); });",
+  "hints": [
+    "Which attribute hides a cookie from <code>document.cookie</code>? Which one controls whether it rides along on a cross-site form POST?",
+    "Both are unconditional — a dev cookie over http still needs them. Only <code>Secure</code> depends on the flag.",
+    "<code>parts.push(\"HttpOnly\", \"SameSite=Lax\")</code> before the <code>secure</code> check."
+  ],
+  "solution": "// --- helper (leave as is)\nfunction parseSetCookie(header) {\n  const [pair, ...attrs] = header.split(\";\").map(s => s.trim());\n  const [name, value] = pair.split(\"=\");\n  const out = { name, value, attrs: {} };\n  for (const a of attrs) { const [k, v = true] = a.split(\"=\"); out.attrs[k.toLowerCase()] = v; }\n  return out;\n}\n\nfunction sessionCookie(token, { secure = true } = {}) {\n  const parts = [`session=${token}`, \"Path=/\", `Max-Age=${60 * 60 * 24 * 7}`, \"HttpOnly\", \"SameSite=Lax\"];\n  if (secure) parts.push(\"Secure\");\n  return parts.join(\"; \");\n}",
+  "explain": "<code>HttpOnly</code> turns an XSS from \"steal the session\" into \"abuse it while the tab is open\" — strictly less bad. <code>SameSite=Lax</code> is the browser-enforced CSRF floor: a form on evil.example that POSTs to your action doesn't get the cookie. <code>Secure</code> is the only one that legitimately depends on the environment, because plain-http localhost would otherwise never receive the cookie at all."
+}</script>
+</section>
+
+<section class="block" data-block="concept" id="5g-04">
+<h2>CSRF and server actions</h2>
+<p>Server actions are POST-only and Next.js compares the request's <code>Origin</code> header with the <code>Host</code> (or <code>X-Forwarded-Host</code>) before running one; a mismatch is rejected. Combined with <code>SameSite=Lax</code> on the session cookie, the standard setup needs no CSRF token. Gaps to know:</p>
+<ul>
+  <li>Behind a reverse proxy or on a multi-domain setup the two headers can differ. Whitelist the public hosts: <code>experimental: { serverActions: { allowedOrigins: ["app.example.com"] } }</code> in <code>next.config.ts</code>.</li>
+  <li>Actions can't be called from a different origin (a native app, a partner site) — that's the point. Expose a route handler with explicit CORS and bearer auth instead.</li>
+  <li>Route handlers get <em>none</em> of this. A <code>POST</code> handler that mutates on the strength of a cookie alone needs its own origin check or a CSRF token.</li>
+  <li>The action's ID is a hash, but it's in the page's JS — it is <em>not</em> a secret and not an authorization check.</li>
+</ul>
+</section>
+
+<section class="block" data-block="concept" id="5g-10">
+<h2>Auth.js vs the alternatives</h2>
+<ul>
+  <li><strong>Auth.js</strong> — OAuth / email / credentials, JWT or adapter-backed sessions, free, you own the user table. Weak on MFA and org management; you build those.</li>
+  <li><strong>Better-Auth</strong> — the actively maintained lightweight alternative: DB sessions by default, plugins for 2FA, organizations, passkeys. Lucia (v2 and earlier) is sunset — don't start on it.</li>
+  <li><strong>Clerk</strong>, <strong>WorkOS</strong>, <strong>Auth0</strong> — managed. SSO, MFA, SCIM, audit logs without building them; the user table lives with the vendor and so does your per-MAU bill.</li>
+</ul>
+<p>Whichever you pick, the three layers in 5g-02 don't change — only the function you call to get the session.</p>
+</section>
+
+<section class="block" data-block="exercise" id="5g-14" data-kind="complete" data-lang="js">
+<div class="tag">Exercise</div>
+<p>Implement the decision function a middleware would run. <code>rules</code> is ordered; the <strong>first matching prefix wins</strong>. A prefix matches when the pathname equals it or continues it with a <code>/</code> (<code>"/dashboard"</code> matches <code>/dashboard/reports</code> but not <code>/dashboardx</code>); <code>"/"</code> matches everything. Return <code>{ action: "next" }</code> to allow, <code>{ action: "redirect", to: "/login?callbackUrl=&lt;encodeURIComponent(pathname)&gt;" }</code> for an anonymous user on a protected path, and <code>{ action: "forbid" }</code> for a logged-in user whose <code>session.user.role</code> doesn't match a <code>"role"</code> rule. <code>session</code> is <code>null</code> when anonymous.</p>
+<pre><code class="language-javascript">const rules = [
+  { prefix: "/api/auth",  access: "public" },
+  { prefix: "/login",     access: "public" },
+  { prefix: "/admin",     access: "role", role: "admin" },
+  { prefix: "/dashboard", access: "auth" },
+  { prefix: "/",          access: "public" },
+];
+
+function protect(pathname, session) {
+  // TODO
+}</code></pre>
+<script type="application/json">{
+  "tests": "const anon = null, user = { user: { id: \"1\", role: \"user\" } }, admin = { user: { id: \"2\", role: \"admin\" } };\ntest(\"public path, anonymous → next\", () => { assert.equal(protect(\"/\", anon), { action: \"next\" }); assert.equal(protect(\"/pricing\", anon), { action: \"next\" }); });\ntest(\"protected path, anonymous → redirect with callbackUrl\", () => assert.equal(protect(\"/dashboard/reports\", anon), { action: \"redirect\", to: \"/login?callbackUrl=%2Fdashboard%2Freports\" }));\ntest(\"protected path, logged in → next\", () => assert.equal(protect(\"/dashboard\", user), { action: \"next\" }));\ntest(\"role rule: wrong role → forbid, right role → next, anonymous → redirect\", () => { assert.equal(protect(\"/admin/users\", user), { action: \"forbid\" }); assert.equal(protect(\"/admin/users\", admin), { action: \"next\" }); assert.equal(protect(\"/admin\", anon).action, \"redirect\"); });\ntest(\"prefix match is per segment\", () => { assert.equal(protect(\"/dashboardx\", anon), { action: \"next\" }); assert.equal(protect(\"/api/auth/callback/google\", anon), { action: \"next\" }); });",
+  "hints": [
+    "Write a <code>matches(prefix, pathname)</code> helper first: <code>prefix === \"/\"</code> is a wildcard; otherwise <code>pathname === prefix || pathname.startsWith(prefix + \"/\")</code>.",
+    "<code>rules.find(r =&gt; matches(r.prefix, pathname))</code> gives the winning rule. Decide in order: public → next; no session → redirect; role mismatch → forbid; else next.",
+    "The redirect target is <code>\"/login?callbackUrl=\" + encodeURIComponent(pathname)</code>."
+  ],
+  "solution": "const rules = [\n  { prefix: \"/api/auth\",  access: \"public\" },\n  { prefix: \"/login\",     access: \"public\" },\n  { prefix: \"/admin\",     access: \"role\", role: \"admin\" },\n  { prefix: \"/dashboard\", access: \"auth\" },\n  { prefix: \"/\",          access: \"public\" },\n];\n\nfunction matches(prefix, pathname) {\n  if (prefix === \"/\") return true;\n  return pathname === prefix || pathname.startsWith(prefix + \"/\");\n}\n\nfunction protect(pathname, session) {\n  const rule = rules.find(r => matches(r.prefix, pathname));\n  if (!rule || rule.access === \"public\") return { action: \"next\" };\n  if (!session) return { action: \"redirect\", to: \"/login?callbackUrl=\" + encodeURIComponent(pathname) };\n  if (rule.access === \"role\" && session.user.role !== rule.role) return { action: \"forbid\" };\n  return { action: \"next\" };\n}",
+  "explain": "This is everything middleware can decide: path × token claims. Note what it can't see — whether the token's <code>role</code> is still current, or whether the user owns the thing at <code>/dashboard/reports/17</code>. Both need the DB, which is why the page and the action check again (5g-02). The per-segment match matters: a naive <code>startsWith</code> would let <code>/admin</code> rules leak onto <code>/administrator-docs</code>."
+}</script>
+</section>
+
+<section class="block" data-block="review" id="5g-17">
+<div class="tag">Code review</div>
+<ul>
+  <li><strong>Auth only in middleware.</strong> The <code>matcher</code> is a list someone forgets to extend when a route is added. Every page and action must call <code>verifySession()</code> itself; middleware is an optimisation, not the guard.</li>
+  <li><strong>Auth only in a layout.</strong> Layouts don't re-render on client-side navigation between their children, and a layout can't see the child's <code>params</code>. Put the check in the page or in the data-access function that loads the data.</li>
+  <li><strong>Server action without re-authorization.</strong> "The button is only rendered for owners" is not a check. Any action exported from the bundle can be invoked with any arguments. The action loads the row and compares <code>authorId</code> to the session's user — every time.</li>
+  <li><strong><code>redirect()</code> inside <code>try/catch</code>.</strong> Swallows the <code>NEXT_REDIRECT</code> error and renders the protected page. Move the redirect outside, or rethrow when <code>isRedirectError(err)</code>.</li>
+  <li><strong>Role in the JWT, never refreshed.</strong> A promotion or ban doesn't apply until the token expires. Either keep <code>session.maxAge</code> short, re-read the role from the DB in the <code>jwt</code> callback on <code>trigger === "update"</code>, or use DB sessions.</li>
+  <li><strong>Hand-rolled cookie without <code>HttpOnly</code> / <code>SameSite</code>.</strong> <code>cookies().set("session", id)</code> with defaults is readable by any script and sent cross-site. Pass the options object every time; better, wrap it once in a <code>setSessionCookie()</code> helper.</li>
+  <li><strong>DB adapter imported into middleware.</strong> Breaks the Edge build or, on Node, opens a DB connection per request at the edge. Split the config (<code>auth.config.ts</code> without adapter) or move the fine-grained check to the page.</li>
+</ul>
+</section>
+
+<section class="block" data-block="exercise" id="5g-15" data-kind="mcq">
+<div class="tag">Check</div>
+<p>Middleware's <code>matcher</code> covers <code>/dashboard/:path*</code> and redirects anonymous users. <code>deletePost(postId)</code> is a server action that checks <code>await auth()</code> for a session and then deletes. A <em>logged-in</em> user opens DevTools, replays the action's POST with another user's <code>postId</code>. What happens?</p>
+<script type="application/json">{
+  "options": [
+    "Middleware rejects it: the action's POST goes to <code>/dashboard</code>, and the session is valid — wait, it <em>passes</em>, but the hashed action ID is unguessable so the request can't be forged.",
+    "The post is deleted. Middleware only asked \"is there a token?\", the action only asked \"is there a session?\"; nothing compared <code>post.authorId</code> to <code>session.user.id</code>.",
+    "Next.js's CSRF check rejects it because the request was not initiated by a rendered form.",
+    "The action throws because <code>postId</code> wasn't rendered in this user's page, so it isn't in the action's bound arguments."
+  ],
+  "answer": 1,
+  "explain": "Both layers passed truthfully — the user <em>is</em> authenticated. Authorization for <em>this row</em> was never checked. The action ID is in the page's JavaScript (not a secret), the Origin check passes because the request is same-origin, and server actions accept whatever arguments the caller sends. The only fix is the ownership comparison inside the action (5g-02)."
+}</script>
+</section>
+
+<section class="block" data-block="exercise" id="5g-16" data-kind="mcq">
+<div class="tag">Check</div>
+<p>An admin disables a user's account at 10:00. The app uses Auth.js with the default <code>strategy: "jwt"</code> and <code>session.maxAge</code> of 30 days. Nothing else is configured. When does the disabled user stop getting <code>/dashboard</code>?</p>
+<script type="application/json">{
+  "options": [
+    "On their next request — <code>auth()</code> re-validates the user against the database every call.",
+    "When they log out or the token expires (up to 30 days), unless a page or action explicitly re-reads the user's status from the DB.",
+    "Within a few minutes — Auth.js rotates the JWT on every request and the rotation hits the DB.",
+    "Immediately, because middleware verifies the token's signature and the signature is tied to the user row."
+  ],
+  "answer": 1,
+  "explain": "A JWT session is self-contained: verification needs only <code>AUTH_SECRET</code> and <code>exp</code>, so nothing consults the user row. Auth.js does refresh the token's expiry on activity, but refreshing re-signs the existing claims — it doesn't look the user up unless your <code>jwt</code> callback does. Instant revocation means a DB session, a short <code>maxAge</code>, or a status check in <code>verifySession()</code>."
+}</script>
+</section>
+
+<section class="block" data-block="recall" id="5g-05">
+<div class="tag">Recall</div>
+<dl>
+  <dt>Auth.js v5: what does <code>auth.ts</code> export, and where are the HTTP handlers mounted?</dt>
+  <dd><code>{ auth, handlers, signIn, signOut }</code>. <code>app/api/auth/[...nextauth]/route.ts</code> does <code>export const { GET, POST } = handlers</code>; <code>await auth()</code> reads the session in any server code.</dd>
+
+  <dt>Name the three auth layers in a Next.js app and the one question each can answer.</dt>
+  <dd>Middleware (edge, cookie only): "is there a valid token for this path?". Page / data-access layer (server, has DB): "may this user see this?". Server action (has args): "may this user do this to this row?". Only the last is trustworthy for a mutation.</dd>
+
+  <dt>JWT session vs DB session — the trade-off in one sentence each.</dt>
+  <dd>JWT: no DB read per request, works at the edge, but can't be revoked before <code>exp</code> and claims go stale. DB: instant revocation and live roles, costs a lookup per request.</dd>
+
+  <dt>Which <code>Set-Cookie</code> attributes does a session cookie need, and what does each prevent?</dt>
+  <dd><code>HttpOnly</code> (script can't read it — XSS can't exfiltrate), <code>Secure</code> (HTTPS only), <code>SameSite=Lax</code> (not sent on cross-site POSTs — CSRF floor), <code>Path=/</code> + <code>Max-Age</code> (scope, lifetime).</dd>
+
+  <dt>What does this print?
+<pre><code class="language-javascript">const now = 1000, db = new Map([["s1", "u1"]]);
+const jwt = { userId: "u1", exp: now + 3600 };
+db.clear();
+console.log(jwt.exp &gt; now ? jwt.userId : null, db.get("s1") ?? null);</code></pre></dt>
+  <dd><code>u1 null</code>. Clearing the store revokes the DB session instantly; the JWT stays valid until <code>exp</code> because nothing server-side remembers it.</dd>
+
+  <dt>How does Next.js protect server actions from CSRF, and what do you configure behind a proxy whose hostname differs?</dt>
+  <dd>Actions are POST-only and the <code>Origin</code> header must match <code>Host</code> / <code>X-Forwarded-Host</code>; plus <code>SameSite=Lax</code> on the cookie. Behind a proxy: <code>experimental.serverActions.allowedOrigins</code> in <code>next.config.ts</code>. Route handlers get none of this.</dd>
+
+  <dt>Why is a session check placed only in a layout not enough?</dt>
+  <dd>Layouts don't re-render on client-side navigation between sibling routes and can't read the child page's <code>params</code>. Check in the page or in a <code>cache()</code>-wrapped <code>verifySession()</code> that every page and action calls.</dd>
+
+  <dt>Why does <code>middleware.ts</code> import <code>auth.config.ts</code> instead of <code>auth.ts</code>?</dt>
+  <dd>Middleware runs on the Edge runtime by default; a DB adapter can't load there. The split config keeps providers + callbacks Edge-safe and adds the adapter only in <code>auth.ts</code>.</dd>
+</dl>
+</section>
+</article>
+<script type="module" src="/assets/runtime/boot.js"></script>
+</body>
+</html>

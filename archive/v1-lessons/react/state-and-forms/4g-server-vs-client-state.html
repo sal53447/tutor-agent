@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>4g. Server state vs client state · JS Curriculum</title>
+<link rel="icon" href="/assets/favicon.svg">
+<link rel="stylesheet" href="/assets/vendor/prism.css">
+<link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body data-lesson="4g" data-level="interactive">
+<article class="lesson">
+
+<header>
+  <h1>Server State vs Client State</h1>
+</header>
+
+<section class="block" data-block="concept" id="4g-05">
+<p>Most "state management" pain in React apps is one category error: treating data that a server owns as if the component owned it. Split state by <em>who owns it</em> and the tooling picks itself — a cache for server data, <code>useState</code> (4h) for UI data, form actions (4i) for the handoff between them. Next.js (Part 5) assumes you have this split: Server Components fetch, Client Components hold toggles, and the cache sits in between.</p>
+</section>
+
+<section class="block" data-block="concept" id="4g-06">
+<h2>Two kinds of state, one question: who owns it?</h2>
+<p><strong>Server state</strong> is data whose source of truth is a remote system — a row in Postgres, a Stripe customer, a GitHub issue. The browser only ever holds a <em>copy</em>, which can be stale the moment it arrives, can be changed by other users, and must be refetched to be trusted. <strong>Client state</strong> is data the UI owns outright — an open modal, a draft in a text box, the selected tab. Nobody else can change it; it needs no refetch, no retry, no cache.</p>
+
+<table>
+  <tr><th></th><th>Server state</th><th>Client state</th></tr>
+  <tr><td><strong>Owner</strong></td><td>Database / API</td><td>This browser tab</td></tr>
+  <tr><td><strong>Shape of the problem</strong></td><td>Caching, dedupe, staleness, retries, invalidation after writes</td><td>Where in the tree it lives, who re-renders</td></tr>
+  <tr><td><strong>Tool</strong></td><td>TanStack Query, SWR, or RSC + <code>fetch</code> cache (5d)</td><td><code>useState</code>, lifted state, context, a store (4h)</td></tr>
+  <tr><td><strong>Examples</strong></td><td>user profile, order list, search results</td><td>modal open, filter text, hover row</td></tr>
+</table>
+
+<p>The classic anti-pattern is <code>useState</code> + <code>useEffect</code> for server data. It works in the demo and then you re-implement, one bug report at a time: deduplication (two components, two requests), the race when the id changes mid-flight, retries, background refetch, invalidation after a write, loading flicker. A query cache is those features, done once.</p>
+
+<div class="callout bad">
+  <div class="tag">Don't</div>
+  <pre><code class="language-jsx">function User({ id }) {
+  const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
+  useEffect(() =&gt; {
+    setLoading(true);
+    fetch(`/api/users/${id}`).then(r =&gt; r.json()).then(u =&gt; { setUser(u); setLoading(false); });
+  }, [id]);   // no cache, no dedupe, no cancel when id changes, no retry, no error state
+  …
+}</code></pre>
+</div>
+</section>
+
+<section class="block" data-block="diagram" id="4g-11">
+<div class="tag">Mechanism</div>
+<script type="application/json">{
+  "direction": "right",
+  "nodes": [
+    { "id": "db",    "label": "database\n(source of truth)", "kind": "cyl" },
+    { "id": "api",   "label": "API route",                   "kind": "box" },
+    { "id": "cache", "label": "query cache\n(copy + TTL)",    "kind": "cyl" },
+    { "id": "comp",  "label": "component",                   "kind": "box" },
+    { "id": "ui",    "label": "useState\n(modal, draft)",     "kind": "pill" }
+  ],
+  "edges": [
+    { "from": "db",    "to": "api",   "label": "SELECT" },
+    { "from": "api",   "to": "cache", "label": "queryFn → data" },
+    { "from": "cache", "to": "comp",  "label": "data, status" },
+    { "from": "comp",  "to": "ui",    "label": "owns" },
+    { "from": "comp",  "to": "api",   "label": "mutation", "dashed": true },
+    { "from": "api",   "to": "cache", "label": "invalidate", "dashed": true }
+  ]
+}</script>
+<p class="caption">Server state flows left to right through a cache that holds a <em>copy</em>; client state never leaves the component. Writes go around the cache and come back as an invalidation.</p>
+</section>
+
+<section class="block" data-block="bridge" id="4g-09">
+<div class="tag">Python bridge</div>
+<p>A query cache is <code>cachetools.TTLCache</code> (or Django's <code>cache.get_or_set</code>) wired to a re-render. <code>queryKey</code> is the cache key — like <code>functools.lru_cache</code>, it is built from <em>every</em> argument, so <code>["user", id]</code> not <code>["user"]</code>. <code>staleTime</code> is the TTL: inside it, reads are served from memory with no I/O. The difference is what happens after the TTL: <code>TTLCache</code> evicts and the next read blocks on a miss; a query cache keeps the stale copy, <em>returns it immediately</em>, and refetches in the background (stale-while-revalidate). <code>invalidateQueries(key)</code> ≈ <code>cache.delete(key)</code> followed by an eager re-read for anyone currently looking at it. <code>gcTime</code> is the eviction of entries nobody is subscribed to — the part <code>lru_cache</code> does by size instead of time.</p>
+</section>
+
+<section class="block" data-block="concept" id="4g-01">
+<h2>Where does this code run?</h2>
+<p>In Next.js App Router (Part 5), every component is a <strong>Server Component by default</strong>. A Server Component can fetch server state directly — it <em>is</em> on the server — so the initial copy of the data needs no client cache at all. The boundary is the most important mental-model shift coming from plain React.</p>
+
+<table>
+  <tr><th></th><th>Server Component</th><th>Client Component</th></tr>
+  <tr><td><strong>Runs on</strong></td><td>Server only (Node.js, at request time)</td><td>Browser (and server during SSR)</td></tr>
+  <tr><td><strong>Can use</strong></td><td><code>async/await</code>, DB, filesystem, env secrets</td><td>Hooks, event handlers, browser APIs, state</td></tr>
+  <tr><td><strong>Cannot use</strong></td><td>Hooks, <code>useState</code>, <code>useEffect</code>, browser APIs</td><td><code>async</code> component body, direct DB access</td></tr>
+  <tr><td><strong>Ships JS?</strong></td><td>No — renders to HTML + RSC payload</td><td>Yes — included in client bundle</td></tr>
+</table>
+
+<pre><code class="language-tsx">// app/users/page.tsx — Server Component (no "use client")
+// Can directly await DB / fetch. No useEffect. No useState.
+export default async function UsersPage() {
+  const users = await db.query("SELECT * FROM users");
+  return &lt;UserList users={users} /&gt;;
+}
+
+// components/user-list.tsx — Client Component
+"use client";   // &lt;-- this directive makes the component (and its imports) client-side
+
+import { useState } from "react";
+export function UserList({ users }) {
+  const [filter, setFilter] = useState("");   // client state: the UI owns the filter text
+  const visible = users.filter(u =&gt; u.name.includes(filter));
+  return (
+    &lt;&gt;
+      &lt;input value={filter} onChange={e =&gt; setFilter(e.target.value)} /&gt;
+      {visible.map(u =&gt; &lt;div key={u.id}&gt;{u.name}&lt;/div&gt;)}
+    &lt;/&gt;
+  );
+}</code></pre>
+
+<div class="callout good">
+  <div class="tag">Rule of thumb</div>
+  <p>Default to Server Component. Add <code>"use client"</code> only when you need interactivity (hooks, events, browser APIs). Push the boundary as far down the tree as possible — the smaller the client island, the less JS shipped.</p>
+</div>
+</section>
+
+<section class="block" data-block="concept" id="4g-07">
+<h2>TanStack Query v5 — the cache in front of the server</h2>
+<p><strong>TanStack Query</strong> (née React Query) is a cache keyed by <code>queryKey</code>, with a subscription per component. <code>useQuery</code> returns the cached copy plus its status; <code>useMutation</code> runs a write and, on success, <em>invalidates</em> the keys the write affected so every subscriber refetches. v5 names: <code>isPending</code> (no data yet), <code>isFetching</code> (a request is in flight, possibly in the background), <code>gcTime</code> (was <code>cacheTime</code>).</p>
+
+<pre><code class="language-jsx">import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+
+function User({ id }) {
+  const { data, isPending, error } = useQuery({
+    queryKey: ["user", id],                       // every input to queryFn goes in the key
+    queryFn: () =&gt; fetch(`/api/users/${id}`).then(r =&gt; r.json()),
+    staleTime: 60_000,                            // serve from cache, no request, for 60 s
+  });
+
+  if (isPending) return &lt;Spinner /&gt;;
+  if (error) return &lt;ErrorView error={error} /&gt;;
+  return &lt;h1&gt;{data.name}&lt;/h1&gt;;
+}
+
+function RenameButton({ id }) {
+  const qc = useQueryClient();
+  const rename = useMutation({
+    mutationFn: (input) =&gt; fetch(`/api/users/${id}`, { method: "PATCH", body: JSON.stringify(input) }),
+    onSuccess: () =&gt; qc.invalidateQueries({ queryKey: ["user", id] }),   // mark stale → subscribers refetch
+  });
+  return &lt;button onClick={() =&gt; rename.mutate({ name: "new" })} disabled={rename.isPending}&gt;Rename&lt;/button&gt;;
+}</code></pre>
+
+<div class="callout good">
+  <div class="tag">Defaults that earn their keep</div>
+  <ul>
+    <li><code>staleTime</code> set per query (or globally in <code>QueryClient</code>). The library default is <code>0</code>: every mount and every window focus refetches. That is correct for a stock ticker and wasteful for a settings page.</li>
+    <li><code>retry: 3</code> with exponential backoff is the default — turn it <em>off</em> for mutations and for 4xx responses, where retrying is wrong.</li>
+    <li><code>queryKey</code> is hashed structurally: <code>["todos", { status: "done", page: 2 }]</code> is one key, order of object fields irrelevant. Omit a parameter from the key and two different queries share one cache slot.</li>
+  </ul>
+</div>
+
+<div class="callout warn">
+  <div class="tag">Not available in the sandbox</div>
+  <p>The playgrounds below can't import <code>@tanstack/react-query</code>. They hand-roll a ~15-line <code>useQuery</code> with a <code>Map</code> — the same mechanism, none of the edge cases. Treat it as the model, not the library.</p>
+</div>
+</section>
+
+<section class="block" data-block="playground" id="4g-13" data-lang="jsx">
+<div class="tag">Try it</div>
+<p>A minimal <code>useQuery</code>: a module-level <code>Map</code> keyed by string, an in-flight promise shared by everyone who asks for the same key, and a <code>staleTime</code>. Three components mount, two of them with the same key — count the requests. Then: set <code>staleTime</code> to <code>0</code> and click <em>unmount</em> / <em>remount</em>; add a fourth <code>&lt;Name id={1} /&gt;</code>; give the two <code>id=1</code> components different keys by mistake (<code>"user" + id</code> vs <code>"user:" + id</code>) and watch the dedupe disappear.</p>
+<pre><code class="language-jsx">// hand-rolled stand-in for TanStack Query's useQuery (no gc, no retry, no error state)
+import { useState, useEffect } from "react";
+import { createRoot } from "react-dom/client";
+
+const cache = new Map();                         // key → { data, updatedAt, promise }
+function fetchUser(id) {
+  console.log("fetch user", id);
+  return new Promise(r =&gt; setTimeout(() =&gt; r({ id, name: "user-" + id }), 30));
+}
+
+function useQuery(key, queryFn, { staleTime = 0 } = {}) {
+  const entry = cache.get(key);
+  const fresh = !!entry &amp;&amp; !!entry.data &amp;&amp; Date.now() - entry.updatedAt &lt; staleTime;
+  const [, rerender] = useState(0);
+  useEffect(() =&gt; {
+    if (fresh) return;                           // inside staleTime: serve the copy, no request
+    const e = cache.get(key) || {};
+    if (!e.promise) {                            // first asker starts the request; others share it
+      e.promise = queryFn().then(data =&gt; { Object.assign(e, { data, updatedAt: Date.now(), promise: null }); });
+      cache.set(key, e);
+    }
+    e.promise.then(() =&gt; rerender(n =&gt; n + 1));
+  }, [key, fresh]);
+  return { data: entry &amp;&amp; entry.data, isPending: !(entry &amp;&amp; entry.data) };
+}
+
+function Name({ id }) {
+  const { data, isPending } = useQuery("user:" + id, () =&gt; fetchUser(id), { staleTime: 5000 });
+  return &lt;li&gt;{isPending ? "loading…" : data.name}&lt;/li&gt;;
+}
+function App() {
+  const [show, setShow] = useState(true);
+  return (
+    &lt;div&gt;
+      &lt;button onClick={() =&gt; setShow(s =&gt; !s)}&gt;{show ? "unmount" : "remount"}&lt;/button&gt;
+      {show &amp;&amp; &lt;ul&gt;&lt;Name id={1} /&gt;&lt;Name id={1} /&gt;&lt;Name id={2} /&gt;&lt;/ul&gt;}
+    &lt;/div&gt;
+  );
+}
+createRoot(document.getElementById("root")).render(&lt;App /&gt;);</code></pre>
+<output>fetch user 1
+fetch user 2</output>
+</section>
+
+<section class="block" data-block="concept" id="4g-08">
+<h2>The cache lifecycle: fresh → stale → refetch → gone</h2>
+<p>Every entry in the cache is in one of a few states, and two timers drive the transitions. <code>staleTime</code> says how long after a fetch the copy counts as <strong>fresh</strong> — fresh data is returned with no request. After that it is <strong>stale</strong>: still returned instantly, but the next <em>trigger</em> (a component mounts with the key, the window regains focus, the network reconnects, a <code>refetchInterval</code> ticks, or someone calls <code>invalidateQueries</code>) starts a background refetch. The UI keeps showing the stale copy until the new one lands; <code>isFetching</code> is true meanwhile, <code>isPending</code> is not. When the last subscriber unmounts the entry is <strong>inactive</strong>; after <code>gcTime</code> (default 5 min) with no subscribers it is garbage-collected, and the next mount starts from <code>isPending</code> again.</p>
+
+<pre><code class="language-jsx">useQuery({
+  queryKey: ["orders", { status }],
+  queryFn: fetchOrders,
+  staleTime: 30_000,          // fresh for 30 s: mounts and focus events don't refetch
+  gcTime: 5 * 60_000,         // keep an unused entry 5 min so navigating back is instant
+  refetchOnWindowFocus: true, // (default) stale entries refetch when the tab regains focus
+  refetchInterval: false,     // polling, if you need it
+});</code></pre>
+
+<div class="callout warn">
+  <div class="tag">staleTime ≠ gcTime</div>
+  <p>Raising <code>gcTime</code> does not stop refetches — it only keeps unused entries around longer. Raising <code>staleTime</code> stops refetches. Almost every "why does this refetch on every mount" question is <code>staleTime: 0</code>, the default.</p>
+</div>
+</section>
+
+<section class="block" data-block="diagram" id="4g-12">
+<div class="tag">Mechanism</div>
+<script type="application/json">{
+  "direction": "down",
+  "nodes": [
+    { "id": "fetching", "label": "fetching\n(isPending)",            "kind": "pill", "row": 0 },
+    { "id": "fresh",    "label": "fresh",                             "kind": "pill", "row": 1 },
+    { "id": "stale",    "label": "stale\n(still rendered)",           "kind": "pill", "row": 2 },
+    { "id": "refetch",  "label": "background refetch\n(isFetching)",  "kind": "box",  "row": 3 },
+    { "id": "inactive", "label": "inactive\n(no subscribers)",        "kind": "pill", "row": 3 },
+    { "id": "gone",     "label": "garbage-collected",                 "kind": "pill", "row": 4 },
+    { "id": "trigger",  "label": "mount · focus · reconnect\ninterval · invalidateQueries", "kind": "note", "row": 2 }
+  ],
+  "edges": [
+    { "from": "fetching", "to": "fresh",    "label": "data arrives" },
+    { "from": "fresh",    "to": "stale",    "label": "staleTime elapses" },
+    { "from": "stale",    "to": "refetch",  "label": "trigger" },
+    { "from": "refetch",  "to": "fresh",    "label": "new data (swap)" },
+    { "from": "stale",    "to": "inactive", "label": "last unmount" },
+    { "from": "inactive", "to": "stale",    "label": "remount", "dashed": true },
+    { "from": "inactive", "to": "gone",     "label": "gcTime elapses" },
+    { "from": "gone",     "to": "fetching", "label": "next mount", "dashed": true }
+  ]
+}</script>
+<p class="caption">Only the first fetch shows a spinner. Everything after is stale-while-revalidate: the stale copy stays on screen while the refetch runs, and <code>gcTime</code> only matters once nobody is subscribed.</p>
+</section>
+
+<section class="block" data-block="exercise" id="4g-14" data-kind="predict" data-lang="js">
+<div class="tag">Exercise</div>
+<p>A pure-JS cache with a fake clock (<code>now</code>) and a <code>staleTime</code>. What does it print, in order? One value per line.</p>
+<pre><code class="language-javascript">let now = 0;
+const cache = new Map();
+
+async function query(key, fn, { staleTime }) {
+  const hit = cache.get(key);
+  if (hit &amp;&amp; now - hit.at &lt; staleTime) { console.log("fresh:", key); return hit.data; }
+  console.log(hit ? "stale:" : "miss:", key);
+  const data = await fn();
+  cache.set(key, { data, at: now });
+  return data;
+}
+const user = (id) =&gt; async () =&gt; "user-" + id;
+
+await query("user:1", user(1), { staleTime: 60 });
+await query("user:1", user(1), { staleTime: 60 });
+now = 30;  await query("user:1", user(1), { staleTime: 60 });
+now = 61;  await query("user:1", user(1), { staleTime: 60 });
+now = 62;  await query("user:2", user(2), { staleTime: 60 });
+console.log(cache.size);</code></pre>
+<script type="application/json">{
+  "expected": "miss: user:1\nfresh: user:1\nfresh: user:1\nstale: user:1\nmiss: user:2\n2",
+  "hints": [
+    "A hit is <em>fresh</em> while <code>now - at &lt; staleTime</code>; at exactly 60 it is not.",
+    "A stale hit still refetches and overwrites the entry (<code>at</code> becomes 61); it doesn't create a second entry. Keys are strings here, so <code>user:1</code> and <code>user:2</code> are two entries."
+  ],
+  "explain": "First call: miss. Second and third: fresh (0 and 30 ms old, under 60). Fourth at 61: stale, refetch, entry updated in place. <code>user:2</code> is a different key → miss. Two keys → <code>cache.size</code> is 2. In TanStack Query the stale branch would additionally <em>return the old copy immediately</em> and refetch in the background."
+}</script>
+</section>
+
+<section class="block" data-block="stepper" id="4g-18" data-kind="timeline">
+<div class="tag">Step through</div>
+<script type="application/json">{
+  "code": "const rename = useMutation({\n  mutationFn: (name) => api.patch(`/users/${id}`, { name }),\n  onSuccess: () => qc.invalidateQueries({ queryKey: [\"user\", id] }),\n});\n// <h1>{data.name}</h1>  — rendered from useQuery([\"user\", id])",
+  "steps": [
+    { "label": "Idle, fresh copy on screen", "note": "The cache holds <code>[\"user\", 1] = { name: \"Ada\" }</code>, fresh. The component renders it. Nothing in flight.",
+      "state": { "lanes": [
+        { "name": "Component", "items": [{ "label": "render: Ada", "state": "done" }, { "label": "click Rename", "state": "idle" }, { "label": "render: Ada (stale)", "state": "idle" }, { "label": "render: Grace", "state": "idle" }] },
+        { "name": "Cache",     "items": [{ "label": "[\"user\",1] fresh", "state": "done" }, { "label": "mutation pending", "state": "idle" }, { "label": "invalidate → stale", "state": "idle" }, { "label": "refetch (isFetching)", "state": "idle" }, { "label": "[\"user\",1] fresh", "state": "idle" }] },
+        { "name": "Server",    "items": [{ "label": "PATCH /users/1", "state": "idle" }, { "label": "GET /users/1", "state": "idle" }] }
+      ] } },
+    { "label": "mutate() called", "line": 1, "note": "<code>rename.mutate(\"Grace\")</code> runs <code>mutationFn</code>. <code>rename.isPending</code> is now true — disable the button with it. The query cache is untouched so far.",
+      "state": { "lanes": [
+        { "name": "Component", "items": [{ "label": "render: Ada", "state": "done" }, { "label": "click Rename", "state": "done" }, { "label": "render: Ada (stale)", "state": "idle" }, { "label": "render: Grace", "state": "idle" }] },
+        { "name": "Cache",     "items": [{ "label": "[\"user\",1] fresh", "state": "done" }, { "label": "mutation pending", "state": "active" }, { "label": "invalidate → stale", "state": "idle" }, { "label": "refetch (isFetching)", "state": "idle" }, { "label": "[\"user\",1] fresh", "state": "idle" }] },
+        { "name": "Server",    "items": [{ "label": "PATCH /users/1", "state": "idle" }, { "label": "GET /users/1", "state": "idle" }] }
+      ] } },
+    { "label": "PATCH in flight", "line": 2, "note": "The write goes <em>around</em> the cache. The component still shows Ada — the copy is unchanged and still fresh. (Optimistic updates, 4i, would patch the copy here.)",
+      "state": { "lanes": [
+        { "name": "Component", "items": [{ "label": "render: Ada", "state": "done" }, { "label": "click Rename", "state": "done" }, { "label": "render: Ada (stale)", "state": "idle" }, { "label": "render: Grace", "state": "idle" }] },
+        { "name": "Cache",     "items": [{ "label": "[\"user\",1] fresh", "state": "done" }, { "label": "mutation pending", "state": "active" }, { "label": "invalidate → stale", "state": "idle" }, { "label": "refetch (isFetching)", "state": "idle" }, { "label": "[\"user\",1] fresh", "state": "idle" }] },
+        { "name": "Server",    "items": [{ "label": "PATCH /users/1", "state": "active" }, { "label": "GET /users/1", "state": "idle" }] }
+      ] } },
+    { "label": "onSuccess → invalidate", "line": 3, "note": "The server confirmed the write, so the copy is now known-wrong. <code>invalidateQueries</code> marks every entry matching the key prefix <em>stale</em> — it does not delete it.",
+      "state": { "lanes": [
+        { "name": "Component", "items": [{ "label": "render: Ada", "state": "done" }, { "label": "click Rename", "state": "done" }, { "label": "render: Ada (stale)", "state": "active" }, { "label": "render: Grace", "state": "idle" }] },
+        { "name": "Cache",     "items": [{ "label": "[\"user\",1] fresh", "state": "done" }, { "label": "mutation pending", "state": "done" }, { "label": "invalidate → stale", "state": "active" }, { "label": "refetch (isFetching)", "state": "idle" }, { "label": "[\"user\",1] fresh", "state": "idle" }] },
+        { "name": "Server",    "items": [{ "label": "PATCH /users/1", "state": "done" }, { "label": "GET /users/1", "state": "idle" }] }
+      ] } },
+    { "label": "Active subscriber → refetch", "note": "Because a mounted component is subscribed to <code>[\"user\", 1]</code>, invalidation immediately triggers a background refetch. No spinner: <code>isPending</code> stays false, <code>isFetching</code> goes true, Ada stays on screen.",
+      "state": { "lanes": [
+        { "name": "Component", "items": [{ "label": "render: Ada", "state": "done" }, { "label": "click Rename", "state": "done" }, { "label": "render: Ada (stale)", "state": "active" }, { "label": "render: Grace", "state": "idle" }] },
+        { "name": "Cache",     "items": [{ "label": "[\"user\",1] fresh", "state": "done" }, { "label": "mutation pending", "state": "done" }, { "label": "invalidate → stale", "state": "done" }, { "label": "refetch (isFetching)", "state": "active" }, { "label": "[\"user\",1] fresh", "state": "idle" }] },
+        { "name": "Server",    "items": [{ "label": "PATCH /users/1", "state": "done" }, { "label": "GET /users/1", "state": "active" }] }
+      ] } },
+    { "label": "New copy swapped in", "note": "The GET resolves; the entry is replaced and is fresh again (<code>updatedAt</code> reset). Every subscriber of the key re-renders with Grace — including components that never knew about the mutation.",
+      "state": { "lanes": [
+        { "name": "Component", "items": [{ "label": "render: Ada", "state": "done" }, { "label": "click Rename", "state": "done" }, { "label": "render: Ada (stale)", "state": "done" }, { "label": "render: Grace", "state": "active" }] },
+        { "name": "Cache",     "items": [{ "label": "[\"user\",1] fresh", "state": "done" }, { "label": "mutation pending", "state": "done" }, { "label": "invalidate → stale", "state": "done" }, { "label": "refetch (isFetching)", "state": "done" }, { "label": "[\"user\",1] fresh", "state": "active" }] },
+        { "name": "Server",    "items": [{ "label": "PATCH /users/1", "state": "done" }, { "label": "GET /users/1", "state": "done" }] }
+      ] } },
+    { "label": "Idle again", "note": "Two round trips per write (PATCH, then GET) is the price of never hand-merging server responses into local state. If the PATCH returns the full row, <code>qc.setQueryData(key, row)</code> skips the GET.",
+      "state": { "lanes": [
+        { "name": "Component", "items": [{ "label": "render: Ada", "state": "done" }, { "label": "click Rename", "state": "done" }, { "label": "render: Ada (stale)", "state": "done" }, { "label": "render: Grace", "state": "done" }] },
+        { "name": "Cache",     "items": [{ "label": "[\"user\",1] fresh", "state": "done" }, { "label": "mutation pending", "state": "done" }, { "label": "invalidate → stale", "state": "done" }, { "label": "refetch (isFetching)", "state": "done" }, { "label": "[\"user\",1] fresh", "state": "done" }] },
+        { "name": "Server",    "items": [{ "label": "PATCH /users/1", "state": "done" }, { "label": "GET /users/1", "state": "done" }] }
+      ] } }
+  ]
+}</script>
+</section>
+
+<section class="block" data-block="exercise" id="4g-15" data-kind="fix" data-lang="jsx">
+<div class="tag">Exercise</div>
+<p>The hand-rolled version of the bug a query cache prevents. <code>Profile</code> fetches on every <code>id</code> change — but user 1 is slow and user 2 is fast, so switching from 1 to 2 quickly ends with <strong>user-1</strong> on screen: the older request lands last and wins. Fix the effect so a response for an <code>id</code> that is no longer current is ignored. The tests click <em>switch to 2</em> immediately after mount and check the heading 100 ms later.</p>
+<pre><code class="language-jsx">// fake API: user 1 is slow, user 2 is fast (leave as is)
+import { useState, useEffect } from "react";
+import { createRoot } from "react-dom/client";
+const DELAY = { 1: 60, 2: 5 };
+function fetchUser(id) {
+  return new Promise(r =&gt; setTimeout(() =&gt; r({ id, name: "user-" + id }), DELAY[id]));
+}
+
+// --- fix this
+function Profile({ id }) {
+  const [user, setUser] = useState(null);
+  useEffect(() =&gt; {
+    fetchUser(id).then(setUser);
+  }, [id]);
+  return &lt;h2 id="name"&gt;{user ? user.name : "loading…"}&lt;/h2&gt;;
+}
+
+function App() {
+  const [id, setId] = useState(1);
+  return (
+    &lt;div&gt;
+      &lt;button id="switch" onClick={() =&gt; setId(2)}&gt;switch to 2&lt;/button&gt;
+      &lt;Profile id={id} /&gt;
+    &lt;/div&gt;
+  );
+}
+createRoot(document.getElementById("root")).render(&lt;App /&gt;);</code></pre>
+<script type="application/json">{
+  "tests": "const tick = (ms) => new Promise(r => setTimeout(r, ms));\ntest(\"renders loading, then the user\", async () => { await tick(10); assert.equal(document.getElementById(\"name\").textContent, \"loading…\"); });\ntest(\"switching 1 → 2 quickly ends on user-2\", async () => { document.getElementById(\"switch\").click(); await tick(100); assert.equal(document.getElementById(\"name\").textContent, \"user-2\"); });",
+  "hints": [
+    "An effect can return a cleanup; React runs it before re-running the effect for the new <code>id</code>. That is your \"this request is obsolete\" signal.",
+    "Close over a flag: <code>let ignore = false; … .then(u => { if (!ignore) setUser(u); }); return () => { ignore = true; };</code>",
+    "The production version passes an <code>AbortController</code> signal into <code>fetch</code> and calls <code>abort()</code> in the cleanup — same shape, and it also frees the connection."
+  ],
+  "solution": "// fake API: user 1 is slow, user 2 is fast (leave as is)\nimport { useState, useEffect } from \"react\";\nimport { createRoot } from \"react-dom/client\";\nconst DELAY = { 1: 60, 2: 5 };\nfunction fetchUser(id) {\n  return new Promise(r => setTimeout(() => r({ id, name: \"user-\" + id }), DELAY[id]));\n}\n\nfunction Profile({ id }) {\n  const [user, setUser] = useState(null);\n  useEffect(() => {\n    let ignore = false;\n    fetchUser(id).then(u => { if (!ignore) setUser(u); });\n    return () => { ignore = true; };\n  }, [id]);\n  return <h2 id=\"name\">{user ? user.name : \"loading…\"}</h2>;\n}\n\nfunction App() {\n  const [id, setId] = useState(1);\n  return (\n    <div>\n      <button id=\"switch\" onClick={() => setId(2)}>switch to 2</button>\n      <Profile id={id} />\n    </div>\n  );\n}\ncreateRoot(document.getElementById(\"root\")).render(<App />);",
+  "explain": "Each effect run owns one request. The cleanup flips a flag that only <em>that</em> run's <code>.then</code> can see, so a late response from a previous <code>id</code> is dropped. A query cache does this for free: the component subscribes to <code>[\"user\", 2]</code>, and whatever lands for <code>[\"user\", 1]</code> goes into a different slot. (The starter also leaves <code>user-1</code> visible while loading user 2 — a cache would do the same on purpose, keyed per id, and <code>placeholderData</code> controls it.)"
+}</script>
+</section>
+
+<section class="block" data-block="exercise" id="4g-16" data-kind="complete" data-lang="js">
+<div class="tag">Exercise</div>
+<p>Implement <code>createCache({ staleTime })</code> — the storage half of a query client, no React. Contract: <code>get(key, fn)</code> returns the cached data if the entry is younger than <code>staleTime</code> (by <code>clock.now</code>), otherwise awaits <code>fn()</code>, stores <code>{ data, at: clock.now }</code> and returns the data. Keys are <em>structural</em>: <code>["user", 1]</code> and a second <code>["user", 1]</code> array are the same key (hash with <code>JSON.stringify</code>). <code>invalidate(key)</code> makes the next <code>get</code> refetch regardless of age. If <code>fn</code> rejects, <code>get</code> rejects and nothing is stored, so the next call retries. The tests count calls to <code>fn</code>.</p>
+<pre><code class="language-javascript">const clock = { now: 0 };   // tests advance this instead of waiting
+
+function createCache({ staleTime }) {
+  const entries = new Map();            // hashed key → { data, at }
+  const hash = (key) =&gt; JSON.stringify(key);
+  return {
+    async get(key, fn) {
+      // TODO
+    },
+    invalidate(key) {
+      // TODO
+    },
+    size: () =&gt; entries.size,
+  };
+}</code></pre>
+<script type="application/json">{
+  "tests": "function counter(v) { const f = async () => { f.calls++; if (v instanceof Error) throw v; return v; }; f.calls = 0; return f; }\ntest(\"miss calls fn and stores\", async () => { const c = createCache({ staleTime: 60 }); const fn = counter(\"ada\"); assert.equal(await c.get([\"user\", 1], fn), \"ada\"); assert.equal(fn.calls, 1); assert.equal(c.size(), 1); });\ntest(\"fresh hit does not call fn; structural keys\", async () => { const c = createCache({ staleTime: 60 }); const fn = counter(\"ada\"); await c.get([\"user\", 1], fn); clock.now = 30; assert.equal(await c.get([\"user\", 1], fn), \"ada\"); assert.equal(fn.calls, 1, \"second array with same contents must hit\"); clock.now = 0; });\ntest(\"stale after staleTime → refetch, entry replaced\", async () => { const c = createCache({ staleTime: 60 }); const fn = counter(\"ada\"); await c.get(\"k\", fn); clock.now = 60; await c.get(\"k\", fn); assert.equal(fn.calls, 2); assert.equal(c.size(), 1); clock.now = 61; await c.get(\"k\", fn); assert.equal(fn.calls, 2, \"refetched entry is fresh again\"); clock.now = 0; });\ntest(\"invalidate forces a refetch of a fresh entry\", async () => { const c = createCache({ staleTime: 60 }); const fn = counter(\"ada\"); await c.get([\"user\", 1], fn); c.invalidate([\"user\", 1]); await c.get([\"user\", 1], fn); assert.equal(fn.calls, 2); });\ntest(\"different keys are independent\", async () => { const c = createCache({ staleTime: 60 }); const a = counter(\"a\"), b = counter(\"b\"); await c.get([\"user\", 1], a); assert.equal(await c.get([\"user\", 2], b), \"b\"); assert.equal(c.size(), 2); });\ntest(\"a failed fetch stores nothing and retries next time\", async () => { const c = createCache({ staleTime: 60 }); const bad = counter(new Error(\"503\")); await assert.rejects(() => c.get(\"k\", bad)); assert.equal(c.size(), 0); await assert.rejects(() => c.get(\"k\", bad)); assert.equal(bad.calls, 2); });",
+  "hints": [
+    "<code>const h = hash(key); const hit = entries.get(h);</code> — fresh means <code>hit && clock.now - hit.at < staleTime</code>.",
+    "For <code>invalidate</code>, the simplest correct move is <code>entries.delete(hash(key))</code>. (TanStack Query instead keeps the data and flags it stale so it can still be rendered while refetching — a one-field extension: set <code>hit.at = -Infinity</code>.)",
+    "Let the rejection propagate: <code>const data = await fn();</code> throws before <code>entries.set</code> runs, so nothing is stored."
+  ],
+  "solution": "const clock = { now: 0 };   // tests advance this instead of waiting\n\nfunction createCache({ staleTime }) {\n  const entries = new Map();            // hashed key → { data, at }\n  const hash = (key) => JSON.stringify(key);\n  return {\n    async get(key, fn) {\n      const h = hash(key);\n      const hit = entries.get(h);\n      if (hit && clock.now - hit.at < staleTime) return hit.data;\n      const data = await fn();\n      entries.set(h, { data, at: clock.now });\n      return data;\n    },\n    invalidate(key) {\n      const hit = entries.get(hash(key));\n      if (hit) hit.at = -Infinity;      // keep the copy, but it is stale now\n    },\n    size: () => entries.size,\n  };\n}",
+  "explain": "Three ideas carry the whole library: a structural key (<code>JSON.stringify</code> here; TanStack hashes with stable key ordering), one age check against <code>staleTime</code>, and invalidation as \"set the age to infinite\" rather than delete — so the stale copy can still be rendered during the refetch. Missing here, and present in the real thing: in-flight dedupe (two <code>get</code>s before the first resolves make two requests), retries, and <code>gcTime</code>."
+}</script>
+</section>
+
+<section class="block" data-block="concept" id="4g-02">
+<h2>TanStack Query's role in a Next.js app</h2>
+<p>Server Components handle initial data fetching — no Query needed there, and no <code>isPending</code> state: the page arrives rendered. Query's role shifts to:</p>
+<ul>
+  <li>Client-side data that changes after page load (polling, WebSocket-driven refetches, infinite scroll)</li>
+  <li>Mutation management: optimistic updates, cache invalidation after writes, <code>isPending</code> for buttons</li>
+  <li>Data that is genuinely per-session and client-only (a preferences endpoint, a draft autosave)</li>
+</ul>
+<p>The classic <code>useQuery</code> fetch-on-mount pattern is largely replaced by RSC initial loads, or by Server Actions + <code>revalidatePath</code> for the write half (5e). Query stays relevant when the client needs its own long-lived cache with fine-grained invalidation; the hydration recipe (<code>HydrationBoundary</code> + <code>dehydrate</code>) lets a Server Component prefetch into that cache so the first client render has data.</p>
+</section>
+
+<section class="block" data-block="concept" id="4g-03">
+<h2>Suspense mode</h2>
+<p>TanStack Query v5 ships <code>useSuspenseQuery</code>. It integrates with React <code>&lt;Suspense&gt;</code> — while data is loading the component suspends, the nearest <code>Suspense</code> boundary shows its fallback, and the component renders only once data is available. <code>data</code> is typed non-nullable; no <code>isPending</code> guard. Errors go to the nearest error boundary instead of an <code>error</code> field.</p>
+<pre><code class="language-jsx">// No isPending check — the component only renders when data is ready
+function UserCard({ id }) {
+  const { data } = useSuspenseQuery({
+    queryKey: ["user", id],
+    queryFn: () =&gt; fetch(`/api/users/${id}`).then(r =&gt; r.json()),
+  });
+  return &lt;h2&gt;{data.name}&lt;/h2&gt;;
+}
+
+// Wrap in Suspense at the call site
+&lt;Suspense fallback={&lt;Skeleton /&gt;}&gt;
+  &lt;UserCard id={42} /&gt;
+&lt;/Suspense&gt;</code></pre>
+
+<div class="callout warn">
+  <div class="tag">Waterfalls</div>
+  <p>Two <code>useSuspenseQuery</code> calls in one component run <em>sequentially</em>: the first suspends the render before the second is reached. Use <code>useSuspenseQueries</code> for parallel fetches, or split into sibling components under one boundary.</p>
+</div>
+</section>
+
+<section class="block" data-block="concept" id="4g-04">
+<h2>SWR — the lightweight alternative</h2>
+<p><strong>SWR</strong> (from Vercel) is a simpler alternative to TanStack Query. Same stale-while-revalidate semantics, smaller API surface: a key, a fetcher, and <code>mutate</code> for invalidation. Good pick for projects that only need basic caching and don't need the full Query feature set (infinite queries, mutation lifecycle, devtools, per-query retry policy).</p>
+<pre><code class="language-jsx">import useSWR from "swr";
+const { data, error, isLoading } = useSWR("/api/user", url =&gt; fetch(url).then(r =&gt; r.json()));</code></pre>
+</section>
+
+<section class="block" data-block="review" id="4g-10">
+<div class="tag">Code review</div>
+<ul>
+  <li><strong>Server data in <code>useState</code> + <code>useEffect</code>.</strong> No dedupe, no cancel on id change (the race in 4g-15), no retry, no invalidation after writes — each one arrives later as a bug ticket. Reach for the query cache or a Server Component.</li>
+  <li><strong>Parameter missing from <code>queryKey</code>.</strong> <code>queryKey: ["orders"]</code> with <code>queryFn: () =&gt; fetchOrders(status)</code> means every status shares one slot: switching filters shows the previous filter's rows. Every input to <code>queryFn</code> goes in the key; <code>@tanstack/eslint-plugin-query</code>'s <code>exhaustive-deps</code> flags it.</li>
+  <li><strong>Default <code>staleTime: 0</code> left in place on a read-heavy page.</strong> Every mount and tab focus refetches. Set a global default in <code>QueryClient</code> (e.g. 30 s) and lower it per query where freshness matters.</li>
+  <li><strong>Mutation without invalidation.</strong> A <code>useMutation</code> whose <code>onSuccess</code> doesn't invalidate (or <code>setQueryData</code>) the affected keys leaves every other subscriber showing stale rows until a focus event happens to refetch.</li>
+  <li><strong>Over-broad invalidation.</strong> <code>invalidateQueries()</code> with no key after every write refetches the whole screen. Invalidate the prefix that changed: <code>["orders"]</code> matches <code>["orders", { page: 2 }]</code>.</li>
+  <li><strong>Retrying a 4xx or a mutation.</strong> The default retry (3×, backoff) is for flaky reads. A 400/401/404 won't get better, and retrying a POST can duplicate the write — set <code>retry: false</code> there, or a <code>retry</code> function that checks the status.</li>
+  <li><strong>Query in a Client Component that a Server Component could have rendered.</strong> If the data is needed on first paint and doesn't change client-side, fetch it in the Server Component and pass it down; keep Query for data that moves after load.</li>
+</ul>
+</section>
+
+<section class="block" data-block="exercise" id="4g-17" data-kind="mcq">
+<div class="tag">Check</div>
+<p>An order list uses <code>useQuery({ queryKey: ["orders"], queryFn: fetchOrders })</code> with library defaults. Support reports: "every time I switch tabs and come back, or open the page from the sidebar, there's a network request even though nothing changed." The data changes a few times a day. What is the correct fix?</p>
+<script type="application/json">{
+  "options": [
+    "Raise <code>gcTime</code> — the entry is being garbage-collected between visits, so the next mount is a cold miss.",
+    "Set <code>staleTime</code> (e.g. <code>5 * 60_000</code>) — with the default <code>staleTime: 0</code> the copy is stale the instant it arrives, so every mount and focus trigger refetches.",
+    "Move the data into <code>useState</code> at the top of the app and pass it down, so it is fetched once per session.",
+    "Change the key to a string (<code>\"orders\"</code>) — array keys are re-hashed on every render, which invalidates the entry."
+  ],
+  "answer": 1,
+  "explain": "Refetch-on-mount and refetch-on-focus only fire for <em>stale</em> entries; with <code>staleTime: 0</code> that is always. <code>gcTime</code> controls how long an <em>unused</em> entry survives, not whether a used one refetches — the mount would still refetch after raising it. <code>useState</code> at the top recreates the anti-pattern (no invalidation after writes, no refetch ever). Array keys are hashed structurally; the key's form is irrelevant."
+}</script>
+</section>
+
+<section class="block" data-block="recall" id="4g-19">
+<div class="tag">Recall</div>
+<dl>
+  <dt>What distinguishes server state from client state, and why does each need a different tool?</dt>
+  <dd>Server state is a <em>copy</em> of data owned elsewhere (DB/API): it goes stale, needs dedupe, retry, refetch and invalidation — a cache (TanStack Query / SWR / RSC). Client state is owned by the UI (modal open, draft, selected tab): no staleness, just placement in the tree — <code>useState</code>, context, a store.</dd>
+
+  <dt><code>staleTime</code> vs <code>gcTime</code> in TanStack Query v5?</dt>
+  <dd><code>staleTime</code>: how long after a fetch the copy is <em>fresh</em> — fresh entries are served with no request (default 0). <code>gcTime</code>: how long an entry with <em>no subscribers</em> is kept before deletion (default 5 min). Only <code>staleTime</code> affects whether a mount or focus refetches.</dd>
+
+  <dt>Which events trigger a refetch of a stale query?</dt>
+  <dd>A component mounting with that key, the window regaining focus, the network reconnecting, a <code>refetchInterval</code> tick, and <code>invalidateQueries</code>. Fresh entries ignore all but the interval and explicit invalidation.</dd>
+
+  <dt>What does this print?
+<pre><code class="language-javascript">let now = 0; const cache = new Map();
+async function query(key, fn, { staleTime }) {
+  const hit = cache.get(key);
+  if (hit &amp;&amp; now - hit.at &lt; staleTime) { console.log("fresh"); return hit.data; }
+  console.log(hit ? "stale" : "miss");
+  const data = await fn(); cache.set(key, { data, at: now }); return data;
+}
+await query("u", async () =&gt; 1, { staleTime: 60 });
+now = 59; await query("u", async () =&gt; 1, { staleTime: 60 });
+now = 60; await query("u", async () =&gt; 1, { staleTime: 60 });</code></pre></dt>
+  <dd><code>miss</code>, <code>fresh</code>, <code>stale</code>. At 59 the age is under 60 → fresh; at exactly 60 the <code>&lt;</code> check fails → stale, refetch.</dd>
+
+  <dt>What happens in the cache when a mutation's <code>onSuccess</code> calls <code>invalidateQueries({ queryKey: ["user", 1] })</code>?</dt>
+  <dd>Matching entries are marked stale (not deleted). Entries with active subscribers refetch immediately in the background; the old copy stays rendered (<code>isFetching</code> true, <code>isPending</code> false) until the new data swaps in.</dd>
+
+  <dt>Why must every argument of <code>queryFn</code> appear in <code>queryKey</code>?</dt>
+  <dd>The key is the cache slot. <code>["orders"]</code> with <code>fetchOrders(status)</code> gives all statuses one slot, so changing the filter shows the previous filter's data until a refetch. Keys are hashed structurally, so <code>["orders", { status }]</code> is correct and object field order doesn't matter.</dd>
+
+  <dt>What is the race condition in <code>useEffect(() =&gt; { fetchUser(id).then(setUser); }, [id])</code> and the minimal fix?</dt>
+  <dd>If <code>id</code> changes before the first response lands, the slower (older) response can arrive last and overwrite the newer one. Fix: an <code>ignore</code> flag flipped in the effect cleanup (or an <code>AbortController</code> aborted in cleanup), so a stale response is dropped.</dd>
+
+  <dt>In a Next.js App Router app, what is TanStack Query still for?</dt>
+  <dd>Not initial loads — Server Components do those. It handles data that changes after load (polling, infinite scroll, sockets), mutation lifecycle with invalidation/optimistic updates, and client-only session data. <code>HydrationBoundary</code> lets a Server Component prefetch into the client cache.</dd>
+</dl>
+</section>
+</article>
+<script type="module" src="/assets/runtime/boot.js"></script>
+</body>
+</html>

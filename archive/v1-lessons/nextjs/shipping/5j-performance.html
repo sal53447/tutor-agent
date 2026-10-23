@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>5j. Next.js performance · JS Curriculum</title>
+<link rel="icon" href="/assets/favicon.svg">
+<link rel="stylesheet" href="/assets/vendor/prism.css">
+<link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body data-lesson="5j" data-level="migrated">
+<article class="lesson">
+
+<header>
+  <h1>Performance — Core Web Vitals, Images, Fonts</h1>
+</header>
+
+<section class="block" data-block="concept" id="5j-01">
+<h2>The vitals that matter (2026)</h2>
+<ul>
+  <li><strong>LCP</strong> (Largest Contentful Paint) &lt; 2.5s — the hero image or text.</li>
+  <li><strong>INP</strong> (Interaction to Next Paint) &lt; 200ms — responsiveness to clicks / keystrokes. Replaced FID.</li>
+  <li><strong>CLS</strong> (Cumulative Layout Shift) &lt; 0.1 — don't move things while the user is reading.</li>
+</ul>
+</section>
+
+<section class="block" data-block="concept" id="5j-02">
+<h2>The built-in levers</h2>
+<ul>
+  <li><code>next/image</code> — serves modern formats (AVIF/WebP), lazy-loads, enforces width/height (no CLS). Add <code>priority</code> to the above-the-fold image to preload it as an LCP candidate.</li>
+  <li><code>next/font</code> — self-hosts Google fonts at build; no render-blocking network request.</li>
+  <li>Server components — ship less JS. RSC payload is smaller than component JS + data.</li>
+  <li>Streaming + Suspense — show shell fast, stream in expensive parts.</li>
+  <li><code>loading.tsx</code> — instant feedback during navigation.</li>
+</ul>
+
+<pre><code class="language-jsx">// Preload the hero image — tells the browser this is the LCP element
+import Image from "next/image";
+
+export function Hero() {
+  return (
+    &lt;Image
+      src="/hero.jpg"
+      alt="Hero"
+      width={1200}
+      height={600}
+      priority          // preloads; skip lazy-load for above-the-fold images
+    /&gt;
+  );
+}</code></pre>
+</section>
+
+<section class="block" data-block="concept" id="5j-03">
+<h2>Lazy-loading client components — <code>next/dynamic</code></h2>
+<p>Large client components (rich text editors, chart libraries, map widgets) should be code-split and loaded only when needed. <code>next/dynamic</code> is <code>React.lazy</code> with SSR control built in.</p>
+
+<pre><code class="language-jsx">import dynamic from "next/dynamic";
+
+// Code-split: only loads when rendered. SSR disabled for browser-only libs.
+const RichEditor = dynamic(() =&gt; import("@/components/rich-editor"), {
+  ssr: false,
+  loading: () =&gt; &lt;p&gt;Loading editor…&lt;/p&gt;,
+});
+
+// Use it like any component — JS loads on demand
+export function PostEditor() {
+  return &lt;RichEditor /&gt;;
+}</code></pre>
+</section>
+
+<section class="block" data-block="concept" id="5j-04">
+<h2>Third-party scripts — <code>next/script</code></h2>
+<p>Plain <code>&lt;script&gt;</code> tags in layouts block rendering. <code>next/script</code> gives you loading strategies:</p>
+
+<pre><code class="language-jsx">import Script from "next/script";
+
+// afterInteractive (default): loads after page is interactive. Good for analytics.
+&lt;Script src="https://analytics.example.com/script.js" strategy="afterInteractive" /&gt;
+
+// lazyOnload: loads during browser idle time. Good for chat widgets, low-priority widgets.
+&lt;Script src="https://widget.example.com/chat.js" strategy="lazyOnload" /&gt;
+
+// beforeInteractive: loads before hydration (rare — use for polyfills only).
+&lt;Script src="/polyfill.js" strategy="beforeInteractive" /&gt;</code></pre>
+</section>
+
+<section class="block" data-block="concept" id="5j-05">
+<h2>Bundle analysis</h2>
+<p>Find what's inflating your client bundle before it becomes a problem.</p>
+
+<pre><code class="language-bash">npm install --save-dev @next/bundle-analyzer</code></pre>
+
+<pre><code class="language-javascript">// next.config.js
+const withBundleAnalyzer = require("@next/bundle-analyzer")({
+  enabled: process.env.ANALYZE === "true",
+});
+module.exports = withBundleAnalyzer({});
+
+// Then:
+// ANALYZE=true next build  — opens interactive treemap in browser</code></pre>
+
+<div class="callout good">
+  <div class="tag">The biggest single win</div>
+  <p>Move client-fetched data to server components. Every <code>useEffect(() =&gt; fetch(...))</code> you remove is one round-trip and one JS bundle the user doesn't wait for. This is why RSC exists.</p>
+</div>
+</section>
+</article>
+<script type="module" src="/assets/runtime/boot.js"></script>
+</body>
+</html>

@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>3g. Observability · JS Curriculum</title>
+<link rel="icon" href="/assets/favicon.svg">
+<link rel="stylesheet" href="/assets/vendor/prism.css">
+<link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body data-lesson="3g" data-level="interactive">
+<article class="lesson">
+
+<header>
+  <h1>Observability — Logs, Metrics, Traces</h1>
+</header>
+
+<section class="block" data-block="concept" id="3g-06">
+<p>A service you can't see into is a service you debug by redeploying. Three signals cover it: <strong>logs</strong> (what happened, one JSON event per line), <strong>metrics</strong> (how often / how slow, aggregated), <strong>traces</strong> (one request's path across services). All three hang off the same thread: a <strong>request id</strong> minted at the edge and carried into every log line, span and downstream call. 3h tests the logger as a dependency; 3i's health probes and graceful shutdown assume the structure built here.</p>
+</section>
+
+<section class="block" data-block="concept" id="3g-01">
+<h2>Structured logging with pino</h2>
+<pre><code class="language-typescript">import pino from "pino";
+const log = pino({ level: process.env.LOG_LEVEL ?? "info" });
+
+log.info({ userId, orderId }, "order created");
+log.error({ err }, "failed to charge card");
+// {"level":30,"time":1712345678901,"pid":4242,"userId":"u1","orderId":"o9","msg":"order created"}</code></pre>
+<p>Fields first, message second — the fields are what you query on. One JSON object per line, ingested as-is by Datadog, Grafana Loki, CloudWatch. <code>level</code> is numeric (<code>30</code> = info, <code>40</code> = warn, <code>50</code> = error); anything below the configured level is a no-op, so a <code>log.debug</code> in a hot path costs one comparison in production.</p>
+<p>A <strong>child logger</strong> carries bound fields into every line written through it. That is how a request id reaches a log call four functions deep without being threaded as a parameter:</p>
+<pre><code class="language-typescript">const reqLog = log.child({ requestId: req.id });
+reqLog.info("lookup");                        // {"requestId":"…","msg":"lookup"}
+reqLog.child({ table: "orders" }).warn("slow"); // {"requestId":"…","table":"orders","msg":"slow"}</code></pre>
+
+<div class="callout warn">
+  <div class="tag">Errors need a serializer</div>
+  <p><code>JSON.stringify(err)</code> is <code>{}</code> — <code>message</code> and <code>stack</code> are non-enumerable (1g). pino's <code>err</code> key runs an error serializer that emits <code>type</code>, <code>message</code>, <code>stack</code>; log under any other key and you get an empty object. <code>console.log</code> in server code has none of this: no level, no structure, no correlation, and it writes synchronously to stdout.</p>
+</div>
+</section>
+
+<section class="block" data-block="bridge" id="3g-07">
+<div class="tag">Python bridge</div>
+<p>pino ≈ <strong>structlog</strong>, or stdlib <code>logging</code> with a JSON formatter. <code>log.child({ requestId })</code> ≈ <code>logger.bind(request_id=…)</code>: both return a new logger that carries the fields. The difference is in how context travels. Python gets the request id into deep calls with <code>contextvars</code> (structlog's <code>contextvars.bind_contextvars</code>); Node's equivalent is <code>AsyncLocalStorage</code> from <code>node:async_hooks</code> — a store that follows the async call chain across <code>await</code>s, which pino-http and OpenTelemetry both use under the hood. <code>logging.getLogger(__name__)</code>'s module hierarchy has no pino counterpart; use a bound <code>module</code> field instead.</p>
+</section>
+
+<section class="block" data-block="playground" id="3g-08" data-lang="js" data-mode="worker">
+<div class="tag">Try it</div>
+<p>A 15-line structured logger with the shape pino has: levels, a sink, children that inherit bound fields. Try: set <code>level: "warn"</code> and see <code>info</code> lines disappear; bind a child of a child; log an <code>Error</code> under <code>err</code> and see what survives <code>JSON.stringify</code> with and without the serializer.</p>
+<pre><code class="language-javascript">const LEVELS = { debug: 20, info: 30, warn: 40, error: 50 };
+
+function createLogger(sink, { level = "info", base = {} } = {}) {
+  const write = (lvl) =&gt; (fields, msg) =&gt; {
+    if (LEVELS[lvl] &lt; LEVELS[level]) return;
+    if (typeof fields === "string") { msg = fields; fields = {}; }
+    if (fields.err instanceof Error) fields = { ...fields, err: { type: fields.err.name, message: fields.err.message } };
+    sink.push({ level: LEVELS[lvl], ...base, ...fields, msg });
+  };
+  return {
+    debug: write("debug"), info: write("info"), warn: write("warn"), error: write("error"),
+    child: (bindings) =&gt; createLogger(sink, { level, base: { ...base, ...bindings } }),
+  };
+}
+
+const lines = [];
+const log = createLogger(lines, { level: "info", base: { service: "orders" } });
+log.debug("not emitted");
+log.info({ orderId: "o9" }, "order created");
+
+const reqLog = log.child({ requestId: "req-1" });
+reqLog.warn({ ms: 812 }, "slow query");
+reqLog.error({ err: new Error("card declined") }, "charge failed");
+
+for (const l of lines) console.log(JSON.stringify(l));</code></pre>
+<output>{"level":30,"service":"orders","orderId":"o9","msg":"order created"}
+{"level":40,"service":"orders","requestId":"req-1","ms":812,"msg":"slow query"}
+{"level":50,"service":"orders","requestId":"req-1","err":{"type":"Error","message":"card declined"},"msg":"charge failed"}</output>
+</section>
+
+<section class="block" data-block="concept" id="3g-03">
+<h2>Request IDs and correlation</h2>
+<p>Mint one id per request at the first middleware, reuse an incoming <code>X-Request-Id</code> if a trusted proxy already set one, echo it on the response so the client can quote it, and bind it to a child logger. Every line that request writes — handler, service, repository — now shares one field, and one grep gives the whole trail.</p>
+<pre><code class="language-typescript">import { randomUUID } from "node:crypto";
+
+export function requestId(req: Request, res: Response, next: NextFunction) {
+  req.id = req.get("x-request-id") ?? randomUUID();
+  res.set("x-request-id", req.id);
+  req.log = log.child({ requestId: req.id });   // everything downstream uses req.log
+  next();
+}
+app.use(requestId);                             // first — before pino-http, routes, everything</code></pre>
+<p>Propagate it outward too: set <code>x-request-id</code> on every outbound <code>fetch</code> to a sibling service, and pass it as a comment or app-name on the DB connection if the driver supports it. That is the manual version of what a tracer does automatically with a <code>traceparent</code> header.</p>
+
+<div class="callout warn">
+  <div class="tag">Trust</div>
+  <p>Honouring the incoming header means any client can choose its own id. Harmless for correlation (ids only need to be unique-ish), but validate the shape (<code>/^[\w-]{8,64}$/</code>) before logging it — log injection via a header that contains newlines is the classic attack on plain-text log pipelines.</p>
+</div>
+</section>
+
+<section class="block" data-block="stepper" id="3g-09" data-kind="timeline">
+<div class="tag">Step through</div>
+<script type="application/json">{
+  "code": "app.use(requestId);\napp.use(requestLogger);\napp.get(\"/orders/:id\", async (req, res) => {\n  const order = await db.find(req.params.id, { log: req.log });\n  res.json(order);\n});",
+  "steps": [
+    { "label": "Request arrives", "line": 1, "note": "<code>GET /orders/42</code> with no <code>X-Request-Id</code>. Nothing has been logged yet; nothing can be correlated yet.",
+      "state": { "lanes": [
+        { "name": "Client", "items": [{ "label": "GET /orders/42", "state": "active" }, { "label": "200 + x-request-id", "state": "idle" }] },
+        { "name": "API", "items": [{ "label": "requestId: mint", "state": "idle" }, { "label": "req.log = child", "state": "idle" }, { "label": "handler", "state": "idle" }, { "label": "res.json", "state": "idle" }] },
+        { "name": "DB", "items": [{ "label": "SELECT … WHERE id=42", "state": "idle" }] },
+        { "name": "Log", "items": [{ "label": "request start", "state": "idle" }, { "label": "db query 12ms", "state": "idle" }, { "label": "request done 200", "state": "idle" }] }
+      ] } },
+    { "label": "requestId mints an id", "line": 1, "note": "First middleware. No incoming header, so <code>randomUUID()</code>; the id is also set on the response <em>now</em>, so it is present even if the handler later throws.",
+      "state": { "lanes": [
+        { "name": "Client", "items": [{ "label": "GET /orders/42", "state": "done" }, { "label": "200 + x-request-id", "state": "idle" }] },
+        { "name": "API", "items": [{ "label": "requestId: mint", "state": "active" }, { "label": "req.log = child", "state": "idle" }, { "label": "handler", "state": "idle" }, { "label": "res.json", "state": "idle" }] },
+        { "name": "DB", "items": [{ "label": "SELECT … WHERE id=42", "state": "idle" }] },
+        { "name": "Log", "items": [{ "label": "request start", "state": "idle" }, { "label": "db query 12ms", "state": "idle" }, { "label": "request done 200", "state": "idle" }] }
+      ] } },
+    { "label": "Child logger bound", "line": 1, "note": "<code>log.child({ requestId })</code> — a new logger object that prefixes the field on every line. It travels on <code>req</code>, not as a parameter.",
+      "state": { "lanes": [
+        { "name": "Client", "items": [{ "label": "GET /orders/42", "state": "done" }, { "label": "200 + x-request-id", "state": "idle" }] },
+        { "name": "API", "items": [{ "label": "requestId: mint", "state": "done" }, { "label": "req.log = child", "state": "active" }, { "label": "handler", "state": "idle" }, { "label": "res.json", "state": "idle" }] },
+        { "name": "DB", "items": [{ "label": "SELECT … WHERE id=42", "state": "idle" }] },
+        { "name": "Log", "items": [{ "label": "request start", "state": "idle" }, { "label": "db query 12ms", "state": "idle" }, { "label": "request done 200", "state": "idle" }] }
+      ] } },
+    { "label": "requestLogger: start line", "line": 2, "note": "Second middleware writes <code>{requestId, method, url, msg:\"request start\"}</code> through <code>req.log</code> and registers a <code>finish</code> listener. Mount order is why the id is already there.",
+      "state": { "lanes": [
+        { "name": "Client", "items": [{ "label": "GET /orders/42", "state": "done" }, { "label": "200 + x-request-id", "state": "idle" }] },
+        { "name": "API", "items": [{ "label": "requestId: mint", "state": "done" }, { "label": "req.log = child", "state": "done" }, { "label": "handler", "state": "idle" }, { "label": "res.json", "state": "idle" }] },
+        { "name": "DB", "items": [{ "label": "SELECT … WHERE id=42", "state": "idle" }] },
+        { "name": "Log", "items": [{ "label": "request start", "state": "active" }, { "label": "db query 12ms", "state": "idle" }, { "label": "request done 200", "state": "idle" }] }
+      ] } },
+    { "label": "Handler calls the DB", "line": 4, "note": "The repository gets <code>req.log</code> (or reads it from <code>AsyncLocalStorage</code>). The handler is suspended on <code>await</code>; the event loop serves other requests meanwhile (1f).",
+      "state": { "lanes": [
+        { "name": "Client", "items": [{ "label": "GET /orders/42", "state": "done" }, { "label": "200 + x-request-id", "state": "idle" }] },
+        { "name": "API", "items": [{ "label": "requestId: mint", "state": "done" }, { "label": "req.log = child", "state": "done" }, { "label": "handler", "state": "active" }, { "label": "res.json", "state": "idle" }] },
+        { "name": "DB", "items": [{ "label": "SELECT … WHERE id=42", "state": "active" }] },
+        { "name": "Log", "items": [{ "label": "request start", "state": "done" }, { "label": "db query 12ms", "state": "idle" }, { "label": "request done 200", "state": "idle" }] }
+      ] } },
+    { "label": "DB line carries the id", "line": 4, "note": "The repository logs <code>{requestId, table, ms:12, msg:\"db query\"}</code>. It never saw the request; the child logger carried the field for it.",
+      "state": { "lanes": [
+        { "name": "Client", "items": [{ "label": "GET /orders/42", "state": "done" }, { "label": "200 + x-request-id", "state": "idle" }] },
+        { "name": "API", "items": [{ "label": "requestId: mint", "state": "done" }, { "label": "req.log = child", "state": "done" }, { "label": "handler", "state": "active" }, { "label": "res.json", "state": "idle" }] },
+        { "name": "DB", "items": [{ "label": "SELECT … WHERE id=42", "state": "done" }] },
+        { "name": "Log", "items": [{ "label": "request start", "state": "done" }, { "label": "db query 12ms", "state": "active" }, { "label": "request done 200", "state": "idle" }] }
+      ] } },
+    { "label": "Response sent", "line": 5, "note": "<code>res.json</code> ends the response. The <code>x-request-id</code> header set in step 2 goes out with it — the client can quote it in a bug report.",
+      "state": { "lanes": [
+        { "name": "Client", "items": [{ "label": "GET /orders/42", "state": "done" }, { "label": "200 + x-request-id", "state": "active" }] },
+        { "name": "API", "items": [{ "label": "requestId: mint", "state": "done" }, { "label": "req.log = child", "state": "done" }, { "label": "handler", "state": "done" }, { "label": "res.json", "state": "active" }] },
+        { "name": "DB", "items": [{ "label": "SELECT … WHERE id=42", "state": "done" }] },
+        { "name": "Log", "items": [{ "label": "request start", "state": "done" }, { "label": "db query 12ms", "state": "done" }, { "label": "request done 200", "state": "idle" }] }
+      ] } },
+    { "label": "finish → done line", "line": 2, "note": "The <code>finish</code> listener fires <em>after</em> the response is flushed: only now are <code>statusCode</code> and the duration known. Logging them earlier would record 200 for a request that ended in 500.",
+      "state": { "lanes": [
+        { "name": "Client", "items": [{ "label": "GET /orders/42", "state": "done" }, { "label": "200 + x-request-id", "state": "done" }] },
+        { "name": "API", "items": [{ "label": "requestId: mint", "state": "done" }, { "label": "req.log = child", "state": "done" }, { "label": "handler", "state": "done" }, { "label": "res.json", "state": "done" }] },
+        { "name": "DB", "items": [{ "label": "SELECT … WHERE id=42", "state": "done" }] },
+        { "name": "Log", "items": [{ "label": "request start", "state": "done" }, { "label": "db query 12ms", "state": "done" }, { "label": "request done 200", "state": "active" }] }
+      ] } },
+    { "label": "Three lines, one id", "note": "<code>grep requestId=… </code> returns start, the DB query and the completion — in order, with timings. That is correlation; a tracer adds parent/child spans on top of the same idea.",
+      "state": { "lanes": [
+        { "name": "Client", "items": [{ "label": "GET /orders/42", "state": "done" }, { "label": "200 + x-request-id", "state": "done" }] },
+        { "name": "API", "items": [{ "label": "requestId: mint", "state": "done" }, { "label": "req.log = child", "state": "done" }, { "label": "handler", "state": "done" }, { "label": "res.json", "state": "done" }] },
+        { "name": "DB", "items": [{ "label": "SELECT … WHERE id=42", "state": "done" }] },
+        { "name": "Log", "items": [{ "label": "request start", "state": "done" }, { "label": "db query 12ms", "state": "done" }, { "label": "request done 200", "state": "done" }] }
+      ] } }
+  ]
+}</script>
+</section>
+
+<section class="block" data-block="playground" id="3g-10" data-lang="js">
+<div class="tag">Try it</div>
+<p>The stepper as code. The sim has no <code>res.on("finish")</code>, so the request logger wraps <code>res.send</code> instead — same moment, same information. Try: send a second request with an <code>X-Request-Id</code> header; swap the two <code>app.use</code> lines and watch <code>requestId</code> vanish from the lines; make the handler throw and check what the done line records.</p>
+<pre><code class="language-javascript">const LEVELS = { info: 30, warn: 40, error: 50 };
+function createLogger(sink, base = {}) {
+  const write = (lvl) =&gt; (fields, msg) =&gt; sink.push({ level: LEVELS[lvl], ...base, ...fields, msg });
+  return { info: write("info"), warn: write("warn"), error: write("error"), child: (b) =&gt; createLogger(sink, { ...base, ...b }) };
+}
+const lines = [];
+const log = createLogger(lines, { service: "orders" });
+
+let seq = 0;
+const requestId = (req, res, next) =&gt; {
+  req.id = req.get("x-request-id") ?? `req-${++seq}`;
+  res.set("x-request-id", req.id);
+  req.log = log.child({ requestId: req.id });
+  next();
+};
+const requestLogger = (req, res, next) =&gt; {
+  req.log.info({ method: req.method, url: req.url }, "request start");
+  const send = res.send;                              // real Express: res.on("finish", …)
+  res.send = (body) =&gt; { req.log.info({ status: res.statusCode }, "request done"); return send(body); };
+  next();
+};
+
+// a "repository" that only knows the logger it was given
+const db = { async find(id, { log }) { log.info({ table: "orders", ms: 12 }, "db query"); return { id, total: 42 }; } };
+
+const app = express();
+app.use(requestId);
+app.use(requestLogger);
+app.get("/orders/:id", async (req, res) =&gt; res.json(await db.find(req.params.id, { log: req.log })));
+
+const r = await request(app, { path: "/orders/42" });
+console.log(r.status, r.headers["x-request-id"]);
+for (const l of lines) console.log(JSON.stringify(l));</code></pre>
+<output>200 req-1
+{"level":30,"service":"orders","requestId":"req-1","method":"GET","url":"/orders/42","msg":"request start"}
+{"level":30,"service":"orders","requestId":"req-1","table":"orders","ms":12,"msg":"db query"}
+{"level":30,"service":"orders","requestId":"req-1","status":200,"msg":"request done"}</output>
+</section>
+
+<section class="block" data-block="exercise" id="3g-11" data-kind="predict" data-lang="js">
+<div class="tag">Exercise</div>
+<p>Three requests pass through a request-id middleware; a probe middleware mounted <em>before</em> it records what it sees. What does this print? One value per line.</p>
+<pre><code class="language-javascript">const app = express();
+const seen = [];
+let seq = 0;
+
+app.use((req, res, next) =&gt; { seen.push(req.id ?? "-"); next(); });
+app.use((req, res, next) =&gt; {
+  req.id = req.get("x-request-id") ?? `req-${++seq}`;
+  res.set("x-request-id", req.id);
+  next();
+});
+app.get("/a", (req, res) =&gt; res.json({ id: req.id }));
+
+const r1 = await request(app, { path: "/a" });
+const r2 = await request(app, { path: "/a", headers: { "X-Request-Id": "abc" } });
+const r3 = await request(app, { path: "/a" });
+
+console.log(r1.body.id, r2.body.id, r3.body.id);
+console.log(r2.headers["x-request-id"]);
+console.log(seen);</code></pre>
+<script type="application/json">{
+  "expected": "req-1 abc req-2\nabc\n[\"-\", \"-\", \"-\"]",
+  "hints": [
+    "An incoming header is reused, so the counter only advances for requests without one.",
+    "Header names are case-insensitive — <code>req.get</code> and the response header map are lower-cased.",
+    "Middleware runs in mount order. The probe is mounted before the id exists on <code>req</code>."
+  ],
+  "explain": "Request 2 supplies its own id, so <code>seq</code> is only incremented for requests 1 and 3. The response echoes whatever was chosen. The probe runs first on every request, before <code>req.id</code> is assigned — mount order is the whole reason the request-id middleware must be <code>app.use</code>'d first."
+}</script>
+</section>
+
+<section class="block" data-block="concept" id="3g-02">
+<h2>pino-http — automatic request logging</h2>
+<pre><code class="language-typescript">import pinoHttp from "pino-http";
+
+// Mount after requestId and before routes, so every request gets one completion line
+app.use(pinoHttp({
+  logger: log,
+  genReqId: (req) =&gt; req.id,                     // reuse the id requestId minted
+  customLogLevel: (req, res, err) =&gt; {
+    if (err || res.statusCode &gt;= 500) return "error";
+    if (res.statusCode &gt;= 400) return "warn";
+    return "info";
+  },
+  redact: ["req.headers.authorization", "req.headers.cookie", "req.body.password"],
+}));
+// Each response logs: req { id, method, url }, res { statusCode }, responseTime, msg: "request completed"</code></pre>
+<p>It also sets <code>req.log</code> to a child bound with the id, so handlers write <code>req.log.info(…)</code> and the correlation is free. The completion line is written on the response's <code>finish</code> event — the only moment at which status and duration are both known.</p>
+
+<div class="callout bad">
+  <div class="tag">Don't</div>
+  <pre><code class="language-javascript">app.use((req, res, next) =&gt; {
+  log.info({ url: req.url, status: res.statusCode, headers: req.headers }, "request");
+  next();
+});</code></pre>
+  <p>Logged before the handler ran: <code>status</code> is always 200, duration is unknowable, and <code>headers</code> ships the bearer token to the log store.</p>
+</div>
+<div class="callout good">
+  <div class="tag">Do</div>
+  <pre><code class="language-javascript">app.use((req, res, next) =&gt; {
+  const start = performance.now();
+  res.on("finish", () =&gt; req.log.info({ method: req.method, url: req.url, status: res.statusCode, ms: Math.round(performance.now() - start) }, "request completed"));
+  next();
+});</code></pre>
+</div>
+</section>
+
+<section class="block" data-block="exercise" id="3g-12" data-kind="fix" data-lang="js">
+<div class="tag">Exercise</div>
+<p>This request logger has two bugs a reviewer would flag. (1) It records <code>status</code> <em>before</em> the handler runs, so every line says 200 — including the 404 and the 500. (2) It logs <code>req.headers</code> verbatim, which puts the bearer token into the log store. Make the completion line fire when the response is sent (the sim has no <code>res.on("finish")</code> — wrap <code>res.send</code>), carry the real status, and never contain the token. Tests check the last line's <code>status</code> for <code>/ok</code>, <code>/missing</code> and <code>/boom</code>, that <code>requestId</code> is still present, and that the serialized line doesn't contain <code>"secret-token"</code>.</p>
+<pre><code class="language-javascript">// --- tiny logger (leave as is)
+const lines = [];
+const log = { info: (fields, msg) =&gt; lines.push({ ...fields, msg }) };
+
+// --- fix this middleware
+const requestLogger = (req, res, next) =&gt; {
+  log.info({ requestId: req.id, method: req.method, url: req.url, status: res.statusCode, headers: req.headers }, "request completed");
+  next();
+};
+
+// --- app (leave as is)
+let seq = 0;
+const app = express();
+app.use((req, res, next) =&gt; { req.id = `req-${++seq}`; res.set("x-request-id", req.id); next(); });
+app.use(requestLogger);
+app.get("/ok", (req, res) =&gt; res.json({ ok: true }));
+app.get("/boom", () =&gt; { throw new Error("db down"); });</code></pre>
+<script type="application/json">{
+  "tests": "const last = () => lines[lines.length - 1];\ntest(\"200 for /ok\", async () => { await request(app, { path: \"/ok\", headers: { authorization: \"Bearer secret-token\" } }); assert.equal(last().status, 200); assert.equal(last().requestId, \"req-1\"); });\ntest(\"404 for an unknown route\", async () => { await request(app, { path: \"/missing\" }); assert.equal(last().status, 404); assert.equal(last().url, \"/missing\"); });\ntest(\"500 when the handler throws\", async () => { await request(app, { path: \"/boom\" }); assert.equal(last().status, 500); });\ntest(\"no token in the log\", async () => { await request(app, { path: \"/ok\", headers: { authorization: \"Bearer secret-token\" } }); assert(!JSON.stringify(lines).includes(\"secret-token\"), \"authorization header leaked into the log\"); });\ntest(\"one line per request\", async () => { const n = lines.length; await request(app, { path: \"/ok\" }); assert.equal(lines.length, n + 1); });",
+  "hints": [
+    "The status is only known once the handler (or the 404/500 fallback) has called <code>res.send</code>/<code>res.json</code>. Hook that moment.",
+    "<code>const send = res.send; res.send = (body) =&gt; { /* log here, read res.statusCode */ return send(body); };</code> — <code>res.json</code> goes through <code>res.send</code>, so one wrapper catches both.",
+    "Pick the fields you log by name (<code>method</code>, <code>url</code>, <code>status</code>, <code>requestId</code>). Never spread <code>req.headers</code>; if you must log headers, redact <code>authorization</code> and <code>cookie</code>."
+  ],
+  "solution": "// --- tiny logger (leave as is)\nconst lines = [];\nconst log = { info: (fields, msg) => lines.push({ ...fields, msg }) };\n\n// --- fixed middleware\nconst requestLogger = (req, res, next) => {\n  const send = res.send;                          // real Express: res.on(\"finish\", …)\n  res.send = (body) => {\n    log.info({ requestId: req.id, method: req.method, url: req.url, status: res.statusCode }, \"request completed\");\n    return send(body);\n  };\n  next();\n};\n\n// --- app (leave as is)\nlet seq = 0;\nconst app = express();\napp.use((req, res, next) => { req.id = `req-${++seq}`; res.set(\"x-request-id\", req.id); next(); });\napp.use(requestLogger);\napp.get(\"/ok\", (req, res) => res.json({ ok: true }));\napp.get(\"/boom\", () => { throw new Error(\"db down\"); });",
+  "explain": "A completion line is a <em>response</em> event, not a request event: status, duration and bytes exist only once the handler — or Express's own 404/500 fallback — has written. That is why pino-http listens on <code>finish</code>. Headers are an allow-list, not a dump; <code>authorization</code> and <code>cookie</code> in a log store are a credential leak with a long retention period."
+}</script>
+</section>
+
+<section class="block" data-block="concept" id="3g-04">
+<h2>Health and readiness endpoints</h2>
+<pre><code class="language-typescript">// /healthz — liveness: is the process alive and not deadlocked?
+// Kubernetes kills and restarts the pod if this fails.
+app.get("/healthz", (req, res) =&gt; res.json({ ok: true }));
+
+// /readyz — readiness: can this instance accept traffic right now?
+// Kubernetes stops routing to the pod while this returns non-200; the pod stays up.
+app.get("/readyz", async (req, res) =&gt; {
+  try {
+    await prisma.$queryRaw`SELECT 1`;           // check DB
+    await redisClient.ping();                    // check cache
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(503).json({ ok: false, error: String(err) });
+  }
+});</code></pre>
+<p>Keep <code>/healthz</code> trivial — it must never fail because a <em>dependency</em> is down, because the remedy for a failed liveness probe is a restart, and restarting the app does nothing for a dead database. <code>/readyz</code> is where dependencies are checked; a failing readiness probe takes the instance out of the load balancer until the dependency recovers. Both are exempt from auth and from request logging (they fire every few seconds and would drown the log).</p>
+</section>
+
+<section class="block" data-block="concept" id="3g-05">
+<h2>Metrics and tracing</h2>
+<ul>
+  <li><strong>Metrics</strong> — counters, gauges, histograms, pre-aggregated and cheap to keep forever. <code>prom-client</code> exposes <code>/metrics</code> for Prometheus; managed stacks (Datadog, New Relic) scrape or push. The default dashboard is RED: request <em>Rate</em>, <em>Error</em> rate, <em>Duration</em> histogram per route.</li>
+  <li><strong>Tracing</strong> — OpenTelemetry. Each request is a <strong>trace</strong>; each unit of work (handler, DB query, outbound call) is a <strong>span</strong> with a parent. The <code>traceparent</code> header carries trace id + parent span id across services, the same way <code>x-request-id</code> carries the request id — and the trace id belongs in every log line too, so a slow span links to its logs.</li>
+  <li><strong>Error tracking</strong> — Sentry. Captures exceptions with source maps, breadcrumbs and the request context; groups by stack fingerprint.</li>
+</ul>
+<pre><code class="language-typescript">import { Counter, Histogram, register } from "prom-client";
+const httpDuration = new Histogram({ name: "http_request_duration_seconds", help: "…", labelNames: ["method", "route", "status"] });
+
+app.use((req, res, next) =&gt; {
+  const end = httpDuration.startTimer();
+  res.on("finish", () =&gt; end({ method: req.method, route: req.route?.path ?? "unmatched", status: res.statusCode }));
+  next();
+});
+app.get("/metrics", async (req, res) =&gt; res.type(register.contentType).send(await register.metrics()));</code></pre>
+
+<div class="callout warn">
+  <div class="tag">Label cardinality</div>
+  <p>Label the metric with the <em>route pattern</em> (<code>/users/:id</code>), never the URL (<code>/users/42</code>). Every distinct label set is a separate time series; a user-id label on a histogram with 12 buckets is a memory leak in Prometheus.</p>
+</div>
+</section>
+
+<section class="block" data-block="diagram" id="3g-13">
+<div class="tag">Mechanism</div>
+<script type="application/json">{
+  "direction": "down",
+  "nodes": [
+    { "id": "req",    "label": "request\nrequestId / traceId", "kind": "pill", "row": 0 },
+    { "id": "mw",     "label": "middleware\n(finish hook)",     "kind": "box",  "row": 1 },
+    { "id": "code",   "label": "handler / repo\nreq.log, spans","kind": "box",  "row": 1 },
+    { "id": "log",    "label": "log line\nJSON event",          "kind": "box",  "row": 2 },
+    { "id": "metric", "label": "metric\ncounter / histogram",   "kind": "box",  "row": 2 },
+    { "id": "span",   "label": "span\nstart, end, parent",      "kind": "box",  "row": 2 },
+    { "id": "loki",   "label": "Loki / Datadog\nsearch by id",   "kind": "cyl",  "row": 3 },
+    { "id": "prom",   "label": "Prometheus\naggregate, alert",  "kind": "cyl",  "row": 3 },
+    { "id": "tempo",  "label": "Tempo / Jaeger\nwaterfall",      "kind": "cyl",  "row": 3 }
+  ],
+  "edges": [
+    { "from": "req",    "to": "mw" },
+    { "from": "req",    "to": "code" },
+    { "from": "mw",     "to": "log",    "label": "request completed" },
+    { "from": "mw",     "to": "metric", "label": "duration, status" },
+    { "from": "code",   "to": "log",    "label": "req.log.info" },
+    { "from": "code",   "to": "span",   "label": "tracer.startSpan" },
+    { "from": "log",    "to": "loki" },
+    { "from": "metric", "to": "prom" },
+    { "from": "span",   "to": "tempo" },
+    { "from": "loki",   "to": "tempo",  "label": "traceId", "dashed": true }
+  ]
+}</script>
+<p class="caption">Logs answer "what happened to this request", metrics answer "how is the fleet doing", traces answer "where did the time go" — and one id, carried in the log lines and the spans, links the three stores.</p>
+</section>
+
+<section class="block" data-block="exercise" id="3g-14" data-kind="complete" data-lang="js" data-mode="worker">
+<div class="tag">Exercise</div>
+<p>Implement the structured logger from 3g-08 from scratch. Contract: <code>createLogger(sink, { level = "info", base = {} })</code> returns <code>{ debug, info, warn, error, child }</code>. Each method is <code>(fields, msg)</code> or just <code>(msg)</code>; it pushes <code>{ level: &lt;number&gt;, ...base, ...fields, msg }</code> onto <code>sink</code> only if the level is at or above the configured one. If <code>fields.err</code> is an <code>Error</code>, replace it with <code>{ type: err.name, message: err.message }</code>. <code>child(bindings)</code> returns a logger that shares the sink and level, with <code>bindings</code> merged over <code>base</code> (child wins). Tests cover filtering, the string-only form, the error serializer, and two levels of children.</p>
+<pre><code class="language-javascript">const LEVELS = { debug: 20, info: 30, warn: 40, error: 50 };
+
+function createLogger(sink, { level = "info", base = {} } = {}) {
+  // TODO
+}</code></pre>
+<script type="application/json">{
+  "tests": "test(\"level filtering\", () => { const s = []; const l = createLogger(s, { level: \"warn\" }); l.debug(\"d\"); l.info(\"i\"); l.warn(\"w\"); l.error(\"e\"); assert.equal(s.map(x => x.level), [40, 50]); });\ntest(\"fields then msg, base first\", () => { const s = []; const l = createLogger(s, { base: { service: \"orders\" } }); l.info({ orderId: \"o9\" }, \"created\"); assert.equal(s, [{ level: 30, service: \"orders\", orderId: \"o9\", msg: \"created\" }]); });\ntest(\"msg-only call\", () => { const s = []; createLogger(s).info(\"hello\"); assert.equal(s, [{ level: 30, msg: \"hello\" }]); });\ntest(\"err is serialized\", () => { const s = []; createLogger(s).error({ err: new TypeError(\"bad\") }, \"failed\"); assert.equal(s[0].err, { type: \"TypeError\", message: \"bad\" }); assert.equal(JSON.stringify(s[0]).includes(\"bad\"), true); });\ntest(\"children inherit and override\", () => { const s = []; const root = createLogger(s, { level: \"info\", base: { service: \"a\", region: \"eu\" } }); const c1 = root.child({ requestId: \"r1\" }); const c2 = c1.child({ region: \"us\", table: \"t\" }); c2.info(\"x\"); c1.debug(\"hidden\"); c1.info(\"y\"); assert.equal(s, [{ level: 30, service: \"a\", region: \"us\", requestId: \"r1\", table: \"t\", msg: \"x\" }, { level: 30, service: \"a\", region: \"eu\", requestId: \"r1\", msg: \"y\" }]); });",
+  "hints": [
+    "Write one factory <code>write(lvl)</code> that returns the <code>(fields, msg)</code> function; build the four methods from it.",
+    "Normalise the string-only form first: <code>if (typeof fields === \"string\") { msg = fields; fields = {}; }</code>. Compare <code>LEVELS[lvl] &lt; LEVELS[level]</code> to drop a line.",
+    "<code>child</code> is recursion: <code>createLogger(sink, { level, base: { ...base, ...bindings } })</code>."
+  ],
+  "solution": "const LEVELS = { debug: 20, info: 30, warn: 40, error: 50 };\n\nfunction createLogger(sink, { level = \"info\", base = {} } = {}) {\n  const write = (lvl) => (fields, msg) => {\n    if (LEVELS[lvl] < LEVELS[level]) return;\n    if (typeof fields === \"string\") { msg = fields; fields = {}; }\n    if (fields.err instanceof Error) fields = { ...fields, err: { type: fields.err.name, message: fields.err.message } };\n    sink.push({ level: LEVELS[lvl], ...base, ...fields, msg });\n  };\n  return {\n    debug: write(\"debug\"), info: write(\"info\"), warn: write(\"warn\"), error: write(\"error\"),\n    child: (bindings) => createLogger(sink, { level, base: { ...base, ...bindings } }),\n  };\n}",
+  "explain": "This is pino's shape minus the fast paths: numeric levels so filtering is one comparison, a child that is just a new logger with merged bindings, and an explicit error serializer because <code>message</code>/<code>stack</code> are non-enumerable and would otherwise vanish in <code>JSON.stringify</code> (1g)."
+}</script>
+</section>
+
+<section class="block" data-block="review" id="3g-15">
+<div class="tag">Code review</div>
+<ul>
+  <li><strong><code>console.log</code> in server code.</strong> No level, no fields, no request id, synchronous stdout. ESLint <code>no-console</code> with pino as the only logger import.</li>
+  <li><strong>Request-id middleware not first.</strong> Anything mounted before it logs without correlation; pino-http needs it before. Reviewers read the <code>app.use</code> order top to bottom.</li>
+  <li><strong>Completion line logged before <code>finish</code>.</strong> Status is always 200, duration missing. Use pino-http or <code>res.on("finish")</code>.</li>
+  <li><strong>Secrets in logs.</strong> <code>req.headers</code>, <code>req.body</code> spread into a log call. Configure pino <code>redact</code> for <code>authorization</code>, <code>cookie</code>, <code>password</code>, <code>token</code>; log named fields, not whole objects.</li>
+  <li><strong>Errors logged under the wrong key.</strong> <code>log.error({ error: err })</code> serializes to <code>{}</code>. The key is <code>err</code>, and the serializer must walk <code>cause</code> (1g).</li>
+  <li><strong>Dependency checks in <code>/healthz</code>.</strong> A DB outage becomes a fleet-wide restart loop. Liveness is trivial; dependencies go in <code>/readyz</code>.</li>
+  <li><strong>High-cardinality metric labels.</strong> URL, user id or email as a label = unbounded time series. Label by route pattern and status class.</li>
+</ul>
+</section>
+
+<section class="block" data-block="exercise" id="3g-16" data-kind="mcq">
+<div class="tag">Check</div>
+<p>A team puts the <code>SELECT 1</code> database check into <code>/healthz</code> (the Kubernetes liveness probe) instead of <code>/readyz</code>. The database becomes unreachable for two minutes. What happens to the API pods?</p>
+<script type="application/json">{
+  "options": [
+    "Nothing different — liveness and readiness both return 503, so traffic is routed away either way.",
+    "Kubernetes restarts every pod, repeatedly, for the whole outage; the restarts do nothing for the database and the pods spend the recovery window in crash-loop backoff instead of serving as soon as the DB returns.",
+    "Only the first pod to fail is restarted; the rest keep serving cached responses.",
+    "The pods are removed from the Service but stay running, and are re-added when the DB returns."
+  ],
+  "answer": 1,
+  "explain": "A failing liveness probe means \"this process is broken, replace it\" — the remedy is a restart. A failing readiness probe means \"don't send me traffic right now\" — the pod stays up and rejoins the moment the probe passes. Option 3 describes what the <em>readiness</em> probe would have done, which is why dependency checks belong there."
+}</script>
+</section>
+
+<section class="block" data-block="recall" id="3g-17">
+<div class="tag">Recall</div>
+<dl>
+  <dt>In a pino call, what is the argument order and why?</dt>
+  <dd><code>log.info({ fields }, "msg")</code> — the object first because fields are what the log store indexes and queries; the message is for humans.</dd>
+
+  <dt>What does <code>log.child({ requestId })</code> give you, and what problem does it solve?</dt>
+  <dd>A new logger that adds <code>requestId</code> to every line written through it. Deep code (repositories, services) can log with correlation without the id being threaded as a parameter.</dd>
+
+  <dt>Why does <code>log.error({ error: err }, "failed")</code> lose the message and stack?</dt>
+  <dd><code>message</code>, <code>stack</code> and <code>cause</code> are non-enumerable, so <code>JSON.stringify(err)</code> is <code>{}</code>. pino's error serializer runs only on the <code>err</code> key.</dd>
+
+  <dt>Where must the request-id middleware be mounted, and what does it do with an incoming <code>X-Request-Id</code>?</dt>
+  <dd>First, via <code>app.use</code> before pino-http and routes. It reuses a (validated) incoming id, otherwise mints a UUID; it sets the id on the response header and binds <code>req.log = log.child({ requestId })</code>.</dd>
+
+  <dt>What does this print?
+<pre><code class="language-javascript">const app = express(); const seen = []; let seq = 0;
+app.use((req, res, next) =&gt; { seen.push(req.id ?? "-"); next(); });
+app.use((req, res, next) =&gt; { req.id = req.get("x-request-id") ?? `req-${++seq}`; next(); });
+app.get("/a", (req, res) =&gt; res.json({ id: req.id }));
+const r1 = await request(app, { path: "/a" });
+const r2 = await request(app, { path: "/a", headers: { "X-Request-Id": "abc" } });
+console.log(r1.body.id, r2.body.id, seen);</code></pre></dt>
+  <dd><code>req-1 abc ["-", "-"]</code>. The header is reused so the counter skips; the probe runs before the id middleware so it never sees an id.</dd>
+
+  <dt>When should a request-completion log line be written, and what Express event gives you that moment?</dt>
+  <dd>After the response is flushed — <code>res.on("finish", …)</code>. Only then are <code>statusCode</code> and duration known; logging on the way in records 200 for every request.</dd>
+
+  <dt>Liveness vs readiness: which one checks the database, and what is the consequence of getting it backwards?</dt>
+  <dd>Readiness (<code>/readyz</code>) checks dependencies and only pulls the pod from the load balancer. Liveness (<code>/healthz</code>) must be trivial — a dependency check there turns a DB outage into a fleet-wide restart loop.</dd>
+
+  <dt>Logs, metrics, traces — one phrase each for the question they answer.</dt>
+  <dd>Logs: what happened to this request. Metrics: how is the fleet doing (rate, errors, duration). Traces: where did the time go across spans and services. A shared request/trace id links them.</dd>
+
+  <dt>Why label a Prometheus histogram with <code>/users/:id</code> and not <code>/users/42</code>?</dt>
+  <dd>Every distinct label set is its own time series; unbounded labels (URL, user id) grow memory without bound. Label by route pattern and status.</dd>
+</dl>
+</section>
+</article>
+<script type="module" src="/assets/runtime/boot.js"></script>
+</body>
+</html>

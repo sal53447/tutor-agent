@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>1f. Async & the event loop · JS Curriculum</title>
+<link rel="icon" href="/assets/favicon.svg">
+<link rel="stylesheet" href="/assets/vendor/prism.css">
+<link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body data-lesson="1f" data-level="interactive">
+<article class="lesson">
+
+<header>
+  <h1>Async &amp; Concurrency — the Event Loop</h1>
+</header>
+
+<section class="block" data-block="concept" id="1f-01">
+<p>This is the single most important lesson in the JavaScript topic. Everything on the JS side — timers, promises, fetch, React effects, Express handlers, Next.js server components — sits on this model.</p>
+</section>
+
+<section class="block" data-block="concept" id="1f-02">
+<h2>The model: one thread, two queues</h2>
+<p>JS runs on a single thread with a call stack. When the stack is empty, the runtime pulls work from queues:</p>
+<ul>
+  <li><strong>Microtask queue</strong> — resolved Promise callbacks, <code>queueMicrotask</code>. Drained <em>completely</em> before the next render or macrotask.</li>
+  <li><strong>Macrotask queue</strong> — <code>setTimeout</code>, <code>setInterval</code>, I/O callbacks, <code>setImmediate</code> (Node). Processed one at a time.</li>
+</ul>
+<p>Four lines are enough to see the whole machine. Step through what the runtime does with them:</p>
+</section>
+
+<section class="block" data-block="stepper" id="1f-03" data-kind="queue">
+<div class="tag">Step through</div>
+<script type="application/json">{
+  "code": "console.log(\"1\");\nsetTimeout(() => console.log(\"2\"), 0);\nPromise.resolve().then(() => console.log(\"3\"));\nconsole.log(\"4\");",
+  "steps": [
+    { "label": "Script starts", "line": 1, "note": "The script body is pushed on the call stack as one frame. Line 1 runs synchronously and prints immediately.",
+      "state": { "stack": ["main()"], "pending": [], "micro": [], "macro": [], "output": ["1"] } },
+    { "label": "setTimeout registers a timer", "line": 2, "note": "<code>setTimeout</code> hands the callback to the host (browser / libuv). Nothing is queued yet — the <em>timer</em> is pending, the callback isn't runnable.",
+      "state": { "stack": ["main()"], "pending": ["timer 0ms → log(\"2\")"], "micro": [], "macro": [], "output": ["1"] } },
+    { "label": "Promise.then queues a microtask", "line": 3, "note": "The promise is already resolved, so its <code>.then</code> callback goes straight to the microtask queue. It still cannot run: the stack isn't empty.",
+      "state": { "stack": ["main()"], "pending": ["timer 0ms → log(\"2\")"], "micro": ["log(\"3\")"], "macro": [], "output": ["1"] } },
+    { "label": "Line 4 runs synchronously", "line": 4, "note": "Still inside the same frame. Sync code always finishes before any callback.",
+      "state": { "stack": ["main()"], "pending": ["timer 0ms → log(\"2\")"], "micro": ["log(\"3\")"], "macro": [], "output": ["1", "4"] } },
+    { "label": "Stack empties", "note": "<code>main()</code> returns. Now the loop asks: any microtasks? Yes — drain them all before anything else.",
+      "state": { "stack": [], "pending": ["timer 0ms → log(\"2\")"], "micro": ["log(\"3\")"], "macro": [], "output": ["1", "4"] } },
+    { "label": "Microtask runs", "note": "The <code>.then</code> callback is pushed on the stack and runs. If it queued more microtasks, those would run too — before any timer.",
+      "state": { "stack": ["log(\"3\")"], "pending": ["timer 0ms → log(\"2\")"], "micro": [], "macro": [], "output": ["1", "4", "3"] } },
+    { "label": "Timer fires → macrotask", "note": "The 0 ms timer has expired, so the host moves its callback into the macrotask queue. 0 ms never meant \"now\" — it meant \"next macrotask at the earliest\".",
+      "state": { "stack": [], "pending": [], "micro": [], "macro": ["log(\"2\")"], "output": ["1", "4", "3"] } },
+    { "label": "Macrotask runs", "note": "One macrotask per loop iteration. After it, microtasks are drained again, then the next macrotask.",
+      "state": { "stack": ["log(\"2\")"], "pending": [], "micro": [], "macro": [], "output": ["1", "4", "3", "2"] } },
+    { "label": "Idle", "note": "Everything is empty; the loop waits for the next event. Final order: <strong>1, 4, 3, 2</strong>.",
+      "state": { "stack": [], "pending": [], "micro": [], "macro": [], "output": ["1", "4", "3", "2"] } }
+  ]
+}</script>
+</section>
+
+<section class="block" data-block="bridge" id="1f-04">
+<div class="tag">Python bridge</div>
+<p><code>asyncio</code> has the same shape — one thread, a loop, a ready queue — but you start it explicitly with <code>asyncio.run()</code>, and only coroutines participate. In JS the loop is <em>always</em> running and <em>everything</em> is on it: a click handler, a timer, a resolved promise, a module's top-level <code>await</code>. Closest mappings: <code>Promise.resolve().then(cb)</code> ≈ <code>loop.call_soon(cb)</code>; <code>setTimeout(cb, 0)</code> ≈ <code>loop.call_later(0, cb)</code> — and like asyncio, "later" is a lower priority than "soon", which is why <code>3</code> prints before <code>2</code>.</p>
+</section>
+
+<section class="block" data-block="playground" id="1f-05" data-lang="js">
+<div class="tag">Try it</div>
+<p>Run it, then break it: wrap line 3 in <code>setTimeout</code>, add a <code>queueMicrotask</code> inside the timer callback, nest a <code>.then</code> inside the <code>.then</code>. Predict before each run.</p>
+<pre><code class="language-javascript">console.log("1");
+setTimeout(() =&gt; console.log("2"), 0);
+Promise.resolve().then(() =&gt; console.log("3"));
+console.log("4");</code></pre>
+<output>1
+4
+3
+2</output>
+</section>
+
+<section class="block" data-block="exercise" id="1f-06" data-kind="predict" data-lang="js">
+<div class="tag">Exercise</div>
+<p><code>await</code> is a microtask boundary. What does this print, in order? One value per line.</p>
+<pre><code class="language-javascript">async function f() {
+  console.log("a");
+  await null;
+  console.log("b");
+  setTimeout(() =&gt; console.log("c"), 0);
+  await null;
+  console.log("d");
+}
+f();
+Promise.resolve().then(() =&gt; console.log("e"));
+console.log("f");</code></pre>
+<script type="application/json">{
+  "expected": "a\nf\nb\ne\nd\nc",
+  "hints": [
+    "Everything before the first <code>await</code> inside <code>f</code> runs synchronously, as part of the call <code>f()</code>.",
+    "Each <code>await</code> parks the rest of the function as a microtask. Microtasks run in FIFO order — <code>f</code>'s continuation was queued before the <code>.then</code> on the last line."
+  ],
+  "explain": "<code>a</code> and <code>f</code> are synchronous. The first <code>await</code> queued <code>f</code>'s continuation <em>before</em> <code>.then(e)</code> was registered, so <code>b</code> runs first, then <code>e</code>; the second <code>await</code> queues <code>d</code> behind <code>e</code>. <code>c</code> is a macrotask and comes last."
+}</script>
+</section>
+
+<section class="block" data-block="concept" id="1f-07">
+<h2>Promises — the lifecycle</h2>
+<p>A Promise is in one of three states: <em>pending</em>, <em>fulfilled</em> (with a value), or <em>rejected</em> (with an error). Once settled, it's immutable — a second <code>resolve()</code> or <code>reject()</code> is silently ignored.</p>
+<pre><code class="language-javascript">const p = new Promise((resolve, reject) =&gt; {
+  setTimeout(() =&gt; resolve(42), 100);
+});
+
+p.then(v =&gt; console.log(v))
+ .catch(err =&gt; console.error(err))
+ .finally(() =&gt; console.log("done"));</code></pre>
+</section>
+
+<section class="block" data-block="diagram" id="1f-08">
+<div class="tag">Mechanism</div>
+<script type="application/json">{
+  "nodes": [
+    { "id": "exec", "label": "new Promise(executor)", "kind": "box" },
+    { "id": "pending", "label": "pending", "kind": "pill" },
+    { "id": "fulfilled", "label": "fulfilled (value)", "kind": "pill" },
+    { "id": "rejected", "label": "rejected (reason)", "kind": "pill" },
+    { "id": "then", "label": ".then(onFulfilled)", "kind": "box" },
+    { "id": "catch", "label": ".catch(onRejected)", "kind": "box" },
+    { "id": "finally", "label": ".finally(cb) → new Promise", "kind": "note" }
+  ],
+  "edges": [
+    { "from": "exec", "to": "pending", "label": "runs synchronously" },
+    { "from": "pending", "to": "fulfilled", "label": "resolve(v)" },
+    { "from": "pending", "to": "rejected", "label": "reject(e) / throw" },
+    { "from": "fulfilled", "to": "then", "label": "microtask" },
+    { "from": "rejected", "to": "catch", "label": "microtask" },
+    { "from": "then", "to": "finally", "dashed": true },
+    { "from": "catch", "to": "finally", "dashed": true }
+  ]
+}</script>
+<p class="caption">The executor runs immediately and synchronously; only the handlers are deferred. Every <code>.then</code>/<code>.catch</code>/<code>.finally</code> returns a <em>new</em> promise, which is what makes chaining work.</p>
+</section>
+
+<section class="block" data-block="concept" id="1f-09">
+<h2><code>async</code> / <code>await</code> — the real API</h2>
+<pre><code class="language-javascript">async function getUser(id) {
+  try {
+    const res = await fetch(`/api/users/${id}`);
+    if (!res.ok) throw new Error("Not ok");
+    return await res.json();
+  } catch (err) {
+    console.error(err);
+    throw err;  // let caller decide
+  }
+}</code></pre>
+
+<div class="callout py">
+  <div class="tag">Python bridge</div>
+  <p>Syntactically identical to Python's <code>async def</code> / <code>await</code>. Semantically different in one key way: Python's <code>asyncio</code> is opt-in (you must run an event loop explicitly). In JS, the event loop is always running — every function can be <code>async</code>, every top-level can <code>await</code> (in ESM). There's no "blue/red function" social split in JS; async is ambient.</p>
+</div>
+</section>
+
+<section class="block" data-block="concept" id="1f-10">
+<h2>Combinators</h2>
+<pre><code class="language-javascript">// Parallel — fail if any fails
+const [a, b] = await Promise.all([fetchA(), fetchB()]);
+
+// Parallel — wait for all, get results and errors
+const results = await Promise.allSettled([fetchA(), fetchB()]);
+
+// First to settle (resolve OR reject) — rarely what you want
+await Promise.race([op, timeout]);
+
+// First to FULFILL (ignore rejections)
+await Promise.any([a, b, c]);</code></pre>
+
+<div class="callout warn">
+  <div class="tag">Sequential-in-a-loop bug</div>
+<pre><code class="language-javascript">// BAD — fetches sequentially, 10x slower
+for (const id of ids) {
+  const u = await fetchUser(id);
+  users.push(u);
+}
+
+// GOOD — fetches in parallel
+const users = await Promise.all(ids.map(fetchUser));</code></pre>
+  <p>This is the single most common async bug in JS code. If the iterations are independent, <code>map</code> + <code>Promise.all</code>. If they depend on each other, <code>for...of</code> is correct.</p>
+</div>
+</section>
+
+<section class="block" data-block="exercise" id="1f-11" data-kind="fix" data-lang="js">
+<div class="tag">Exercise</div>
+<p><code>loadUsers</code> works but is slow: it waits for each user before requesting the next. Make the requests run in parallel while keeping the result order. <code>fetchUser</code> is instrumented — the tests check how many requests were in flight at once.</p>
+<pre><code class="language-javascript">// --- instrumented fake API (leave as is)
+let inFlight = 0, maxInFlight = 0;
+function fetchUser(id) {
+  inFlight++; maxInFlight = Math.max(maxInFlight, inFlight);
+  return new Promise(resolve =&gt; setTimeout(() =&gt; { inFlight--; resolve({ id, name: `user-${id}` }); }, 5));
+}
+
+// --- fix this
+async function loadUsers(ids) {
+  const users = [];
+  for (const id of ids) {
+    const u = await fetchUser(id);
+    users.push(u);
+  }
+  return users;
+}</code></pre>
+<script type="application/json">{
+  "tests": "test(\"returns users in input order\", async () => { const u = await loadUsers([3, 1, 2]); assert.equal(u.map(x => x.id), [3, 1, 2]); });\ntest(\"requests run in parallel\", async () => { maxInFlight = 0; await loadUsers([1, 2, 3, 4]); assert.equal(maxInFlight, 4, \"max requests in flight\"); });\ntest(\"empty input\", async () => assert.equal(await loadUsers([]), []));",
+  "hints": [
+    "Start every request first, then wait. <code>ids.map(fetchUser)</code> gives you an array of promises.",
+    "<code>Promise.all</code> takes an array of promises and resolves to an array of values in the same order."
+  ],
+  "solution": "// --- instrumented fake API (leave as is)\nlet inFlight = 0, maxInFlight = 0;\nfunction fetchUser(id) {\n  inFlight++; maxInFlight = Math.max(maxInFlight, inFlight);\n  return new Promise(resolve => setTimeout(() => { inFlight--; resolve({ id, name: `user-${id}` }); }, 5));\n}\n\nasync function loadUsers(ids) {\n  return Promise.all(ids.map(fetchUser));\n}",
+  "explain": "<code>map</code> calls <code>fetchUser</code> for every id synchronously, so all timers start in the same tick; <code>Promise.all</code> preserves input order regardless of which promise settles first. A <code>for…of</code> with <code>await</code> is only right when iteration <em>n+1</em> depends on the result of <em>n</em>."
+}</script>
+</section>
+
+<section class="block" data-block="concept" id="1f-12">
+<h2>Cancellation with <code>AbortController</code></h2>
+<p>Promises can't be cancelled. The convention is a <em>signal</em>: the caller creates an <code>AbortController</code>, passes <code>controller.signal</code> down, and anything that takes a signal (fetch, timers you write, streams) stops when <code>abort()</code> is called.</p>
+<pre><code class="language-javascript">const ctrl = new AbortController();
+fetch(url, { signal: ctrl.signal });
+setTimeout(() =&gt; ctrl.abort(), 5000);  // cancel after 5s
+
+// Or, built in: a signal that aborts itself
+fetch(url, { signal: AbortSignal.timeout(5000) });</code></pre>
+</section>
+
+<section class="block" data-block="exercise" id="1f-13" data-kind="complete" data-lang="js">
+<div class="tag">Exercise</div>
+<p>Implement <code>withTimeout(task, ms)</code>. <code>task(signal)</code> is an async function that honours an <code>AbortSignal</code>. If it finishes within <code>ms</code>, resolve with its value; otherwise abort it and reject with an error whose <code>name</code> is <code>"TimeoutError"</code>. Don't leave a dangling timer when the task wins.</p>
+<pre><code class="language-javascript">// A task that honours the signal (leave as is)
+function sleep(ms, signal) {
+  return new Promise((resolve, reject) =&gt; {
+    const t = setTimeout(() =&gt; resolve("slept " + ms), ms);
+    signal?.addEventListener("abort", () =&gt; { clearTimeout(t); reject(signal.reason); });
+  });
+}
+
+async function withTimeout(task, ms) {
+  // TODO
+}</code></pre>
+<script type="application/json">{
+  "tests": "test(\"fast task resolves with its value\", async () => { assert.equal(await withTimeout(s => sleep(5, s), 50), \"slept 5\"); });\ntest(\"slow task rejects with TimeoutError\", async () => { let err; try { await withTimeout(s => sleep(50, s), 10); } catch (e) { err = e; } assert.ok(err, \"should reject\"); assert.equal(err.name, \"TimeoutError\"); });\ntest(\"slow task is actually aborted\", async () => { let aborted = false; await withTimeout(s => { s.addEventListener(\"abort\", () => { aborted = true; }); return sleep(50, s); }, 10).catch(() => {}); assert.ok(aborted, \"task's signal should fire\"); });\ntest(\"task error propagates unchanged\", async () => { let err; try { await withTimeout(async () => { throw new Error(\"boom\"); }, 50); } catch (e) { err = e; } assert.equal(err && err.message, \"boom\"); });",
+  "hints": [
+    "Create an <code>AbortController</code>, start a timer that calls <code>abort()</code>, and pass <code>controller.signal</code> to <code>task</code>.",
+    "To reject with the right error, abort with a reason: <code>new DOMException(\"timed out\", \"TimeoutError\")</code> works in browsers and Node 17+. Then <code>await</code> the task inside <code>try … finally { clearTimeout(t) }</code>.",
+    "Shorter alternative: <code>AbortSignal.timeout(ms)</code> builds the signal for you and already rejects with a <code>TimeoutError</code> — but your task must reject on abort for it to matter."
+  ],
+  "solution": "function sleep(ms, signal) {\n  return new Promise((resolve, reject) => {\n    const t = setTimeout(() => resolve(\"slept \" + ms), ms);\n    signal?.addEventListener(\"abort\", () => { clearTimeout(t); reject(signal.reason); });\n  });\n}\n\nasync function withTimeout(task, ms) {\n  const ctrl = new AbortController();\n  const timer = setTimeout(() => ctrl.abort(new DOMException(\"timed out after \" + ms + \" ms\", \"TimeoutError\")), ms);\n  try {\n    return await task(ctrl.signal);\n  } finally {\n    clearTimeout(timer);\n  }\n}",
+  "explain": "The controller is the only way to reach <em>into</em> the task; the task decides what abort means (here: clear its timer and reject). <code>try/finally</code> guarantees the timeout timer is cleared whether the task resolved, rejected, or was aborted — otherwise the process keeps a live timer for every call that finished early."
+}</script>
+</section>
+
+<section class="block" data-block="concept" id="1f-14">
+<h2>Unhandled rejections — Node crashes, browser warns</h2>
+<pre><code class="language-javascript">// This promise rejects with no handler — behaviour differs by environment
+async function boom() { throw new Error("oops"); }
+boom();  // fire-and-forget (no await, no .catch)
+
+// Node (since v15): process exits with code 1 — UnhandledPromiseRejection
+// Browser: fires window.unhandledrejection event, logs a warning, continues running
+
+// Guard at module level in Node:
+process.on("unhandledRejection", (reason) =&gt; {
+  console.error("Unhandled rejection:", reason);
+  process.exit(1);  // explicit exit so the error is visible in CI logs
+});</code></pre>
+
+<div class="callout warn">
+  <div class="tag">Gotcha</div>
+  <p>The browser's leniency masks bugs during development. If you write backend Node code and test it only in a browser-like environment (Vitest with jsdom, for example), unhandled rejections that would crash production may silently pass tests. Run critical async tests in a Node environment.</p>
+</div>
+</section>
+
+<section class="block" data-block="review" id="1f-15">
+<div class="tag">Code review</div>
+<ul>
+  <li><strong>Unhandled rejection.</strong> Every promise needs a <code>.catch</code> or a surrounding <code>try/catch</code>. Unhandled rejections crash the Node process in modern versions.</li>
+  <li><strong>Forgotten <code>await</code>.</strong> <code>asyncFn()</code> without <code>await</code> returns a floating promise — often a silent bug. ESLint rule: <code>@typescript-eslint/no-floating-promises</code>.</li>
+  <li><strong>Sequential <code>await</code> in a loop</strong> over independent work. Reviewers look for <code>for … await</code> and ask whether iterations depend on each other.</li>
+  <li><strong>Don't nest <code>.then</code> chains.</strong> Use <code>await</code>. It reads top to bottom.</li>
+  <li><strong>Avoid mixing callbacks and promises.</strong> Node utilities have <code>.promises</code> variants (<code>fs.promises</code>, <code>fs.readFile</code> via <code>util.promisify</code>).</li>
+  <li><strong>No timeout on external calls.</strong> Every <code>fetch</code> to a third party gets an <code>AbortSignal.timeout</code>; otherwise one slow upstream pins your request handlers.</li>
+</ul>
+</section>
+
+<section class="block" data-block="exercise" id="1f-16" data-kind="mcq">
+<div class="tag">Check</div>
+<p>A request handler does <code>await db.query(...)</code> and the database takes 2 seconds. During those 2 seconds, which is true of the Node process?</p>
+<script type="application/json">{
+  "options": [
+    "The thread is blocked; no other request is served until the query returns.",
+    "The handler is suspended; the event loop keeps serving other requests and runs the continuation as a microtask when the query's promise settles.",
+    "Node spawns a thread per <code>await</code>, so the continuation runs in parallel with other handlers.",
+    "Other requests are served, but the continuation runs as a macrotask, after any pending timers."
+  ],
+  "answer": 1,
+  "explain": "<code>await</code> yields the thread. The I/O happens in the host (libuv); when it completes, the promise resolves and the continuation is queued as a <em>microtask</em> — before timers. Nothing is blocked, and nothing runs in parallel on a second JS thread."
+}</script>
+</section>
+
+<section class="block" data-block="recall" id="1f-17">
+<div class="tag">Recall</div>
+<dl>
+  <dt>In what order does the runtime run: synchronous code, microtasks, macrotasks? What drains completely vs one at a time?</dt>
+  <dd>Sync code to completion → <em>all</em> microtasks (and any they enqueue) → <em>one</em> macrotask → microtasks again → next macrotask.</dd>
+
+  <dt>What does this log, and why?
+<pre><code class="language-javascript">async function f() {
+  console.log("a");
+  await 1;
+  console.log("b");
+}
+f();
+console.log("c");</code></pre></dt>
+  <dd><p><code>a</code>, <code>c</code>, <code>b</code>. <code>await</code> always suspends the function at least once even if the awaited value is already resolved. Execution resumes on the microtask queue, after the current synchronous block finishes.</p></dd>
+
+  <dt>Name the four Promise combinators and the one-line difference between <code>Promise.race</code> and <code>Promise.any</code>.</dt>
+  <dd><code>all</code> (fail-fast, ordered values), <code>allSettled</code> (every outcome), <code>race</code> (first to <em>settle</em>, fulfilled or rejected), <code>any</code> (first to <em>fulfil</em>; rejects only if all reject, with an <code>AggregateError</code>).</dd>
+
+  <dt>Why is <code>for (const id of ids) await fetchUser(id)</code> usually a bug, and when is it correct?</dt>
+  <dd>It serialises independent requests — N × latency instead of 1 ×. Correct only when iteration n+1 needs the result of n (or you must limit concurrency deliberately).</dd>
+
+  <dt>How does <code>AbortController</code> relate to a Promise, and what's the shortcut for a timeout signal?</dt>
+  <dd>Promises can't be cancelled; the controller's <code>signal</code> is passed <em>into</em> the work, which listens for <code>abort</code> and rejects with <code>signal.reason</code>. <code>AbortSignal.timeout(ms)</code> builds a self-aborting signal with a <code>TimeoutError</code>.</dd>
+
+  <dt>What happens to an unhandled promise rejection in Node vs in the browser?</dt>
+  <dd>Node (≥15) exits the process with code 1; the browser fires <code>window.unhandledrejection</code>, logs, and carries on — so browser-like test environments can hide a crash.</dd>
+</dl>
+</section>
+</article>
+<script type="module" src="/assets/runtime/boot.js"></script>
+</body>
+</html>

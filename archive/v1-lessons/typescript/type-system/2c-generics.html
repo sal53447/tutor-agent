@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>2c. Generics in practice · JS Curriculum</title>
+<link rel="icon" href="/assets/favicon.svg">
+<link rel="stylesheet" href="/assets/vendor/prism.css">
+<link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body data-lesson="2c" data-level="migrated">
+<article class="lesson">
+
+<header>
+  <h1>Generics in Practice</h1>
+</header>
+
+<section class="block" data-block="concept" id="2c-01">
+<p>Generics parametrize types. Like Python's <code>TypeVar</code>, but the inference is much stronger.</p>
+</section>
+
+<section class="block" data-block="concept" id="2c-02">
+<h2>Why not <code>any[]</code>?</h2>
+<pre><code class="language-typescript">// With any[]: TS can't help you — return type is any
+function firstBad(arr: any[]): any { return arr[0]; }
+const x = firstBad([1, 2, 3]);
+x.toUpperCase();   // no error at compile time — will blow up at runtime
+
+// With generics: return type tracks the input type
+function first&lt;T&gt;(arr: T[]): T | undefined { return arr[0]; }
+const y = first([1, 2, 3]);   // y: number | undefined
+y?.toUpperCase();              // Error: toUpperCase doesn't exist on number</code></pre>
+
+<p>The generic version is not harder to write — it just makes the compiler track the type through the function rather than throw it away.</p>
+
+<pre><code class="language-typescript">function first&lt;T&gt;(arr: T[]): T | undefined { return arr[0]; }
+first([1,2,3]);          // T = number, return: number | undefined
+first(["a", "b"]);       // T = string
+
+// Multiple type parameters — TS infers both from usage
+function zip&lt;A, B&gt;(as: A[], bs: B[]): [A, B][] {
+  return as.map((a, i) =&gt; [a, bs[i]] as [A, B]);
+}
+zip([1, 2], ["a", "b"]);   // [number, string][]
+zip(["x"], [true]);         // [string, boolean][]
+
+// Constraints
+// keyof T is the union of all keys of T — covered in 2d.
+function pluck&lt;T, K extends keyof T&gt;(obj: T, key: K): T[K] {
+  return obj[key];
+}
+pluck({ name: "P", age: 30 }, "age");  // number
+// pluck({ name: "P" }, "missing");    // Error — "missing" not a key
+
+// Defaults
+type Result&lt;T, E = Error&gt; = { ok: true; value: T } | { ok: false; err: E };
+
+// Generic components (React)
+function List&lt;T&gt;(props: { items: T[]; render: (x: T) =&gt; React.ReactNode }) {
+  return &lt;ul&gt;{props.items.map((x, i) =&gt; &lt;li key={i}&gt;{props.render(x)}&lt;/li&gt;)}&lt;/ul&gt;;
+}</code></pre>
+
+<div class="callout bad">
+  <div class="tag">When NOT to use generics</div>
+  <pre><code class="language-typescript">// Bad — T isn't constrained or linked to anything; unknown does the job
+function wrap&lt;T&gt;(x: T): { value: T } { return { value: x }; }
+
+// Fine for single-caller code, but if nothing calls wrap() with a
+// specific type the generic buys you nothing. For a one-shot wrapper:
+function wrap(x: unknown): { value: unknown } { return { value: x }; }
+
+// Good — T is load-bearing: return type is tied to input type
+function identity&lt;T&gt;(x: T): T { return x; }
+const n = identity(42);   // n: 42 (literal), not unknown</code></pre>
+  <p>Generics add complexity. Only reach for them when the caller's type must flow through — not just to "avoid any".</p>
+</div>
+
+<div class="callout review">
+  <div class="tag">When to reach for generics</div>
+  <ul>
+    <li>You're writing a <em>library-style</em> function (reusable utility, container) and the caller's type should flow through.</li>
+    <li>You're linking two things (a key and its value type, a request and its response type).</li>
+    <li>Don't use generics for "any object"; use <code>unknown</code> or <code>Record&lt;string, unknown&gt;</code>.</li>
+  </ul>
+</div>
+</section>
+</article>
+<script type="module" src="/assets/runtime/boot.js"></script>
+</body>
+</html>

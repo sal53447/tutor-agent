@@ -1,0 +1,597 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>4a. React mental model · JS Curriculum</title>
+<link rel="icon" href="/assets/favicon.svg">
+<link rel="stylesheet" href="/assets/vendor/prism.css">
+<link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body data-lesson="4a" data-level="interactive">
+<article class="lesson">
+
+<header>
+  <h1>React Mental Model</h1>
+</header>
+
+<section class="block" data-block="concept" id="4a-01">
+<p>React is a <strong>declarative</strong> UI library: a component returns a description of the UI for the current state, and React works out which DOM nodes to create, update or remove. Every later lesson — hooks (4c–4f), forms (4i), performance (4k), Server Components (Part 5) — assumes three things from this one: a component is a plain function that React calls; a state change schedules a <em>re-render</em> rather than mutating anything; and rendering is cheap while committing to the DOM is what costs.</p>
+</section>
+
+<section class="block" data-block="concept" id="4a-02">
+<h2>The one-sentence model: UI = f(state)</h2>
+<p><strong>UI = f(state).</strong> A component is a function from props + state to a tree of <em>element objects</em> — plain JS data (4b). React calls the function, compares the new tree with the one it rendered last time (<strong>reconciliation</strong>), and applies the minimal set of DOM operations (<strong>commit</strong>). You never write "when X changes, update element Y"; you write what the UI is for any X.</p>
+</section>
+
+<section class="block" data-block="concept" id="4a-05">
+<h2>Concrete form</h2>
+<pre><code class="language-jsx">import { useState } from "react";
+import { createRoot } from "react-dom/client";
+
+function Counter() {
+  const [count, setCount] = useState(0);
+  // Every time count changes, React calls Counter again and gets a new description.
+  // Turning that description into DOM operations is React's job, not yours.
+  return &lt;button onClick={() =&gt; setCount(c =&gt; c + 1)}&gt;Clicked {count}×&lt;/button&gt;;
+}
+
+createRoot(document.getElementById("root")).render(&lt;Counter /&gt;);</code></pre>
+<p><code>createRoot(...).render(...)</code> does not render synchronously: it <em>schedules</em> the first render. Same for every <code>setState</code> — nothing happens on that line except an update being queued.</p>
+</section>
+
+<section class="block" data-block="concept" id="4a-10">
+<h2>A state change: render → reconcile → commit → effects</h2>
+<p><code>setCount(1)</code> enqueues an update and schedules work. React then runs four phases:</p>
+<ol>
+  <li><strong>Render phase.</strong> React calls the component function — and, by default, every component below it — to get a new element tree. Must be pure; may be interrupted or thrown away.</li>
+  <li><strong>Reconcile.</strong> The new tree is diffed against the current one, by position and <code>key</code>. Same element type → keep the DOM node, patch changed props. Different type → unmount the old subtree, mount the new.</li>
+  <li><strong>Commit.</strong> All collected DOM mutations are applied in one synchronous pass. <code>useLayoutEffect</code> runs, then the browser paints.</li>
+  <li><strong>Effects.</strong> <code>useEffect</code> callbacks run after paint (4d).</li>
+</ol>
+<p>Two consequences you will hit in week one. <strong>Batching:</strong> every <code>setState</code> call inside one event handler (and, since React 18, inside one timer or promise callback) is collected into a single render. <strong>Stale reads:</strong> the state variable is a <code>const</code> local to <em>this call</em> of the function; reading it after <code>setState</code> gives the old value, because the new value only exists in the next call.</p>
+<pre><code class="language-jsx">function Counter() {
+  const [n, setN] = useState(0);
+  function onClick() {
+    setN(n + 1);
+    setN(n + 1);        // same n — the committed value will be 1, not 2
+    console.log(n);     // 0: this call's n; the next render gets a fresh const
+  }
+  return &lt;button onClick={onClick}&gt;{n}&lt;/button&gt;;
+}
+// To chain updates, pass a function: setN(c =&gt; c + 1); setN(c =&gt; c + 1);  → 2</code></pre>
+</section>
+
+<section class="block" data-block="stepper" id="4a-07" data-kind="timeline">
+<div class="tag">Step through</div>
+<script type="application/json">{
+  "code": "function Counter() {\n  const [n, setN] = useState(0);\n  function onClick() {\n    setN(n + 1);\n    setN(n + 1);\n    console.log(n);\n  }\n  return <button onClick={onClick}>{n}</button>;\n}",
+  "steps": [
+    { "label": "Idle, DOM shows 0", "note": "The committed tree says <code>&lt;button&gt;0&lt;/button&gt;</code>. Nothing is scheduled; React is not running.",
+      "state": { "lanes": [
+        { "name": "Event",   "items": [{ "label": "click", "state": "idle" }, { "label": "setN ×2 queued", "state": "idle" }, { "label": "handler returns", "state": "idle" }] },
+        { "name": "Render",  "items": [{ "label": "call Counter()", "state": "idle" }, { "label": "reconcile: diff trees", "state": "idle" }] },
+        { "name": "Commit",  "items": [{ "label": "DOM: text 0 → 1", "state": "idle" }, { "label": "useLayoutEffect", "state": "idle" }, { "label": "browser paints", "state": "idle" }] },
+        { "name": "Effects", "items": [{ "label": "useEffect", "state": "idle" }] } ] } },
+    { "label": "Click reaches the handler", "line": 3, "note": "React's root listener dispatches the native click to <code>onClick</code>. The handler runs synchronously, inside the event.",
+      "state": { "lanes": [
+        { "name": "Event",   "items": [{ "label": "click", "state": "active" }, { "label": "setN ×2 queued", "state": "idle" }, { "label": "handler returns", "state": "idle" }] },
+        { "name": "Render",  "items": [{ "label": "call Counter()", "state": "idle" }, { "label": "reconcile: diff trees", "state": "idle" }] },
+        { "name": "Commit",  "items": [{ "label": "DOM: text 0 → 1", "state": "idle" }, { "label": "useLayoutEffect", "state": "idle" }, { "label": "browser paints", "state": "idle" }] },
+        { "name": "Effects", "items": [{ "label": "useEffect", "state": "idle" }] } ] } },
+    { "label": "Two updates queued", "line": 5, "note": "Each <code>setN(n + 1)</code> computes <code>0 + 1</code> from <em>this call's</em> <code>n</code> and pushes <code>1</code> onto the update queue. Nothing re-renders yet; both updates say \"become 1\".",
+      "state": { "lanes": [
+        { "name": "Event",   "items": [{ "label": "click", "state": "done" }, { "label": "setN ×2 queued", "state": "active" }, { "label": "handler returns", "state": "idle" }] },
+        { "name": "Render",  "items": [{ "label": "call Counter()", "state": "idle" }, { "label": "reconcile: diff trees", "state": "idle" }] },
+        { "name": "Commit",  "items": [{ "label": "DOM: text 0 → 1", "state": "idle" }, { "label": "useLayoutEffect", "state": "idle" }, { "label": "browser paints", "state": "idle" }] },
+        { "name": "Effects", "items": [{ "label": "useEffect", "state": "idle" }] } ] } },
+    { "label": "Handler returns, logs 0", "line": 6, "note": "<code>console.log(n)</code> prints <strong>0</strong>: <code>n</code> is a const captured by this closure. With the event finished, React flushes the batched queue — one render for both updates.",
+      "state": { "lanes": [
+        { "name": "Event",   "items": [{ "label": "click", "state": "done" }, { "label": "setN ×2 queued", "state": "done" }, { "label": "handler returns", "state": "active" }] },
+        { "name": "Render",  "items": [{ "label": "call Counter()", "state": "idle" }, { "label": "reconcile: diff trees", "state": "idle" }] },
+        { "name": "Commit",  "items": [{ "label": "DOM: text 0 → 1", "state": "idle" }, { "label": "useLayoutEffect", "state": "idle" }, { "label": "browser paints", "state": "idle" }] },
+        { "name": "Effects", "items": [{ "label": "useEffect", "state": "idle" }] } ] } },
+    { "label": "Render: Counter() called again", "line": 2, "note": "A fresh call. <code>useState</code> now returns <code>1</code> (the queue applied in order: 1, then 1). The function must be pure — under concurrent rendering this call can be paused or discarded and repeated.",
+      "state": { "lanes": [
+        { "name": "Event",   "items": [{ "label": "click", "state": "done" }, { "label": "setN ×2 queued", "state": "done" }, { "label": "handler returns", "state": "done" }] },
+        { "name": "Render",  "items": [{ "label": "call Counter()", "state": "active" }, { "label": "reconcile: diff trees", "state": "idle" }] },
+        { "name": "Commit",  "items": [{ "label": "DOM: text 0 → 1", "state": "idle" }, { "label": "useLayoutEffect", "state": "idle" }, { "label": "browser paints", "state": "idle" }] },
+        { "name": "Effects", "items": [{ "label": "useEffect", "state": "idle" }] } ] } },
+    { "label": "Reconcile", "line": 7, "note": "New tree: <code>&lt;button&gt;1&lt;/button&gt;</code>. Same type at the same position as before → keep the DOM node; only the text child differs. React records \"set text to 1\" and nothing else.",
+      "state": { "lanes": [
+        { "name": "Event",   "items": [{ "label": "click", "state": "done" }, { "label": "setN ×2 queued", "state": "done" }, { "label": "handler returns", "state": "done" }] },
+        { "name": "Render",  "items": [{ "label": "call Counter()", "state": "done" }, { "label": "reconcile: diff trees", "state": "active" }] },
+        { "name": "Commit",  "items": [{ "label": "DOM: text 0 → 1", "state": "idle" }, { "label": "useLayoutEffect", "state": "idle" }, { "label": "browser paints", "state": "idle" }] },
+        { "name": "Effects", "items": [{ "label": "useEffect", "state": "idle" }] } ] } },
+    { "label": "Commit: DOM mutated", "note": "All recorded mutations are applied synchronously in one pass — the user never sees a half-updated tree. This is the only phase that touches the DOM.",
+      "state": { "lanes": [
+        { "name": "Event",   "items": [{ "label": "click", "state": "done" }, { "label": "setN ×2 queued", "state": "done" }, { "label": "handler returns", "state": "done" }] },
+        { "name": "Render",  "items": [{ "label": "call Counter()", "state": "done" }, { "label": "reconcile: diff trees", "state": "done" }] },
+        { "name": "Commit",  "items": [{ "label": "DOM: text 0 → 1", "state": "active" }, { "label": "useLayoutEffect", "state": "idle" }, { "label": "browser paints", "state": "idle" }] },
+        { "name": "Effects", "items": [{ "label": "useEffect", "state": "idle" }] } ] } },
+    { "label": "Layout effects, before paint", "note": "<code>useLayoutEffect</code> runs with the DOM updated but not yet painted — the place for measuring (<code>getBoundingClientRect</code>) when a flicker would be visible otherwise.",
+      "state": { "lanes": [
+        { "name": "Event",   "items": [{ "label": "click", "state": "done" }, { "label": "setN ×2 queued", "state": "done" }, { "label": "handler returns", "state": "done" }] },
+        { "name": "Render",  "items": [{ "label": "call Counter()", "state": "done" }, { "label": "reconcile: diff trees", "state": "done" }] },
+        { "name": "Commit",  "items": [{ "label": "DOM: text 0 → 1", "state": "done" }, { "label": "useLayoutEffect", "state": "active" }, { "label": "browser paints", "state": "idle" }] },
+        { "name": "Effects", "items": [{ "label": "useEffect", "state": "idle" }] } ] } },
+    { "label": "Browser paints", "note": "React yields; the browser paints the frame with <code>1</code> in it. Everything so far happened in one task after the click.",
+      "state": { "lanes": [
+        { "name": "Event",   "items": [{ "label": "click", "state": "done" }, { "label": "setN ×2 queued", "state": "done" }, { "label": "handler returns", "state": "done" }] },
+        { "name": "Render",  "items": [{ "label": "call Counter()", "state": "done" }, { "label": "reconcile: diff trees", "state": "done" }] },
+        { "name": "Commit",  "items": [{ "label": "DOM: text 0 → 1", "state": "done" }, { "label": "useLayoutEffect", "state": "done" }, { "label": "browser paints", "state": "active" }] },
+        { "name": "Effects", "items": [{ "label": "useEffect", "state": "idle" }] } ] } },
+    { "label": "Effects after paint", "note": "<code>useEffect</code> callbacks run after the paint, so slow work here never delays the frame. This is where subscriptions and fetches go (4d).",
+      "state": { "lanes": [
+        { "name": "Event",   "items": [{ "label": "click", "state": "done" }, { "label": "setN ×2 queued", "state": "done" }, { "label": "handler returns", "state": "done" }] },
+        { "name": "Render",  "items": [{ "label": "call Counter()", "state": "done" }, { "label": "reconcile: diff trees", "state": "done" }] },
+        { "name": "Commit",  "items": [{ "label": "DOM: text 0 → 1", "state": "done" }, { "label": "useLayoutEffect", "state": "done" }, { "label": "browser paints", "state": "done" }] },
+        { "name": "Effects", "items": [{ "label": "useEffect", "state": "active" }] } ] } },
+    { "label": "Idle, DOM shows 1", "note": "Done. Two <code>setN</code> calls, one render, one DOM write. Final value <strong>1</strong>, and the log line said <strong>0</strong>.",
+      "state": { "lanes": [
+        { "name": "Event",   "items": [{ "label": "click", "state": "done" }, { "label": "setN ×2 queued", "state": "done" }, { "label": "handler returns", "state": "done" }] },
+        { "name": "Render",  "items": [{ "label": "call Counter()", "state": "done" }, { "label": "reconcile: diff trees", "state": "done" }] },
+        { "name": "Commit",  "items": [{ "label": "DOM: text 0 → 1", "state": "done" }, { "label": "useLayoutEffect", "state": "done" }, { "label": "browser paints", "state": "done" }] },
+        { "name": "Effects", "items": [{ "label": "useEffect", "state": "done" }] } ] } }
+  ]
+}</script>
+</section>
+
+<section class="block" data-block="playground" id="4a-08" data-lang="jsx">
+<div class="tag">Try it</div>
+<p>Run it and click the button in the preview: the log shows <code>n</code> as the handler saw it, the button shows the committed value. Then: change both <code>setN(n + 1)</code> to <code>setN(c =&gt; c + 1)</code> and watch the step size change; move the <code>console.log</code> into the component body to see when renders happen.</p>
+<pre><code class="language-jsx">import { useState } from "react";
+import { createRoot } from "react-dom/client";
+
+function Counter() {
+  const [n, setN] = useState(0);
+  function onClick() {
+    setN(n + 1);
+    setN(n + 1);
+    console.log("handler saw n =", n);
+  }
+  return &lt;button onClick={onClick}&gt;committed n = {n}&lt;/button&gt;;
+}
+
+createRoot(document.getElementById("root")).render(&lt;Counter /&gt;);
+console.log("render() returned — nothing on screen yet");</code></pre>
+<output>render() returned — nothing on screen yet</output>
+</section>
+
+<section class="block" data-block="exercise" id="4a-09" data-kind="predict" data-lang="jsx">
+<div class="tag">Exercise</div>
+<p>What does this print, in order? One line per <code>console.log</code>. Remember: <code>render()</code> and <code>setState</code> schedule; the child is re-rendered whenever its parent is.</p>
+<pre><code class="language-jsx">import { useState } from "react";
+import { createRoot } from "react-dom/client";
+
+let setFromOutside;
+function Child({ n }) {
+  console.log("Child render", n);
+  return &lt;p&gt;{n}&lt;/p&gt;;
+}
+function App() {
+  const [n, setN] = useState(0);
+  setFromOutside = setN;
+  console.log("App render", n);
+  return &lt;Child n={n} /&gt;;
+}
+
+createRoot(document.getElementById("root")).render(&lt;App /&gt;);
+console.log("render() returned");
+
+setTimeout(() =&gt; {
+  setFromOutside(1);
+  setFromOutside(2);
+  console.log("after setN calls");
+}, 20);</code></pre>
+<script type="application/json">{
+  "expected": "render() returned\nApp render 0\nChild render 0\nafter setN calls\nApp render 2\nChild render 2",
+  "hints": [
+    "<code>root.render()</code> schedules the first render; the line after it runs first.",
+    "Two <code>setN</code> calls in the same timer callback are batched into one render (React 18+ batches everywhere, not just in event handlers). The render happens after the callback returns, so <code>after setN calls</code> comes before <code>App render 2</code>.",
+    "There is no <code>App render 1</code>: the queue is applied in order and only the final value is rendered."
+  ],
+  "explain": "Nothing renders synchronously: <code>render()</code> and <code>setN</code> both enqueue work, so the surrounding synchronous code (<code>render() returned</code>, <code>after setN calls</code>) prints before the component functions run. The two updates batch into a single render with <code>n = 2</code>, and <code>Child</code> re-renders because its parent did."
+}</script>
+</section>
+
+<section class="block" data-block="concept" id="4a-03">
+<h2>Unidirectional data flow</h2>
+<p>State lives in one component. It flows <em>down</em> as props; events flow <em>up</em> as callbacks passed as props. No two-way binding: a child that wants to change something it was given calls the function it was given. When two components need the same state, it moves to their closest common ancestor (<strong>lifting state up</strong>).</p>
+<pre><code class="language-jsx">function App() {
+  const [query, setQuery] = useState("");
+  return (
+    &lt;&gt;
+      &lt;Header /&gt;
+      &lt;SearchBox value={query} onChange={setQuery} /&gt;   {/* data down, events up */}
+      &lt;Results query={query} /&gt;
+    &lt;/&gt;
+  );
+}
+
+function SearchBox({ value, onChange }) {
+  return &lt;input value={value} onChange={e =&gt; onChange(e.target.value)} /&gt;;
+}</code></pre>
+<p>Think spreadsheet: state is the input cells, components are the formulas. You change an input; every dependent formula recomputes. You never tell a cell to update itself.</p>
+
+<div class="callout py">
+  <div class="tag">Python bridge</div>
+  <p>A component is called like <code>SearchBox(value="re", onChange=set_query)</code> — props are one keyword-argument dict, <code>children</code> included. There is no <code>self</code>: no instance survives between calls, so every render is a fresh invocation with fresh locals, and the handlers it creates close over <em>that</em> call's values (4c).</p>
+</div>
+</section>
+
+<section class="block" data-block="stepper" id="4a-11" data-kind="chain">
+<div class="tag">Step through</div>
+<script type="application/json">{
+  "steps": [
+    { "label": "Committed tree, idle", "note": "State lives in <code>App</code> (<code>query</code>) and in <code>Results</code> (<code>page</code>). Props flow down the edges. Highlighted nodes below are the ones currently re-rendering.",
+      "state": { "nodes": [
+        { "id": "app", "label": "App", "fields": ["query: \"\""] },
+        { "id": "header", "label": "Header" },
+        { "id": "search", "label": "SearchBox", "fields": ["value, onChange"] },
+        { "id": "results", "label": "Results", "fields": ["query", "page: 1"] },
+        { "id": "row1", "label": "Row", "fields": ["item"] },
+        { "id": "row2", "label": "Row", "fields": ["item"] } ],
+        "edges": [["app", "header"], ["app", "search", "props"], ["app", "results", "props"], ["results", "row1"], ["results", "row2"]],
+        "active": [] } },
+    { "label": "User types in SearchBox", "note": "The <code>&lt;input&gt;</code> fires <code>onChange</code>; <code>SearchBox</code> calls the <code>onChange</code> prop it was given with <code>\"re\"</code>. It owns nothing — the event travels <em>up</em>.",
+      "state": { "nodes": [
+        { "id": "app", "label": "App", "fields": ["query: \"\""] },
+        { "id": "header", "label": "Header" },
+        { "id": "search", "label": "SearchBox", "fields": ["onChange(\"re\")"] },
+        { "id": "results", "label": "Results", "fields": ["query", "page: 1"] },
+        { "id": "row1", "label": "Row", "fields": ["item"] },
+        { "id": "row2", "label": "Row", "fields": ["item"] } ],
+        "edges": [["app", "header"], ["app", "search", "props"], ["app", "results", "props"], ["results", "row1"], ["results", "row2"]],
+        "active": ["search"] } },
+    { "label": "setQuery(\"re\") → App re-renders", "note": "The callback was <code>setQuery</code>, so the update lands on <code>App</code>'s state. React re-renders the component that owns the state and everything beneath it.",
+      "state": { "nodes": [
+        { "id": "app", "label": "App", "fields": ["query: \"re\""] },
+        { "id": "header", "label": "Header" },
+        { "id": "search", "label": "SearchBox", "fields": ["value, onChange"] },
+        { "id": "results", "label": "Results", "fields": ["query", "page: 1"] },
+        { "id": "row1", "label": "Row", "fields": ["item"] },
+        { "id": "row2", "label": "Row", "fields": ["item"] } ],
+        "edges": [["app", "header"], ["app", "search", "props"], ["app", "results", "props"], ["results", "row1"], ["results", "row2"]],
+        "active": ["app"] } },
+    { "label": "Header re-renders — same props", "note": "By default a child re-renders whenever its parent does; React does <em>not</em> compare props first. <code>Header</code> runs again and produces identical output, so the commit touches none of its DOM. <code>memo</code> (or the React Compiler) is the opt-in to skip this call.",
+      "state": { "nodes": [
+        { "id": "app", "label": "App", "fields": ["query: \"re\""] },
+        { "id": "header", "label": "Header" },
+        { "id": "search", "label": "SearchBox", "fields": ["value, onChange"] },
+        { "id": "results", "label": "Results", "fields": ["query", "page: 1"] },
+        { "id": "row1", "label": "Row", "fields": ["item"] },
+        { "id": "row2", "label": "Row", "fields": ["item"] } ],
+        "edges": [["app", "header"], ["app", "search", "props"], ["app", "results", "props"], ["results", "row1"], ["results", "row2"]],
+        "active": ["header"] } },
+    { "label": "SearchBox re-renders with value=\"re\"", "note": "The new <code>value</code> prop arrives from above. The input is <em>controlled</em>: what it shows is what the parent's state says.",
+      "state": { "nodes": [
+        { "id": "app", "label": "App", "fields": ["query: \"re\""] },
+        { "id": "header", "label": "Header" },
+        { "id": "search", "label": "SearchBox", "fields": ["value: \"re\""] },
+        { "id": "results", "label": "Results", "fields": ["query", "page: 1"] },
+        { "id": "row1", "label": "Row", "fields": ["item"] },
+        { "id": "row2", "label": "Row", "fields": ["item"] } ],
+        "edges": [["app", "header"], ["app", "search", "props"], ["app", "results", "props"], ["results", "row1"], ["results", "row2"]],
+        "active": ["search"] } },
+    { "label": "Results and its rows re-render", "note": "<code>Results</code> gets the new <code>query</code> and maps items to <code>Row</code>s; each <code>Row</code> is called in turn. Top-down, depth-first — the same order as the tree.",
+      "state": { "nodes": [
+        { "id": "app", "label": "App", "fields": ["query: \"re\""] },
+        { "id": "header", "label": "Header" },
+        { "id": "search", "label": "SearchBox", "fields": ["value: \"re\""] },
+        { "id": "results", "label": "Results", "fields": ["query: \"re\"", "page: 1"] },
+        { "id": "row1", "label": "Row", "fields": ["item"] },
+        { "id": "row2", "label": "Row", "fields": ["item"] } ],
+        "edges": [["app", "header"], ["app", "search", "props"], ["app", "results", "props"], ["results", "row1"], ["results", "row2"]],
+        "active": ["results", "row1", "row2"] } },
+    { "label": "Commit", "note": "Render is over. The diff found two changed things — the input's <code>value</code> and the rows' text — and only those DOM nodes are written. Six functions ran; two nodes changed.",
+      "state": { "nodes": [
+        { "id": "app", "label": "App", "fields": ["query: \"re\""] },
+        { "id": "header", "label": "Header" },
+        { "id": "search", "label": "SearchBox", "fields": ["value: \"re\""] },
+        { "id": "results", "label": "Results", "fields": ["query: \"re\"", "page: 1"] },
+        { "id": "row1", "label": "Row", "fields": ["item"] },
+        { "id": "row2", "label": "Row", "fields": ["item"] } ],
+        "edges": [["app", "header"], ["app", "search", "props"], ["app", "results", "props"], ["results", "row1"], ["results", "row2"]],
+        "active": [] } },
+    { "label": "Later: setPage(2) inside Results", "note": "A state change in <code>Results</code> re-renders <code>Results</code> only — the update starts at the owner and goes <em>down</em>. <code>App</code>, <code>Header</code> and <code>SearchBox</code> are not called at all.",
+      "state": { "nodes": [
+        { "id": "app", "label": "App", "fields": ["query: \"re\""] },
+        { "id": "header", "label": "Header" },
+        { "id": "search", "label": "SearchBox", "fields": ["value: \"re\""] },
+        { "id": "results", "label": "Results", "fields": ["query: \"re\"", "page: 2"] },
+        { "id": "row1", "label": "Row", "fields": ["item"] },
+        { "id": "row2", "label": "Row", "fields": ["item"] } ],
+        "edges": [["app", "header"], ["app", "search", "props"], ["app", "results", "props"], ["results", "row1"], ["results", "row2"]],
+        "active": ["results"] } },
+    { "label": "…and its rows", "note": "Children of the re-rendering component are called again. This is why state is kept as low in the tree as possible: the lower the owner, the smaller the re-render.",
+      "state": { "nodes": [
+        { "id": "app", "label": "App", "fields": ["query: \"re\""] },
+        { "id": "header", "label": "Header" },
+        { "id": "search", "label": "SearchBox", "fields": ["value: \"re\""] },
+        { "id": "results", "label": "Results", "fields": ["query: \"re\"", "page: 2"] },
+        { "id": "row1", "label": "Row", "fields": ["item"] },
+        { "id": "row2", "label": "Row", "fields": ["item"] } ],
+        "edges": [["app", "header"], ["app", "search", "props"], ["app", "results", "props"], ["results", "row1"], ["results", "row2"]],
+        "active": ["row1", "row2"] } },
+    { "label": "Idle", "note": "Two rules: a state change re-renders its owner and the subtree below it; nothing above the owner runs. Where you put state decides how much work each change costs.",
+      "state": { "nodes": [
+        { "id": "app", "label": "App", "fields": ["query: \"re\""] },
+        { "id": "header", "label": "Header" },
+        { "id": "search", "label": "SearchBox", "fields": ["value: \"re\""] },
+        { "id": "results", "label": "Results", "fields": ["query: \"re\"", "page: 2"] },
+        { "id": "row1", "label": "Row", "fields": ["item"] },
+        { "id": "row2", "label": "Row", "fields": ["item"] } ],
+        "edges": [["app", "header"], ["app", "search", "props"], ["app", "results", "props"], ["results", "row1"], ["results", "row2"]],
+        "active": [] } }
+  ]
+}</script>
+</section>
+
+<section class="block" data-block="concept" id="4a-04">
+<h2>Rendering ≠ DOM update</h2>
+<p>"Rendering" in React means <em>calling your component function</em>. It does not mean touching the DOM. A component renders when its own state changes or when its parent renders — props are not compared first. The DOM is written only for the nodes whose output actually changed. So a component can render 100 times and produce zero DOM operations, and that is usually fine: function calls are cheap, layout and paint are not. Optimisation discussions go wrong when the two are conflated — measure the commit, not the render count (4k).</p>
+<p>Opting a child out of parent-triggered renders is explicit: wrap it in <code>memo</code> so React compares props first, or let the <strong>React Compiler</strong> (React 19) insert that memoisation for you. Both only work if the component is pure — see below.</p>
+</section>
+
+<section class="block" data-block="playground" id="4a-12" data-lang="jsx">
+<div class="tag">Try it</div>
+<p><code>Child</code> re-renders every time <code>Parent</code> does, although its props never change — and yet the <code>&lt;h1&gt;</code> DOM node is the same object before and after. Try: wrap <code>Child</code> in <code>memo</code> (<code>import { memo } from "react"</code>) and the second <code>Child render</code> disappears; pass a fresh object prop (<code>&lt;Child style={{}} /&gt;</code>) and it comes back, because <code>memo</code> compares by identity.</p>
+<pre><code class="language-jsx">import { useState } from "react";
+import { createRoot } from "react-dom/client";
+
+function Child() {
+  console.log("Child render");
+  return &lt;h1&gt;static heading&lt;/h1&gt;;
+}
+function Parent() {
+  const [n, setN] = useState(0);
+  console.log("Parent render", n);
+  return (
+    &lt;&gt;
+      &lt;Child /&gt;
+      &lt;button onClick={() =&gt; setN(n + 1)}&gt;re-render parent ({n})&lt;/button&gt;
+    &lt;/&gt;
+  );
+}
+createRoot(document.getElementById("root")).render(&lt;Parent /&gt;);
+
+setTimeout(() =&gt; {
+  const h1Before = document.querySelector("h1");
+  document.querySelector("button").click();
+  setTimeout(() =&gt; console.log("same <h1> node after re-render:", h1Before === document.querySelector("h1")), 20);
+}, 20);</code></pre>
+<output>Parent render 0
+Child render
+Parent render 1
+Child render
+same <h1> node after re-render: true</output>
+</section>
+
+<section class="block" data-block="concept" id="4a-13">
+<h2>State is compared by identity — mutation is invisible</h2>
+<p><code>setState(next)</code> compares <code>next</code> with the current value using <code>Object.is</code>. Equal → React bails out and nothing renders. Mutating an array or object keeps the same reference, so <code>items.push(x); setItems(items)</code> is a no-op as far as React can tell — and it has also silently changed the "previous" value that <code>memo</code>, effect dependencies and the DevTools diff rely on. State is treated as <strong>immutable</strong>: every change produces a new value.</p>
+
+<div class="callout bad">
+  <div class="tag">Don't</div>
+  <pre><code class="language-jsx">items.push(newItem);     setItems(items);    // same reference → no render
+user.name = "Ada";       setUser(user);      // same reference → no render
+items.sort();            setItems(items);    // mutates in place, too</code></pre>
+</div>
+<div class="callout good">
+  <div class="tag">Do</div>
+  <pre><code class="language-jsx">setItems([...items, newItem]);
+setUser({ ...user, name: "Ada" });
+setItems(items.toSorted());                  // ES2023: toSorted / toReversed / toSpliced / with return copies
+setItems(items.filter(i =&gt; i.id !== id));
+setItems(items.map(i =&gt; i.id === id ? { ...i, done: true } : i));</code></pre>
+</div>
+<p>Copies are <em>shallow</em>: <code>{ ...user }</code> shares <code>user.address</code> with the original. That is a feature (unchanged branches keep their identity, so memoised children skip) as long as you never mutate the shared branch. Nested updates spread each level you change, or use Immer (<code>useImmer</code>) when the nesting gets deep.</p>
+</section>
+
+<section class="block" data-block="playground" id="4a-14" data-lang="js">
+<div class="tag">Try it</div>
+<p>Pure JS — this is the comparison React runs inside <code>setState</code>. Run it, then: replace the spread with <code>const next = state; next.items.push(3)</code> and watch the first line flip to <code>true</code> (React would bail out); change <code>state.user</code> through <code>next.user.name = "x"</code> and confirm the original is affected too.</p>
+<pre><code class="language-javascript">const state = { items: [1, 2], user: { name: "Ada" } };
+
+// what a correct update does
+const next = { ...state, items: [...state.items, 3] };
+console.log("same state object?", Object.is(state, next));
+console.log("same items array?", Object.is(state.items, next.items));
+console.log("same user object?", Object.is(state.user, next.user));   // untouched branch is shared
+
+// what a mutating update does
+const mutated = state;
+mutated.items.push(99);
+console.log("same after mutation?", Object.is(state, mutated), "— React bails out");
+console.log("and the 'previous' state now has", state.items.length, "items");</code></pre>
+<output>same state object? false
+same items array? false
+same user object? true
+same after mutation? true — React bails out
+and the 'previous' state now has 3 items</output>
+</section>
+
+<section class="block" data-block="bridge" id="4a-15">
+<div class="tag">Python bridge</div>
+<p>Python code mutates by default — <code>xs.append(x)</code>, <code>d["k"] = v</code>, <code>obj.name = …</code> — and nothing cares. React state is the opposite discipline: treat every value like a <code>tuple</code> or a <code>frozen=True</code> dataclass and build the next one. The mappings are mechanical: <code>[...xs, x]</code> ≈ <code>xs + [x]</code>; <code>{ ...d, k: v }</code> ≈ <code>{**d, "k": v}</code>; <code>{ ...obj, name }</code> ≈ <code>dataclasses.replace(obj, name=name)</code>; <code>xs.toSorted()</code> ≈ <code>sorted(xs)</code> (copy) while <code>xs.sort()</code> ≈ <code>xs.sort()</code> (in place, don't). The reason is the same as hashing a dict key: React identifies "changed" by identity, not by content.</p>
+</section>
+
+<section class="block" data-block="exercise" id="4a-16" data-kind="fix" data-lang="jsx">
+<div class="tag">Exercise</div>
+<p>Clicking <strong>add</strong> does nothing visible. The handler mutates the array that is already in state and then sets the same reference. Make the new item appear; keep the existing items in order. Tests click the button and read the <code>&lt;li&gt;</code>s.</p>
+<pre><code class="language-jsx">import { useState } from "react";
+import { createRoot } from "react-dom/client";
+
+function TodoList() {
+  const [items, setItems] = useState(["write tests"]);
+
+  function add() {
+    items.push("item " + (items.length + 1));
+    setItems(items);
+  }
+
+  return (
+    &lt;&gt;
+      &lt;ul&gt;{items.map(t =&gt; &lt;li key={t}&gt;{t}&lt;/li&gt;)}&lt;/ul&gt;
+      &lt;button onClick={add}&gt;add&lt;/button&gt;
+    &lt;/&gt;
+  );
+}
+
+createRoot(document.getElementById("root")).render(&lt;TodoList /&gt;);</code></pre>
+<script type="application/json">{
+  "tests": "const tick = () => new Promise(r => setTimeout(r, 30));\nconst texts = () => [...document.querySelectorAll(\"li\")].map(li => li.textContent);\ntest(\"renders the initial item\", async () => { await tick(); assert.equal(texts(), [\"write tests\"]); });\ntest(\"clicking add shows item 2\", async () => { document.querySelector(\"button\").click(); await tick(); assert.equal(texts(), [\"write tests\", \"item 2\"]); });\ntest(\"clicking again appends item 3\", async () => { document.querySelector(\"button\").click(); await tick(); assert.equal(texts(), [\"write tests\", \"item 2\", \"item 3\"]); });",
+  "hints": [
+    "<code>setItems</code> compares the new value with the old one using <code>Object.is</code>. After <code>push</code>, <code>items</code> is still the same array object.",
+    "Build a new array that contains the old items plus the new one: spread syntax.",
+    "<code>setItems([...items, \"item \" + (items.length + 1)])</code> — or the functional form <code>setItems(prev =&gt; [...prev, …])</code>."
+  ],
+  "solution": "import { useState } from \"react\";\nimport { createRoot } from \"react-dom/client\";\n\nfunction TodoList() {\n  const [items, setItems] = useState([\"write tests\"]);\n\n  function add() {\n    setItems([...items, \"item \" + (items.length + 1)]);\n  }\n\n  return (\n    <>\n      <ul>{items.map(t => <li key={t}>{t}</li>)}</ul>\n      <button onClick={add}>add</button>\n    </>\n  );\n}\n\ncreateRoot(document.getElementById(\"root\")).render(<TodoList />);",
+  "explain": "<code>push</code> changed the array React already holds, then <code>setItems(items)</code> handed back the same reference — <code>Object.is</code> says nothing changed, so no render is scheduled (4a-13). A new array is a new identity, so React renders, diffs the list by <code>key</code>, and appends exactly one <code>&lt;li&gt;</code>."
+}</script>
+</section>
+
+<section class="block" data-block="exercise" id="4a-17" data-kind="complete" data-lang="jsx">
+<div class="tag">Exercise</div>
+<p><code>Display</code> and <code>Controls</code> are siblings that must agree on one count, so the state belongs in <code>App</code>. Own it there and wire it: <code>count</code> down to <code>Display</code>, callbacks down to <code>Controls</code>. Tests click <code>#inc</code> and <code>#reset</code> and read <code>#display</code>; one test clicks <code>#inc</code> twice in the same tick, so write the increment as a functional update.</p>
+<pre><code class="language-jsx">import { useState } from "react";
+import { createRoot } from "react-dom/client";
+
+function Display({ count }) {
+  return &lt;p id="display"&gt;count: {count}&lt;/p&gt;;
+}
+
+function Controls({ onIncrement, onReset }) {
+  return (
+    &lt;&gt;
+      &lt;button id="inc" onClick={onIncrement}&gt;+1&lt;/button&gt;
+      &lt;button id="reset" onClick={onReset}&gt;reset&lt;/button&gt;
+    &lt;/&gt;
+  );
+}
+
+function App() {
+  // TODO: hold the count here and pass it down
+  return (
+    &lt;&gt;
+      &lt;Display /&gt;
+      &lt;Controls /&gt;
+    &lt;/&gt;
+  );
+}
+
+createRoot(document.getElementById("root")).render(&lt;App /&gt;);</code></pre>
+<script type="application/json">{
+  "tests": "const tick = () => new Promise(r => setTimeout(r, 30));\nconst shown = () => document.querySelector(\"#display\").textContent;\ntest(\"starts at 0\", async () => { await tick(); assert.equal(shown(), \"count: 0\"); });\ntest(\"+1 increments\", async () => { document.querySelector(\"#inc\").click(); await tick(); assert.equal(shown(), \"count: 1\"); });\ntest(\"two clicks in the same tick both count\", async () => { document.querySelector(\"#inc\").click(); document.querySelector(\"#inc\").click(); await tick(); assert.equal(shown(), \"count: 3\"); });\ntest(\"reset goes back to 0\", async () => { document.querySelector(\"#reset\").click(); await tick(); assert.equal(shown(), \"count: 0\"); });",
+  "hints": [
+    "<code>const [count, setCount] = useState(0)</code> in <code>App</code>; then <code>&lt;Display count={count} /&gt;</code>.",
+    "Pass functions, not calls: <code>onReset={() =&gt; setCount(0)}</code>, not <code>onReset={setCount(0)}</code>.",
+    "Two clicks before React renders both read the same <code>count</code>. <code>onIncrement={() =&gt; setCount(c =&gt; c + 1)}</code> queues updates that build on each other."
+  ],
+  "solution": "import { useState } from \"react\";\nimport { createRoot } from \"react-dom/client\";\n\nfunction Display({ count }) {\n  return <p id=\"display\">count: {count}</p>;\n}\n\nfunction Controls({ onIncrement, onReset }) {\n  return (\n    <>\n      <button id=\"inc\" onClick={onIncrement}>+1</button>\n      <button id=\"reset\" onClick={onReset}>reset</button>\n    </>\n  );\n}\n\nfunction App() {\n  const [count, setCount] = useState(0);\n  return (\n    <>\n      <Display count={count} />\n      <Controls onIncrement={() => setCount(c => c + 1)} onReset={() => setCount(0)} />\n    </>\n  );\n}\n\ncreateRoot(document.getElementById(\"root\")).render(<App />);",
+  "explain": "Lifting state up: the closest common ancestor owns the value, children receive data and callbacks as props (4a-03). <code>setCount(c =&gt; c + 1)</code> matters in the double-click test because React batches both clicks into one render; <code>setCount(count + 1)</code> twice would read the same stale <code>count</code> and land on 2 instead of 3 (4a-10)."
+}</script>
+</section>
+
+<section class="block" data-block="exercise" id="4a-21" data-kind="predict" data-lang="js">
+<div class="tag">Exercise</div>
+<p>Plain JS, no React: the identity checks a correct state update produces. What does this print? One value per line.</p>
+<pre><code class="language-javascript">const state = { items: [1, 2], user: { name: "Ada" } };
+const next = { ...state, items: [...state.items, 3] };
+
+console.log(Object.is(state, next));
+console.log(Object.is(state.items, next.items));
+console.log(Object.is(state.user, next.user));
+
+state.items.push(4);
+console.log(next.items.length, state.items.length);</code></pre>
+<script type="application/json">{
+  "expected": "false\nfalse\ntrue\n3 3",
+  "hints": [
+    "Spread creates a new outer object and a new <code>items</code> array; it copies the <em>reference</em> to <code>user</code>.",
+    "<code>next.items</code> was built from a copy, so a later <code>push</code> on <code>state.items</code> cannot reach it."
+  ],
+  "explain": "Shallow copy: the branches you rebuild get new identities, the ones you don't are shared. That sharing is what lets a memoised <code>&lt;Profile user={user} /&gt;</code> skip rendering when only <code>items</code> changed — and why mutating a shared branch is a bug you can't see from the outside."
+}</script>
+</section>
+
+<section class="block" data-block="concept" id="4a-06">
+<h2>Concurrent rendering and the purity rule</h2>
+<p>Since React 18 the scheduler can pause a render, work on something more urgent (a keypress), and resume or restart the paused one. That is what <code>useTransition</code>, <code>useDeferredValue</code> and Suspense streaming are built on. Three things follow for your code:</p>
+<ul>
+  <li>A component function may be called and its result thrown away. <strong>No side effects during render</strong>: no mutation of outer variables, no <code>fetch</code>, no writes to <code>localStorage</code>. Side effects belong in event handlers or effects (4d).</li>
+  <li><code>&lt;StrictMode&gt;</code> deliberately calls every component (and effect) twice in development to make impurity visible. If double-invocation changes the output, the component was already wrong.</li>
+  <li>The <strong>React Compiler</strong> (React 19) auto-memoises components and hooks by assuming the <a href="https://react.dev/reference/rules">Rules of React</a>. An impure component does not error under the compiler — it renders stale output, which is harder to debug than a crash.</li>
+</ul>
+
+<div class="callout good">
+  <div class="tag">Forward pointer — where does this code run?</div>
+  <p>In a browser-only React app, components always run in the browser. In Next.js (Part 5), Server Components run on the server, render once, and ship no JS. <code>UI = f(state)</code> still holds, but "state" there is request data (params, cookies, a database read), not <code>useState</code>. Details in <a href="/content/react/state-and-forms/4g-server-vs-client-state.html">4g</a> and Part 5.</p>
+</div>
+</section>
+
+<section class="block" data-block="review" id="4a-18">
+<div class="tag">Code review</div>
+<ul>
+  <li><strong>Side effect in the render body.</strong> <code>analytics.track()</code>, <code>fetch</code>, <code>ref.current = …</code> or a mutated module variable at the top of a component. Fires twice under StrictMode, fires for discarded concurrent renders, breaks under the Compiler. Move it to an event handler or <code>useEffect</code>. ESLint: <code>eslint-plugin-react-hooks</code> (<code>react-compiler</code> rule set) flags most of these.</li>
+  <li><strong>Mutating state then setting the same reference.</strong> <code>list.push(x); setList(list)</code>. Sometimes it appears to work because something else re-rendered; then it stops. Always build a new value.</li>
+  <li><strong>Reading state right after setting it.</strong> <code>setOpen(true); if (open) …</code> — <code>open</code> is this render's const. Use the value you just computed, or derive in the next render.</li>
+  <li><strong><code>setX(x + 1)</code> where the next update may land before the render.</strong> Rapid clicks, keyboard repeat, async callbacks. Functional updates (<code>setX(c =&gt; c + 1)</code>) compose; value updates overwrite.</li>
+  <li><strong>Storing derived data in state.</strong> <code>const [total, setTotal] = useState(0)</code> kept in sync with <code>items</code> by an effect. It is a second source of truth that lags by one render; compute it during render (<code>const total = sum(items)</code>) and memoise only if measured.</li>
+  <li><strong>State held too high.</strong> A typing field whose state lives in the page root re-renders the whole page on every keystroke. Keep state in the lowest component that needs it; lift only when siblings must share.</li>
+</ul>
+</section>
+
+<section class="block" data-block="exercise" id="4a-19" data-kind="mcq">
+<div class="tag">Check</div>
+<p>A page component calls <code>analytics.track("page_view")</code> at the top of its function body, not in an effect. The team enables the React Compiler and renders inside <code>&lt;StrictMode&gt;</code> in development. What happens in production?</p>
+<script type="application/json">{
+  "options": [
+    "Nothing changes in production: StrictMode double-invocation is development-only and the Compiler removes dead code like this.",
+    "The event can fire more than once per visit — for renders the scheduler discards, and on every parent re-render — because render is not a \"once per mount\" hook. It belongs in <code>useEffect</code> or the navigation handler.",
+    "React throws at build time: the Compiler rejects components with side effects in the render body.",
+    "The event fires exactly once per mount; React guarantees a component body runs once between commits."
+  ],
+  "answer": 1,
+  "explain": "Render is a pure function React may call any number of times per commit (concurrent restarts, parent re-renders, StrictMode in dev). Nothing stops it in production and the Compiler does not reject it — it memoises under the assumption of purity, which can also make the call fire <em>less</em> often than expected. Effects (<code>useEffect</code>) and event handlers are the places that run on a schedule you control."
+}</script>
+</section>
+
+<section class="block" data-block="recall" id="4a-20">
+<div class="tag">Recall</div>
+<dl>
+  <dt>What are the four phases React runs after <code>setState</code>, and which one touches the DOM?</dt>
+  <dd>Render (call the component functions) → reconcile (diff new tree vs current, by position and <code>key</code>) → commit (apply DOM mutations synchronously, run <code>useLayoutEffect</code>, paint) → effects (<code>useEffect</code>, after paint). Only commit writes to the DOM.</dd>
+
+  <dt>Inside a click handler: <code>setN(n + 1); setN(n + 1); console.log(n)</code> with <code>n === 0</code>. What is logged, and what does the button show after the render?</dt>
+  <dd>Logs <code>0</code> (this call's const); the button shows <code>1</code> — both updates computed <code>0 + 1</code> and were batched into one render. <code>setN(c =&gt; c + 1)</code> twice would give 2.</dd>
+
+  <dt>What does this print, in order?
+<pre><code class="language-jsx">createRoot(root).render(&lt;App /&gt;);   // App logs "App render"
+console.log("render() returned");</code></pre></dt>
+  <dd><code>render() returned</code>, then <code>App render</code>. <code>createRoot().render</code> schedules the render; nothing runs synchronously.</dd>
+
+  <dt>When does a component re-render, and does React compare its props first?</dt>
+  <dd>When its own state changes, or when its parent re-renders. Props are <em>not</em> compared by default; <code>memo</code> (or the React Compiler) opts a component into that comparison.</dd>
+
+  <dt>Why does <code>items.push(x); setItems(items)</code> not update the screen?</dt>
+  <dd><code>setItems</code> compares with <code>Object.is</code>; the mutated array is the same reference as the current state, so React bails out. Build a new array: <code>setItems([...items, x])</code>.</dd>
+
+  <dt>What does this print?
+<pre><code class="language-javascript">const s = { a: [1], b: { x: 1 } };
+const n = { ...s, a: [...s.a, 2] };
+console.log(Object.is(s.a, n.a), Object.is(s.b, n.b));</code></pre></dt>
+  <dd><code>false true</code>. Spread is shallow: the rebuilt branch gets a new identity, the untouched branch is shared.</dd>
+
+  <dt>Why must a component function be pure, and what two React features exploit that?</dt>
+  <dd>Concurrent rendering may call it and discard the result (or call it again after an interruption), and the React Compiler memoises on the assumption that same inputs give the same output. StrictMode double-invokes in dev to catch violations.</dd>
+
+  <dt>Where does the state go when two sibling components need the same value?</dt>
+  <dd>Into their closest common ancestor ("lifting state up"); it flows down as props and changes flow up through callback props. No two-way binding.</dd>
+</dl>
+</section>
+</article>
+<script type="module" src="/assets/runtime/boot.js"></script>
+</body>
+</html>
